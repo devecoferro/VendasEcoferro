@@ -182,21 +182,11 @@ export function extractSaleFields(rawText: string): ExtractionResult {
 
   const quantity = parseInt(quantityStr, 10) || 1;
 
-  // Barcode
-  const barcodeValue = extract("barcodeValue", [
-    /(?:barcode|código\s*de\s*barras|ean|gtin)[:\s]+(\d{8,14})/i,
-    /(\d{13})/,
-  ]);
-
-  // QR code URL — optional, don't treat missing as critical
-  let qrcodeValue = "";
-  const qrMatch = rawText.match(/(https?:\/\/[^\s]{10,})/i);
-  if (qrMatch) {
-    qrcodeValue = qrMatch[1];
-    confidence["qrcodeValue"] = "high";
-  } else {
-    confidence["qrcodeValue"] = "low"; // not "empty" — it's optional
-  }
+  // Barcode and QR code are both derived from SKU
+  const barcodeValue = sku;
+  const qrcodeValue = sku;
+  confidence["barcodeValue"] = sku ? "high" : "empty";
+  confidence["qrcodeValue"] = sku ? "high" : "empty";
 
   const sale: SaleData = {
     id: crypto.randomUUID(),

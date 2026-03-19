@@ -25,7 +25,13 @@ export default function ReviewPage() {
   const currentResult = hasRealData ? results[currentIndex] : null;
 
   const updateSale = (updated: SaleData) => {
-    setSales((prev) => prev.map((s, i) => (i === currentIndex ? updated : s)));
+    // Sync barcode and QR code from SKU automatically
+    const synced = {
+      ...updated,
+      barcodeValue: updated.sku,
+      qrcodeValue: updated.sku,
+    };
+    setSales((prev) => prev.map((s, i) => (i === currentIndex ? synced : s)));
   };
 
   const handleExport = async () => {
