@@ -145,14 +145,7 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     cy += 4;
   }
 
-  // Amount
-  if (sale.amount) {
-    cy += 1;
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(0, 140, 70);
-    doc.text(`R$ ${sale.amount.toFixed(2)}`, cx, cy);
-  }
+  // Amount removed from PDF output per business rule
 
   // --- RIGHT: barcode + QR ---
   const rx = x0 + LEFT_W + CENTER_W + 1;
