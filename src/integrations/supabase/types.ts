@@ -14,7 +14,107 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      ml_connections: {
+        Row: {
+          access_token: string
+          created_at: string
+          id: string
+          last_sync_at: string | null
+          refresh_token: string
+          seller_id: string
+          seller_nickname: string | null
+          token_expires_at: string
+          updated_at: string
+        }
+        Insert: {
+          access_token: string
+          created_at?: string
+          id?: string
+          last_sync_at?: string | null
+          refresh_token: string
+          seller_id: string
+          seller_nickname?: string | null
+          token_expires_at: string
+          updated_at?: string
+        }
+        Update: {
+          access_token?: string
+          created_at?: string
+          id?: string
+          last_sync_at?: string | null
+          refresh_token?: string
+          seller_id?: string
+          seller_nickname?: string | null
+          token_expires_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      ml_orders: {
+        Row: {
+          amount: number | null
+          buyer_name: string | null
+          buyer_nickname: string | null
+          connection_id: string
+          created_at: string
+          id: string
+          item_id: string | null
+          item_title: string | null
+          order_id: string
+          order_status: string | null
+          quantity: number
+          raw_data: Json | null
+          sale_date: string
+          sale_number: string
+          shipping_id: string | null
+          sku: string | null
+        }
+        Insert: {
+          amount?: number | null
+          buyer_name?: string | null
+          buyer_nickname?: string | null
+          connection_id: string
+          created_at?: string
+          id?: string
+          item_id?: string | null
+          item_title?: string | null
+          order_id: string
+          order_status?: string | null
+          quantity?: number
+          raw_data?: Json | null
+          sale_date: string
+          sale_number: string
+          shipping_id?: string | null
+          sku?: string | null
+        }
+        Update: {
+          amount?: number | null
+          buyer_name?: string | null
+          buyer_nickname?: string | null
+          connection_id?: string
+          created_at?: string
+          id?: string
+          item_id?: string | null
+          item_title?: string | null
+          order_id?: string
+          order_status?: string | null
+          quantity?: number
+          raw_data?: Json | null
+          sale_date?: string
+          sale_number?: string
+          shipping_id?: string | null
+          sku?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ml_orders_connection_id_fkey"
+            columns: ["connection_id"]
+            isOneToOne: false
+            referencedRelation: "ml_connections"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
