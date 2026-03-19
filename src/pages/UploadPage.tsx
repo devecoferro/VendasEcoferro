@@ -3,18 +3,39 @@ import { AppLayout } from "@/components/AppLayout";
 import { FileUploadZone } from "@/components/FileUploadZone";
 import { useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { processFiles } from "@/services/fileProcessor";
+import { useExtraction } from "@/contexts/ExtractionContext";
+import { toast } from "sonner";
 
 export default function UploadPage() {
   const navigate = useNavigate();
+  const { setResults } = useExtraction();
   const [processing, setProcessing] = useState(false);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState(0);
 
-  const handleFiles = (files: File[]) => {
+  const handleFiles = async (files: File[]) => {
     setProcessing(true);
-    // Simulate processing delay
-    setTimeout(() => {
-      setProcessing(false);
+    setStatus("Iniciando processamento...");
+    setProgress(0);
+
+    try {
+      const results = await processFiles(files, (s, p) => {
+        setStatus(s);
+        setProgress(Math.round(p));
+      });
+
+      setResults(results);
+      toast.success(`${results.length} venda(s) extraída(s) com sucesso!`);
       navigate("/review");
-    }, 2500);
+    } catch (err: any) {
+      console.error("Processing error:", err);
+      toast.error("Erro ao processar arquivo", {
+        description: err.message || "Tente novamente com outro arquivo",
+      });
+    } finally {
+      setProcessing(false);
+    }
   };
 
   return (
@@ -31,14 +52,18 @@ export default function UploadPage() {
           <div className="glass-card p-16 flex flex-col items-center gap-4 animate-fade-in">
             <Loader2 className="w-10 h-10 text-primary animate-spin" />
             <div className="text-center">
-              <p className="text-base font-semibold text-foreground">Processando documento...</p>
+              <p className="text-base font-semibold text-foreground">{status}</p>
               <p className="text-sm text-muted-foreground mt-1">
                 Extraindo dados da venda via parser e OCR
               </p>
             </div>
             <div className="w-64 h-2 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full gradient-primary rounded-full animate-pulse" style={{ width: "65%" }} />
+              <div
+                className="h-full gradient-primary rounded-full transition-all duration-300"
+                style={{ width: `${progress}%` }}
+              />
             </div>
+            <p className="text-xs text-muted-foreground font-mono">{progress}%</p>
           </div>
         ) : (
           <FileUploadZone onFilesSelected={handleFiles} />
