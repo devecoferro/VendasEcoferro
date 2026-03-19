@@ -66,44 +66,55 @@ function extractProductLine(block: string): string | null {
  * Handles concatenated formats like "Luiz FelypheFELYPHELUI…"
  */
 function extractCustomer(block: string): { name: string; nickname: string; confidence: "high" | "medium" | "low" | "empty" } {
-  // Try to isolate the buyer zone
+  // Try to isolate the buyer zone between reputation text and "Iniciar conversa"
   let buyerZone = "";
 
   const reputacaoMatch = block.match(/(?:N[ãa]o\s+afeta\s+sua\s+reputa[çc][ãa]o|reputação)\s*(.*?)(?:Iniciar\s+conversa)/is);
   if (reputacaoMatch) {
     buyerZone = reputacaoMatch[1].trim();
-  } else {
-    // Fallback: look for the name+nickname pattern followed by "Iniciar conversa"
-    const fallback = block.match(/([A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+){0,4}[A-Z][A-Z0-9._…]{2,})\s*(?:Iniciar\s+conversa)/);
-    if (fallback) buyerZone = fallback[1].trim();
   }
 
   if (!buyerZone) {
     return { name: "", nickname: "", confidence: "empty" };
   }
 
-  // The buyer zone may look like:
-  // "Luiz FelypheFELYPHELUI…"
-  // "FRANCISCO JE… JEORGEVALI…"
-  // "Fabricio Matos N…FABRICIOMA…"
-  // Strategy: find where the uppercase/alphanumeric nickname starts
-  // The nickname is a sequence of uppercase letters/digits (possibly with dots/underscores) ending with optional "…"
+  // Real patterns from ML PDFs:
+  // "Luiz FelypheFELYPHELUI…"  → name="Luiz Felyphe", nick="FELYPHELUI"
+  // "João HenriqueHJ202501311…" → name="João Henrique", nick="HJ202501311"
+  // "Iranildo AraujoMATOSIRANI…" → name="Iranildo Araujo", nick="MATOSIRATI"
+  // "Fabricio Matos N…FABRICIOMA…" → name="Fabricio Matos N", nick="FABRICIOMA"
+  // "FRANCISCO JE…JEORGEVALI…" → name="FRANCISCO JE", nick="JEORGEVALI"
+  // "Ruderson Belar… RUDERSONB…" → name="Ruderson Belar", nick="RUDERSONB"
 
-  // Try to match: human name part + nickname part
-  const nameNickMatch = buyerZone.match(
-    /^((?:[A-ZÀ-Ú][a-zà-ú]+\s*)+?)([A-Z][A-Z0-9._]{2,}[…]?)$/
-  );
-  if (nameNickMatch) {
+  // Strategy: find the last uppercase-only sequence (3+ chars) possibly ending with …
+  // That's the nickname. Everything before it is the name.
+  
+  // Handle patterns with "…" separating name from nick, possibly with space
+  const splitByEllipsis = buyerZone.match(/^(.+?)\s*…\s*([A-Z][A-Z0-9._]{2,})…?\s*$/);
+  if (splitByEllipsis) {
     return {
-      name: nameNickMatch[1].trim(),
-      nickname: nameNickMatch[2].replace(/…$/, "").trim(),
+      name: splitByEllipsis[1].replace(/…/g, "").trim(),
+      nickname: splitByEllipsis[2].replace(/…/g, "").trim(),
       confidence: "high",
     };
   }
 
-  // Handle all-caps names like "FRANCISCO JE… JEORGEVALI…"
+  // Handle concatenated: "Luiz FelypheFELYPHELUI…" — find where uppercase block starts
+  // Look for transition from lowercase/mixed to ALL-UPPERCASE sequence
+  const concatMatch = buyerZone.match(
+    /^((?:[A-ZÀ-Ú][a-zà-ú]+\s*)+?)([A-Z][A-Z0-9._]{2,}[…]?)$/
+  );
+  if (concatMatch) {
+    return {
+      name: concatMatch[1].trim(),
+      nickname: concatMatch[2].replace(/…$/, "").trim(),
+      confidence: "high",
+    };
+  }
+
+  // Handle all-caps names: "FRANCISCO JE…JEORGEVALI…"
   const allCapsMatch = buyerZone.match(
-    /^([A-ZÀ-Ú][A-ZÀ-Ú\s.…]+?)\s+([A-Z][A-Z0-9._]{2,}[…]?)$/
+    /^([A-ZÀ-Ú][A-ZÀ-Ú\s.…]+?)\s*([A-Z][A-Z0-9._]{2,}[…]?)$/
   );
   if (allCapsMatch) {
     return {
