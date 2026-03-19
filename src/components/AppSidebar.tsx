@@ -8,6 +8,7 @@ const navItems = [
   { to: "/upload", icon: Upload, label: "Importação" },
   { to: "/review", icon: ClipboardCheck, label: "Conferência" },
   { to: "/history", icon: History, label: "Histórico" },
+  { to: "/mercado-livre", icon: ShoppingCart, label: "Mercado Livre" },
 ];
 
 export function AppSidebar() {

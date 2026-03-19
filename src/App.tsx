@@ -26,6 +26,8 @@ const App = () => (
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/mercado-livre" element={<MercadoLivrePage />} />
+            <Route path="/ml-callback" element={<MLCallbackPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </ExtractionProvider>
