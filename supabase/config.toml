@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.ml-disconnect]
 verify_jwt = false
+
+[functions.ml-notifications]
+verify_jwt = false
