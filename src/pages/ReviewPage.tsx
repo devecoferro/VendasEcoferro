@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { exportSalePdf, exportBatchPdf } from "@/services/pdfExportService";
 
 export default function ReviewPage() {
+  const [exporting, setExporting] = useState(false);
   const { results } = useExtraction();
 
   // Use extracted data if available, otherwise fallback to mock
