@@ -21,6 +21,9 @@ const RIGHT_W = 36;
 const CENTER_W = CARD_W - LEFT_W - RIGHT_W;
 
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
+  if (!url) return null;
+  // Already a data URL (base64 from PDF extraction)
+  if (url.startsWith("data:")) return url;
   try {
     const res = await fetch(url, { mode: "cors" });
     const blob = await res.blob();

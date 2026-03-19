@@ -2,6 +2,7 @@ import { SaleData } from "@/types/sales";
 import { parsePdfText, pdfHasText } from "./pdfParser";
 import { runOCR } from "./ocrService";
 import { extractSaleFields, extractMultipleSales } from "./extractSaleFields";
+import { extractImagesFromPdf } from "./pdfImageExtractor";
 
 export interface ProcessingResult {
   sale: SaleData;
@@ -23,29 +24,41 @@ export async function processFile(
 
   let rawText = "";
   let method: "pdf-text" | "ocr" = "ocr";
+  let extractedImages: string[] = [];
 
   if (isPdf) {
     onProgress?.("Analisando PDF...", 10);
     const hasText = await pdfHasText(file);
 
+    // Extract images in parallel with text extraction
+    const imagePromise = extractImagesFromPdf(file).catch(() => [] as string[]);
+
     if (hasText) {
       onProgress?.("Extraindo texto do PDF...", 30);
       rawText = await parsePdfText(file);
       method = "pdf-text";
-      onProgress?.("Texto extraído com sucesso", 70);
+      onProgress?.("Texto extraído com sucesso", 60);
     } else {
       onProgress?.("PDF escaneado detectado. Iniciando OCR...", 30);
       rawText = await runOCR(file, (p) => {
-        onProgress?.("Executando OCR...", 30 + p * 0.4);
+        onProgress?.("Executando OCR...", 30 + p * 0.3);
       });
       method = "ocr";
     }
+
+    onProgress?.("Extraindo imagens do PDF...", 75);
+    extractedImages = await imagePromise;
+    onProgress?.("Imagens extraídas", 80);
   } else if (isImage) {
     onProgress?.("Iniciando OCR na imagem...", 20);
     rawText = await runOCR(file, (p) => {
       onProgress?.("Executando OCR...", 20 + p * 0.6);
     });
     method = "ocr";
+
+    // For image files, use the file itself as the product image
+    const dataUrl = await fileToDataUrl(file);
+    if (dataUrl) extractedImages = [dataUrl];
   } else {
     throw new Error(`Tipo de arquivo não suportado: ${file.type}`);
   }
@@ -57,12 +70,33 @@ export async function processFile(
 
   onProgress?.("Processamento concluído", 100);
 
-  return extractions.map((ext) => ({
-    sale: ext.sale,
-    rawText: ext.rawText,
-    confidence: ext.confidence,
-    method,
-  }));
+  // Associate extracted images with sales
+  // Strategy: distribute images across sales in order, skipping very small/decorative ones
+  // Product images in ML PDFs typically appear once per sale block
+  return extractions.map((ext, index) => {
+    const imageForSale = extractedImages[index] || "";
+    return {
+      sale: {
+        ...ext.sale,
+        productImageUrl: ext.sale.productImageUrl || imageForSale,
+      },
+      rawText: ext.rawText,
+      confidence: ext.confidence,
+      method,
+    };
+  });
+}
+
+/**
+ * Convert a File to a base64 data URL
+ */
+function fileToDataUrl(file: File): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
 /**
