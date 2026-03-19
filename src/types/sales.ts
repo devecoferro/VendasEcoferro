@@ -12,6 +12,7 @@ export interface SaleData {
   barcodeValue: string;
   qrcodeValue: string;
   productImageUrl: string;
+  productImageData?: string;
 }
 
 export interface DocumentRecord {

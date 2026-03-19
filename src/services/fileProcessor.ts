@@ -2,7 +2,7 @@ import { SaleData } from "@/types/sales";
 import { parsePdfText, pdfHasText } from "./pdfParser";
 import { runOCR } from "./ocrService";
 import { extractMultipleSales } from "./extractSaleFields";
-import { extractImagesFromPdf, associateImagesWith } from "./pdfImageExtractor";
+import { extractProductImagesFromPdf } from "./pdfImageExtractor";
 
 export interface ProcessingResult {
   sale: SaleData;
@@ -30,51 +30,52 @@ export async function processFile(
     onProgress?.("Analisando PDF...", 10);
     const hasText = await pdfHasText(file);
 
-    // Extract images in parallel with text extraction
-    const imagePromise = extractImagesFromPdf(file).catch(() => []);
-
     if (hasText) {
       onProgress?.("Extraindo texto do PDF...", 30);
       rawText = await parsePdfText(file);
       method = "pdf-text";
-      onProgress?.("Texto extraído com sucesso", 60);
+      onProgress?.("Texto extraído com sucesso", 55);
     } else {
       onProgress?.("PDF escaneado detectado. Iniciando OCR...", 30);
       rawText = await runOCR(file, (p) => {
-        onProgress?.("Executando OCR...", 30 + p * 0.3);
+        onProgress?.("Executando OCR...", 30 + p * 0.25);
       });
       method = "ocr";
     }
 
-    onProgress?.("Extraindo imagens do PDF...", 75);
-    const extractedImages = await imagePromise;
-
-    // Extract sales first to know the count, then associate images
-    onProgress?.("Extraindo campos da venda...", 85);
+    onProgress?.("Extraindo campos da venda...", 70);
     const extractions = extractMultipleSales(rawText);
 
-    // Associate images with sales using vertical position
-    productImages = associateImagesWith(extractedImages, extractions.length);
+    onProgress?.("Renderizando PDF e recortando imagens...", 82);
+    productImages = await extractProductImagesFromPdf(
+      file,
+      extractions.map((extraction) => ({ saleNumber: extraction.sale.saleNumber }))
+    ).catch(() => []);
 
     onProgress?.("Processamento concluído", 100);
 
-    return extractions.map((ext, index) => ({
-      sale: {
-        ...ext.sale,
-        productImageUrl: ext.sale.productImageUrl || productImages[index] || "",
-      },
-      rawText: ext.rawText,
-      confidence: ext.confidence,
-      method,
-    }));
-  } else if (isImage) {
+    return extractions.map((ext, index) => {
+      const productImageData = productImages[index] || "";
+      return {
+        sale: {
+          ...ext.sale,
+          productImageData,
+          productImageUrl: productImageData || ext.sale.productImageUrl || "",
+        },
+        rawText: ext.rawText,
+        confidence: ext.confidence,
+        method,
+      };
+    });
+  }
+
+  if (isImage) {
     onProgress?.("Iniciando OCR na imagem...", 20);
     rawText = await runOCR(file, (p) => {
       onProgress?.("Executando OCR...", 20 + p * 0.6);
     });
     method = "ocr";
 
-    // For image files, use the file itself as the product image
     const dataUrl = await fileToDataUrl(file);
     productImages = dataUrl ? [dataUrl] : [];
   } else {
@@ -85,15 +86,19 @@ export async function processFile(
   const extractions = extractMultipleSales(rawText);
   onProgress?.("Processamento concluído", 100);
 
-  return extractions.map((ext, index) => ({
-    sale: {
-      ...ext.sale,
-      productImageUrl: ext.sale.productImageUrl || productImages[index] || "",
-    },
-    rawText: ext.rawText,
-    confidence: ext.confidence,
-    method,
-  }));
+  return extractions.map((ext, index) => {
+    const productImageData = productImages[index] || "";
+    return {
+      sale: {
+        ...ext.sale,
+        productImageData,
+        productImageUrl: productImageData || ext.sale.productImageUrl || "",
+      },
+      rawText: ext.rawText,
+      confidence: ext.confidence,
+      method,
+    };
+  });
 }
 
 function fileToDataUrl(file: File): Promise<string | null> {

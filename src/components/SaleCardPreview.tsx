@@ -6,20 +6,30 @@ interface SaleCardPreviewProps {
 }
 
 export function SaleCardPreview({ sale }: SaleCardPreviewProps) {
+  const productImageSrc = sale.productImageData || sale.productImageUrl;
+
   return (
     <div className="glass-card p-0 overflow-hidden animate-fade-in">
       <div className="flex flex-col sm:flex-row">
         {/* Product image */}
         <div className="sm:w-36 h-36 bg-secondary flex items-center justify-center p-4 flex-shrink-0">
-          <div className="w-24 h-24 rounded-xl overflow-hidden border-2 border-border shadow-sm">
-            <img
-              src={sale.productImageUrl}
-              alt={sale.productName}
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                (e.target as HTMLImageElement).src = "/placeholder.svg";
-              }}
-            />
+          <div className="w-24 h-24 rounded-xl overflow-hidden border-2 border-border shadow-sm bg-card">
+            {productImageSrc ? (
+              <img
+                src={productImageSrc}
+                alt={sale.productName}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = "/placeholder.svg";
+                }}
+              />
+            ) : (
+              <img
+                src="/placeholder.svg"
+                alt="Sem imagem disponível"
+                className="w-full h-full object-cover"
+              />
+            )}
           </div>
         </div>
 

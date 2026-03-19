@@ -302,6 +302,7 @@ export function extractSaleFields(rawText: string): ExtractionResult {
     barcodeValue,
     qrcodeValue,
     productImageUrl: "",
+    productImageData: "",
   };
 
   return { sale, rawText, confidence };

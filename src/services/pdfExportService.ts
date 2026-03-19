@@ -22,8 +22,8 @@ const CENTER_W = CARD_W - LEFT_W - RIGHT_W;
 
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (!url) return null;
-  // Already a data URL (base64 from PDF extraction)
   if (url.startsWith("data:")) return url;
+
   try {
     const res = await fetch(url, { mode: "cors" });
     const blob = await res.blob();
@@ -36,6 +36,12 @@ async function loadImageAsDataUrl(url: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {
+  if (dataUrl.startsWith("data:image/png")) return "PNG";
+  if (dataUrl.startsWith("data:image/webp")) return "WEBP";
+  return "JPEG";
 }
 
 function generateBarcodeDataUrl(value: string): string | null {
@@ -74,7 +80,6 @@ function drawPlaceholder(doc: jsPDF, x: number, y: number, w: number, h: number)
 }
 
 async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) {
-  // Card border
   doc.setDrawColor(190, 190, 200);
   doc.setLineWidth(0.25);
   doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
@@ -82,20 +87,21 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
   const pad = 3;
   const innerH = CARD_H - pad * 2;
 
-  // --- LEFT: product image ---
   const imgPad = 3;
   const imgSize = Math.min(LEFT_W - imgPad * 2, innerH - 4);
   const imgX = x0 + imgPad;
   const imgY = y0 + pad + (innerH - imgSize) / 2;
 
-  const imgData = sale.productImageUrl ? await loadImageAsDataUrl(sale.productImageUrl) : null;
+  const imageSource = sale.productImageData || sale.productImageUrl;
+  const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
 
   if (imgData) {
     doc.setDrawColor(180, 180, 195);
     doc.setLineWidth(0.4);
     doc.roundedRect(imgX - 0.5, imgY - 0.5, imgSize + 1, imgSize + 1, 1.5, 1.5, "S");
+
     try {
-      doc.addImage(imgData, "JPEG", imgX, imgY, imgSize, imgSize);
+      doc.addImage(imgData, getImageFormat(imgData), imgX, imgY, imgSize, imgSize);
     } catch {
       drawPlaceholder(doc, imgX, imgY, imgSize, imgSize);
     }
