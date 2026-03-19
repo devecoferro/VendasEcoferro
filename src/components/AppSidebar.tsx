@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Upload, ClipboardCheck, History, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { LayoutDashboard, Upload, ClipboardCheck, History, FileText, ChevronLeft, ChevronRight, ShoppingCart } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 
@@ -8,6 +8,7 @@ const navItems = [
   { to: "/upload", icon: Upload, label: "Importação" },
   { to: "/review", icon: ClipboardCheck, label: "Conferência" },
   { to: "/history", icon: History, label: "Histórico" },
+  { to: "/mercado-livre", icon: ShoppingCart, label: "Mercado Livre" },
 ];
 
 export function AppSidebar() {

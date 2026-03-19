@@ -8,6 +8,8 @@ import DashboardPage from "./pages/DashboardPage";
 import UploadPage from "./pages/UploadPage";
 import ReviewPage from "./pages/ReviewPage";
 import HistoryPage from "./pages/HistoryPage";
+import MercadoLivrePage from "./pages/MercadoLivrePage";
+import MLCallbackPage from "./pages/MLCallbackPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +26,8 @@ const App = () => (
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/mercado-livre" element={<MercadoLivrePage />} />
+            <Route path="/ml-callback" element={<MLCallbackPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </ExtractionProvider>

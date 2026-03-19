@@ -1,1 +1,10 @@
 project_id = "fcwsmxzwgqabzyxoavto"
+
+[functions.ml-auth]
+verify_jwt = false
+
+[functions.ml-sync-orders]
+verify_jwt = false
+
+[functions.ml-disconnect]
+verify_jwt = false
