@@ -6,9 +6,10 @@ import { useExtraction } from "@/contexts/ExtractionContext";
 import { mockSales } from "@/data/mockData";
 import { SaleData } from "@/types/sales";
 import { Button } from "@/components/ui/button";
-import { Eye, Download, ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, Info } from "lucide-react";
+import { Eye, Download, ChevronLeft, ChevronRight, CheckCircle, AlertTriangle, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { exportSalePdf, exportBatchPdf } from "@/services/pdfExportService";
 
 export default function ReviewPage() {
   const { results } = useExtraction();
