@@ -148,6 +148,7 @@ export default function MercadoLivrePage() {
     delivered: "default",
     cancelled: "destructive",
   };
+  const missingImageCount = orders.filter((order) => !order.product_image_url).length;
 
   if (loading) {
     return (
@@ -327,6 +328,19 @@ export default function MercadoLivrePage() {
                 )}
               </div>
 
+              {orders.length > 0 && missingImageCount > 0 && (
+                <div className="mb-4 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">
+                  <p className="font-medium">
+                    {missingImageCount} pedido(s) ainda sem foto do produto.
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    Para puxar a imagem direto do item do Mercado Livre, habilite no app do
+                    Mercado Livre a permissao "Publicacao e sincronizacao" em modo "Leitura",
+                    reconecte a conta e sincronize novamente.
+                  </p>
+                </div>
+              )}
+
               {orders.length === 0 ? (
                 <div className="text-center py-8">
                   <ShoppingCart className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
@@ -341,24 +355,40 @@ export default function MercadoLivrePage() {
                       key={order.id}
                       className="flex items-center justify-between gap-4 p-3 rounded-lg bg-secondary/50 hover:bg-secondary transition-colors"
                     >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-foreground">#{order.sale_number}</p>
-                          <Badge
-                            variant={(statusColors[order.order_status || ""] as "default" | "secondary" | "destructive" | "outline") || "outline"}
-                            className="text-[10px]"
-                          >
-                            {order.order_status || "-"}
-                          </Badge>
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border bg-white">
+                          {order.product_image_url ? (
+                            <img
+                              src={order.product_image_url}
+                              alt={order.item_title || "Produto"}
+                              className="h-full w-full object-contain"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground">
+                              Sem foto
+                            </div>
+                          )}
                         </div>
-                        <p className="text-xs text-muted-foreground truncate mt-0.5">
-                          {order.item_title || "Sem titulo"}
-                        </p>
-                        <div className="flex gap-3 mt-1 text-xs text-muted-foreground flex-wrap">
-                          <span>{order.buyer_name || order.buyer_nickname || "-"}</span>
-                          <span>{new Date(order.sale_date).toLocaleDateString("pt-BR")}</span>
-                          {order.sku && <span className="font-mono">{order.sku}</span>}
-                          <span>Qtd: {order.quantity}</span>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-foreground">#{order.sale_number}</p>
+                            <Badge
+                              variant={(statusColors[order.order_status || ""] as "default" | "secondary" | "destructive" | "outline") || "outline"}
+                              className="text-[10px]"
+                            >
+                              {order.order_status || "-"}
+                            </Badge>
+                          </div>
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {order.item_title || "Sem titulo"}
+                          </p>
+                          <div className="mt-1 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                            <span>{order.buyer_name || order.buyer_nickname || "-"}</span>
+                            <span>{new Date(order.sale_date).toLocaleDateString("pt-BR")}</span>
+                            {order.sku && <span className="font-mono">{order.sku}</span>}
+                            <span>Qtd: {order.quantity}</span>
+                          </div>
                         </div>
                       </div>
 

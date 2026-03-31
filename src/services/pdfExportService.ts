@@ -3,7 +3,6 @@ import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
 import { SaleData } from "@/types/sales";
 
-// A4 portrait dimensions in mm
 const PAGE_W = 210;
 const PAGE_H = 297;
 const MARGIN_X = 8;
@@ -16,8 +15,8 @@ const USABLE_H = PAGE_H - MARGIN_Y * 2;
 const CARD_H = Math.floor((USABLE_H - GAP * (CARDS_PER_PAGE - 1)) / CARDS_PER_PAGE);
 const CARD_W = USABLE_W;
 
-const LEFT_W = 38;
-const RIGHT_W = 36;
+const LEFT_W = 40;
+const RIGHT_W = 40;
 const CENTER_W = CARD_W - LEFT_W - RIGHT_W;
 
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
@@ -25,8 +24,9 @@ async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (url.startsWith("data:")) return url;
 
   try {
-    const res = await fetch(url, { mode: "cors" });
-    const blob = await res.blob();
+    const response = await fetch(url, { mode: "cors" });
+    const blob = await response.blob();
+
     return await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
@@ -46,15 +46,17 @@ function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {
 
 function generateBarcodeDataUrl(value: string): string | null {
   if (!value) return null;
+
   try {
     const canvas = document.createElement("canvas");
     JsBarcode(canvas, value, {
       format: "CODE128",
       width: 1.2,
       height: 28,
-      displayValue: true,
-      fontSize: 8,
+      displayValue: false,
       margin: 1,
+      background: "#ffffff",
+      lineColor: "#111827",
     });
     return canvas.toDataURL("image/png");
   } catch {
@@ -64,8 +66,13 @@ function generateBarcodeDataUrl(value: string): string | null {
 
 async function generateQRCodeDataUrl(value: string): Promise<string | null> {
   if (!value) return null;
+
   try {
-    return await QRCode.toDataURL(value, { width: 100, margin: 1 });
+    return await QRCode.toDataURL(value, {
+      width: 120,
+      margin: 1,
+      color: { dark: "#111827", light: "#FFFFFF" },
+    });
   } catch {
     return null;
   }
@@ -79,121 +86,165 @@ function drawPlaceholder(doc: jsPDF, x: number, y: number, w: number, h: number)
   doc.text("Sem imagem", x + w / 2, y + h / 2 + 1, { align: "center" });
 }
 
+function drawContainedImage(
+  doc: jsPDF,
+  imageData: string,
+  x: number,
+  y: number,
+  boxW: number,
+  boxH: number
+) {
+  const imageProps = doc.getImageProperties(imageData);
+  const scale = Math.min(boxW / imageProps.width, boxH / imageProps.height);
+  const drawW = imageProps.width * scale;
+  const drawH = imageProps.height * scale;
+  const offsetX = x + (boxW - drawW) / 2;
+  const offsetY = y + (boxH - drawH) / 2;
+
+  doc.addImage(imageData, getImageFormat(imageData), offsetX, offsetY, drawW, drawH);
+}
+
 async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) {
-  doc.setDrawColor(190, 190, 200);
+  doc.setDrawColor(185, 185, 195);
   doc.setLineWidth(0.25);
-  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
+  doc.roundedRect(x0, y0, CARD_W, CARD_H, 1.6, 1.6, "S");
 
   const pad = 3;
   const innerH = CARD_H - pad * 2;
 
-  const imgPad = 3;
-  const imgSize = Math.min(LEFT_W - imgPad * 2, innerH - 4);
-  const imgX = x0 + imgPad;
-  const imgY = y0 + pad + (innerH - imgSize) / 2;
+  const imgBoxSize = Math.min(LEFT_W - 10, innerH - 4);
+  const imgX = x0 + 5;
+  const imgY = y0 + pad + (innerH - imgBoxSize) / 2;
+  const imgCenterX = imgX + imgBoxSize / 2;
+  const imgCenterY = imgY + imgBoxSize / 2;
+  const imgRadius = imgBoxSize / 2;
 
   const imageSource = sale.productImageData || sale.productImageUrl;
   const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
 
-  if (imgData) {
-    doc.setDrawColor(180, 180, 195);
-    doc.setLineWidth(0.4);
-    doc.roundedRect(imgX - 0.5, imgY - 0.5, imgSize + 1, imgSize + 1, 1.5, 1.5, "S");
+  doc.setFillColor(255, 255, 255);
+  doc.circle(imgCenterX, imgCenterY, imgRadius + 0.6, "F");
+  doc.setDrawColor(224, 227, 232);
+  doc.setLineWidth(0.6);
+  doc.circle(imgCenterX, imgCenterY, imgRadius + 0.6, "S");
 
+  if (imgData) {
     try {
-      doc.addImage(imgData, getImageFormat(imgData), imgX, imgY, imgSize, imgSize);
+      drawContainedImage(doc, imgData, imgX + 2, imgY + 2, imgBoxSize - 4, imgBoxSize - 4);
     } catch {
-      drawPlaceholder(doc, imgX, imgY, imgSize, imgSize);
+      drawPlaceholder(doc, imgX, imgY, imgBoxSize, imgBoxSize);
     }
   } else {
-    drawPlaceholder(doc, imgX, imgY, imgSize, imgSize);
+    drawPlaceholder(doc, imgX, imgY, imgBoxSize, imgBoxSize);
   }
 
-  // --- CENTER ---
-  const cx = x0 + LEFT_W + 2;
-  let cy = y0 + pad + 1;
-  const maxTextW = CENTER_W - 6;
+  const cx = x0 + LEFT_W + 2.5;
+  let cy = y0 + pad + 0.5;
+  const maxTextW = CENTER_W - 6.5;
 
-  // SKU badge
-  doc.setFillColor(230, 235, 255);
-  doc.roundedRect(cx, cy, 24, 5, 1, 1, "F");
-  doc.setFontSize(6);
+  doc.setFillColor(232, 237, 250);
+  doc.roundedRect(cx, cy, 30, 5.5, 1.2, 1.2, "F");
+  doc.setFontSize(6.5);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(60, 80, 180);
-  doc.text(sale.sku || "—", cx + 12, cy + 3.5, { align: "center" });
+  doc.text(`SKU: ${sale.sku || "-"}`, cx + 15, cy + 3.7, { align: "center" });
 
   doc.setFontSize(6);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(120, 120, 130);
-  doc.text(`Qtd: ${sale.quantity}`, cx + 27, cy + 3.5);
+  doc.text(`${sale.quantity} unidade${sale.quantity !== 1 ? "s" : ""}`, cx + 33, cy + 3.7);
+  cy += 8.5;
 
-  cy += 7;
-
-  // Product name (max 2 lines)
-  doc.setFontSize(7.5);
+  doc.setFontSize(8.5);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(30, 30, 40);
-  const productLines = doc.splitTextToSize(sale.productName || "—", maxTextW);
+  const productLines = doc.splitTextToSize(sale.productName || "-", maxTextW);
   doc.text(productLines.slice(0, 2), cx, cy);
-  cy += Math.min(productLines.length, 2) * 3.5 + 2;
+  cy += Math.min(productLines.length, 2) * 3.9 + 1.5;
 
-  // Info rows
-  doc.setFontSize(6);
+  doc.setFontSize(6.2);
   doc.setFont("helvetica", "normal");
-  doc.setTextColor(90, 90, 100);
+  doc.setTextColor(110, 110, 120);
+  doc.text(`#${sale.saleNumber || "-"}`, cx, cy, { maxWidth: maxTextW });
+  cy += 3.6;
+  doc.text(`${sale.saleDate || "-"} ${sale.saleTime || ""}`.trim(), cx, cy, {
+    maxWidth: maxTextW,
+  });
+  cy += 5;
 
-  const col2x = cx + maxTextW / 2;
-  const rows = [
-    [`# ${sale.saleNumber || "—"}`, `${sale.saleDate || "—"} ${sale.saleTime || ""}`],
-    [sale.customerName || "—", sale.customerNickname || "—"],
-  ];
+  doc.setFontSize(9.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(45, 45, 55);
+  doc.text(sale.customerName || "-", cx, cy, { maxWidth: maxTextW * 0.6 });
 
-  for (const [left, right] of rows) {
-    doc.text(left, cx, cy, { maxWidth: maxTextW / 2 - 1 });
-    doc.text(right, col2x, cy, { maxWidth: maxTextW / 2 - 1 });
-    cy += 4;
-  }
+  doc.setFontSize(8.7);
+  doc.setTextColor(120, 120, 130);
+  doc.text(sale.customerNickname || "-", cx + maxTextW * 0.62, cy, {
+    maxWidth: maxTextW * 0.38,
+  });
 
-  // Amount removed from PDF output per business rule
-
-  // --- RIGHT: barcode + QR ---
-  const rx = x0 + LEFT_W + CENTER_W + 1;
-
-  // Separator
+  const rx = x0 + LEFT_W + CENTER_W + 2;
   doc.setDrawColor(215, 215, 225);
   doc.setLineWidth(0.15);
   doc.line(rx - 2, y0 + pad, rx - 2, y0 + CARD_H - pad);
 
   let ry = y0 + pad + 1;
-  const codeW = RIGHT_W - 6;
+  const codeW = RIGHT_W - 8;
 
-  // Barcode
   const barcodeData = generateBarcodeDataUrl(sale.barcodeValue);
+  doc.setFontSize(5.4);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(120, 120, 130);
+  doc.text("Codigo de barras", rx + codeW / 2, ry + 1, { align: "center" });
+  ry += 2.8;
+
   if (barcodeData) {
     try {
-      doc.addImage(barcodeData, "PNG", rx, ry, codeW, 16);
-    } catch { /* skip */ }
+      doc.addImage(barcodeData, "PNG", rx, ry, codeW, 14);
+    } catch {
+      doc.setFontSize(5);
+      doc.setTextColor(170, 170, 180);
+      doc.text("Sem barcode", rx + codeW / 2, ry + 7, { align: "center" });
+    }
   } else {
     doc.setFontSize(5);
     doc.setTextColor(170, 170, 180);
-    doc.text("Sem barcode", rx + codeW / 2, ry + 8, { align: "center" });
+    doc.text("Sem barcode", rx + codeW / 2, ry + 7, { align: "center" });
   }
 
-  ry += 18;
+  ry += 15;
+  doc.setFontSize(5.2);
+  doc.setTextColor(120, 120, 130);
+  doc.text(sale.barcodeValue || "-", rx + codeW / 2, ry, { align: "center" });
+  ry += 4.5;
 
-  // QR Code
   const qrData = await generateQRCodeDataUrl(sale.qrcodeValue);
-  const qrSize = Math.min(innerH - 22, 22);
+  doc.setFontSize(5.4);
+  doc.setTextColor(120, 120, 130);
+  doc.text("QR code", rx + codeW / 2, ry, { align: "center" });
+  ry += 2.4;
+
+  const qrSize = Math.min(innerH - 24, 18);
   if (qrData) {
     const qrX = rx + (codeW - qrSize) / 2;
     try {
       doc.addImage(qrData, "PNG", qrX, ry, qrSize, qrSize);
-    } catch { /* skip */ }
+    } catch {
+      doc.setFontSize(5);
+      doc.setTextColor(170, 170, 180);
+      doc.text("Sem QR", rx + codeW / 2, ry + qrSize / 2, { align: "center" });
+    }
   } else {
     doc.setFontSize(5);
     doc.setTextColor(170, 170, 180);
     doc.text("Sem QR", rx + codeW / 2, ry + qrSize / 2, { align: "center" });
   }
+
+  doc.setFontSize(5.2);
+  doc.setTextColor(120, 120, 130);
+  doc.text(sale.qrcodeValue || "-", rx + codeW / 2, ry + qrSize + 2.8, {
+    align: "center",
+  });
 }
 
 function getFileName(sale: SaleData): string {
@@ -214,16 +265,16 @@ export async function exportSalePdf(sale: SaleData): Promise<void> {
 export async function exportBatchPdf(sales: SaleData[]): Promise<void> {
   const doc = createA4Doc();
 
-  for (let i = 0; i < sales.length; i++) {
-    const pageIndex = Math.floor(i / CARDS_PER_PAGE);
-    const posInPage = i % CARDS_PER_PAGE;
+  for (let index = 0; index < sales.length; index += 1) {
+    const pageIndex = Math.floor(index / CARDS_PER_PAGE);
+    const posInPage = index % CARDS_PER_PAGE;
 
     if (pageIndex > 0 && posInPage === 0) {
       doc.addPage();
     }
 
     const offsetY = MARGIN_Y + posInPage * (CARD_H + GAP);
-    await drawSaleCard(doc, sales[i], MARGIN_X, offsetY);
+    await drawSaleCard(doc, sales[index], MARGIN_X, offsetY);
   }
 
   const today = new Date().toISOString().slice(0, 10);
