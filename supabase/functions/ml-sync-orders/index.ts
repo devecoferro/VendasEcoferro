@@ -44,10 +44,10 @@ async function getItemImageUrl(
   }
 }
 
-async function getShipmentReceiverName(
+async function getShipmentSnapshot(
   accessToken: string,
   shippingId: string | null | undefined,
-  cache: Map<string, string | null>
+  cache: Map<string, Record<string, unknown> | null>
 ) {
   if (!shippingId) return null;
   if (cache.has(shippingId)) return cache.get(shippingId) ?? null;
@@ -63,13 +63,36 @@ async function getShipmentReceiverName(
     }
 
     const shippingData = await shippingRes.json();
-    const receiverName =
-      shippingData?.receiver_address?.receiver_name ||
-      shippingData?.receiver_name ||
-      null;
+    const snapshot = {
+      id: shippingData?.id ?? null,
+      status: shippingData?.status ?? null,
+      substatus: shippingData?.substatus ?? null,
+      logistic_type: shippingData?.logistic_type ?? null,
+      mode: shippingData?.mode ?? null,
+      receiver_name:
+        shippingData?.receiver_address?.receiver_name ||
+        shippingData?.receiver_name ||
+        null,
+      status_history: {
+        date_handling: shippingData?.status_history?.date_handling ?? null,
+        date_ready_to_ship: shippingData?.status_history?.date_ready_to_ship ?? null,
+        date_shipped: shippingData?.status_history?.date_shipped ?? null,
+        date_delivered: shippingData?.status_history?.date_delivered ?? null,
+        date_cancelled: shippingData?.status_history?.date_cancelled ?? null,
+        date_returned: shippingData?.status_history?.date_returned ?? null,
+        date_not_delivered: shippingData?.status_history?.date_not_delivered ?? null,
+      },
+      shipping_option: {
+        name: shippingData?.shipping_option?.name ?? null,
+        estimated_delivery_limit:
+          shippingData?.shipping_option?.estimated_delivery_limit?.date ?? null,
+        estimated_delivery_final:
+          shippingData?.shipping_option?.estimated_delivery_final?.date ?? null,
+      },
+    };
 
-    cache.set(shippingId, receiverName);
-    return receiverName;
+    cache.set(shippingId, snapshot);
+    return snapshot;
   } catch {
     cache.set(shippingId, null);
     return null;
@@ -170,7 +193,7 @@ Deno.serve(async (req) => {
     const ordersData = await ordersRes.json();
     const orders = ordersData.results || [];
     const itemImageCache = new Map<string, string | null>();
-    const shipmentReceiverCache = new Map<string, string | null>();
+    const shipmentSnapshotCache = new Map<string, Record<string, unknown> | null>();
 
     // Map and upsert orders
     let synced = 0;
@@ -180,11 +203,15 @@ Deno.serve(async (req) => {
       const itemId = item.item?.id || null;
       const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
       const productImageUrl = await getItemImageUrl(accessToken, itemId, itemImageCache);
-      const shipmentReceiverName = await getShipmentReceiverName(
+      const shipmentSnapshot = await getShipmentSnapshot(
         accessToken,
         shippingId,
-        shipmentReceiverCache
+        shipmentSnapshotCache
       );
+      const shipmentReceiverName =
+        typeof shipmentSnapshot?.receiver_name === "string"
+          ? shipmentSnapshot.receiver_name
+          : null;
       const buyerNameFromOrder = order.buyer?.first_name
         ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
         : null;
@@ -205,7 +232,10 @@ Deno.serve(async (req) => {
         amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
         order_status: order.status || null,
         shipping_id: shippingId,
-        raw_data: order,
+        raw_data: {
+          ...order,
+          shipment_snapshot: shipmentSnapshot,
+        },
       };
 
       const { error } = await supabase

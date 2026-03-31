@@ -28,6 +28,7 @@ export interface MLOrder {
   quantity: number;
   amount: number | null;
   order_status: string | null;
+  raw_data: Record<string, unknown> | null;
 }
 
 function padDatePart(value: number): string {
@@ -219,7 +220,7 @@ export async function disconnectML(connectionId: string): Promise<void> {
 export async function getMLOrders(): Promise<MLOrder[]> {
   const { data, error } = await supabase
     .from("ml_orders")
-    .select("id, order_id, sale_number, sale_date, buyer_name, buyer_nickname, item_title, item_id, product_image_url, sku, quantity, amount, order_status")
+    .select("id, order_id, sale_number, sale_date, buyer_name, buyer_nickname, item_title, item_id, product_image_url, sku, quantity, amount, order_status, raw_data")
     .order("sale_date", { ascending: false })
     .limit(100);
 
