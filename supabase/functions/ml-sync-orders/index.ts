@@ -44,6 +44,38 @@ async function getItemImageUrl(
   }
 }
 
+async function getShipmentReceiverName(
+  accessToken: string,
+  shippingId: string | null | undefined,
+  cache: Map<string, string | null>
+) {
+  if (!shippingId) return null;
+  if (cache.has(shippingId)) return cache.get(shippingId) ?? null;
+
+  try {
+    const shippingRes = await fetch(`https://api.mercadolibre.com/shipments/${shippingId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!shippingRes.ok) {
+      cache.set(shippingId, null);
+      return null;
+    }
+
+    const shippingData = await shippingRes.json();
+    const receiverName =
+      shippingData?.receiver_address?.receiver_name ||
+      shippingData?.receiver_name ||
+      null;
+
+    cache.set(shippingId, receiverName);
+    return receiverName;
+  } catch {
+    cache.set(shippingId, null);
+    return null;
+  }
+}
+
 async function ensureValidToken(supabase: any, connection: any, clientId: string, clientSecret: string) {
   const expiresAt = new Date(connection.token_expires_at);
   if (expiresAt > new Date(Date.now() + 60000)) {
@@ -138,6 +170,7 @@ Deno.serve(async (req) => {
     const ordersData = await ordersRes.json();
     const orders = ordersData.results || [];
     const itemImageCache = new Map<string, string | null>();
+    const shipmentReceiverCache = new Map<string, string | null>();
 
     // Map and upsert orders
     let synced = 0;
@@ -145,16 +178,24 @@ Deno.serve(async (req) => {
       const item = order.order_items?.[0];
       if (!item) continue;
       const itemId = item.item?.id || null;
+      const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
       const productImageUrl = await getItemImageUrl(accessToken, itemId, itemImageCache);
+      const shipmentReceiverName = await getShipmentReceiverName(
+        accessToken,
+        shippingId,
+        shipmentReceiverCache
+      );
+      const buyerNameFromOrder = order.buyer?.first_name
+        ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
+        : null;
+      const buyerName = shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
 
       const orderRecord = {
         connection_id: conn.id,
         order_id: String(order.id),
         sale_number: String(order.id),
         sale_date: order.date_created,
-        buyer_name: order.buyer?.first_name
-          ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
-          : null,
+        buyer_name: buyerName,
         buyer_nickname: order.buyer?.nickname || null,
         item_title: item.item?.title || null,
         item_id: itemId,
@@ -163,7 +204,7 @@ Deno.serve(async (req) => {
         quantity: item.quantity || 1,
         amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
         order_status: order.status || null,
-        shipping_id: order.shipping?.id ? String(order.shipping.id) : null,
+        shipping_id: shippingId,
         raw_data: order,
       };
 
