@@ -85,12 +85,12 @@ export function SaleCardPreview({ sale }: SaleCardPreviewProps) {
       <div className="overflow-hidden rounded-xl border border-slate-300 bg-card shadow-sm">
         <div className="flex flex-col md:flex-row">
           <div className="flex items-center justify-center border-b border-slate-200 bg-slate-50 p-5 md:w-44 md:border-b-0 md:border-r">
-            <div className="flex h-32 w-32 items-center justify-center rounded-full border-[6px] border-slate-100 bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="flex h-32 w-32 items-center justify-center bg-transparent">
               {productImageSrc ? (
                 <img
                   src={productImageSrc}
                   alt={sale.productName || "Produto"}
-                  className="h-24 w-24 object-contain"
+                  className="h-28 w-28 object-contain"
                   onError={(event) => {
                     (event.target as HTMLImageElement).style.display = "none";
                   }}

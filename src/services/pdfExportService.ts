@@ -94,22 +94,13 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
   const imgBoxSize = Math.min(LEFT_W - 10, innerH - 4);
   const imgX = x0 + 5;
   const imgY = y0 + pad + (innerH - imgBoxSize) / 2;
-  const imgCenterX = imgX + imgBoxSize / 2;
-  const imgCenterY = imgY + imgBoxSize / 2;
-  const imgRadius = imgBoxSize / 2;
 
   const imageSource = sale.productImageData || sale.productImageUrl;
   const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
 
-  doc.setFillColor(255, 255, 255);
-  doc.circle(imgCenterX, imgCenterY, imgRadius + 0.6, "F");
-  doc.setDrawColor(224, 227, 232);
-  doc.setLineWidth(0.6);
-  doc.circle(imgCenterX, imgCenterY, imgRadius + 0.6, "S");
-
   if (imgData) {
     try {
-      drawContainedImage(doc, imgData, imgX + 2, imgY + 2, imgBoxSize - 4, imgBoxSize - 4);
+      drawContainedImage(doc, imgData, imgX, imgY, imgBoxSize, imgBoxSize);
     } catch {
       drawPlaceholder(doc, imgX, imgY, imgBoxSize, imgBoxSize);
     }
