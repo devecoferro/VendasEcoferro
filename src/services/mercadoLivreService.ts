@@ -243,12 +243,12 @@ export async function disconnectML(connectionId: string): Promise<void> {
 }
 
 export async function getMLOrders(): Promise<MLOrder[]> {
-  const { data, error } = await supabase
-    .from("ml_orders")
-    .select("id, order_id, sale_number, sale_date, buyer_name, buyer_nickname, item_title, item_id, product_image_url, sku, quantity, amount, order_status, raw_data")
-    .order("sale_date", { ascending: false })
-    .limit(500);
+  const response = await fetch("/api/ml/orders?limit=500");
+  const data = await response.json().catch(() => null);
 
-  if (error) throw error;
-  return (data as MLOrder[]) ?? [];
+  if (!response.ok) {
+    throw new Error(data?.details || data?.error || "Failed to fetch ML orders");
+  }
+
+  return Array.isArray(data?.orders) ? (data.orders as MLOrder[]) : [];
 }

@@ -1,22 +1,18 @@
-const SUPABASE_URL = "https://gyaddryvtuzllcggorjc.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_USdCDZTlvuXFTOBlAvYSpQ_ne5ka8Ee";
+import {
+  SUPABASE_URL,
+  getSupabaseHeaders,
+  hasServiceRoleKey,
+} from "./_lib/server-config.js";
+
 const ML_PAGE_LIMIT = 50;
 const MAX_PAGES = 20;
-
-function getSupabaseHeaders(extra = {}) {
-  return {
-    apikey: SUPABASE_PUBLISHABLE_KEY,
-    Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-    ...extra,
-  };
-}
 
 async function getConnection(connectionId) {
   const connectionResponse = await fetch(
     `${SUPABASE_URL}/rest/v1/ml_connections?select=id,seller_id,seller_nickname,access_token,last_sync_at,token_expires_at&` +
       `id=eq.${encodeURIComponent(connectionId)}&limit=1`,
     {
-      headers: getSupabaseHeaders(),
+      headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
     }
   );
 
@@ -28,12 +24,32 @@ async function getConnection(connectionId) {
   return connections[0] ?? null;
 }
 
+export async function getConnectionBySellerId(sellerId) {
+  const connectionResponse = await fetch(
+    `${SUPABASE_URL}/rest/v1/ml_connections?select=id,seller_id,seller_nickname,access_token,last_sync_at,token_expires_at&` +
+      `seller_id=eq.${encodeURIComponent(sellerId)}&limit=1`,
+    {
+      headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
+    }
+  );
+
+  if (!connectionResponse.ok) {
+    throw new Error("Nao foi possivel carregar a conexao por vendedor.");
+  }
+
+  const connections = await connectionResponse.json();
+  return connections[0] ?? null;
+}
+
 async function primeSupabaseSync(payload) {
   try {
     await fetch(`${SUPABASE_URL}/functions/v1/ml-sync-orders`, {
       method: "POST",
       headers: getSupabaseHeaders({
-        "Content-Type": "application/json",
+        service: hasServiceRoleKey(),
+        extra: {
+          "Content-Type": "application/json",
+        },
       }),
       body: JSON.stringify(payload),
     });
@@ -278,8 +294,11 @@ async function upsertOrders(orderRecords) {
     {
       method: "POST",
       headers: getSupabaseHeaders({
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
+        service: hasServiceRoleKey(),
+        extra: {
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates,return=minimal",
+        },
       }),
       body: JSON.stringify(orderRecords),
     }
@@ -295,13 +314,170 @@ async function updateLastSync(connectionId) {
   await fetch(`${SUPABASE_URL}/rest/v1/ml_connections?id=eq.${encodeURIComponent(connectionId)}`, {
     method: "PATCH",
     headers: getSupabaseHeaders({
-      "Content-Type": "application/json",
-      Prefer: "return=minimal",
+      service: hasServiceRoleKey(),
+      extra: {
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
     }),
     body: JSON.stringify({
       last_sync_at: new Date().toISOString(),
     }),
   });
+}
+
+export async function runMercadoLivreSync({
+  connectionId,
+  dateFrom,
+  dateTo,
+  statusFilter,
+  updatedFrom,
+  pageLimit = MAX_PAGES,
+}) {
+  const initialConnection = await getConnection(connectionId);
+
+  if (!initialConnection?.seller_id) {
+    throw new Error("Connection not found");
+  }
+
+  if (isTokenExpiringSoon(initialConnection.token_expires_at)) {
+    await primeSupabaseSync({
+      connection_id: connectionId,
+      date_from: dateFrom,
+      date_to: dateTo,
+      status_filter: statusFilter,
+      updated_from: updatedFrom,
+    });
+  }
+
+  const connection = (await getConnection(connectionId)) || initialConnection;
+
+  if (!connection?.access_token || !connection?.seller_id) {
+    throw new Error("Conexao do Mercado Livre sem token valido.");
+  }
+
+  const sellerStores = await getSellerStores(connection.access_token, String(connection.seller_id));
+  const storesById = new Map();
+  const storesByNodeId = new Map();
+
+  for (const store of sellerStores) {
+    if (store?.id) storesById.set(String(store.id), store);
+    if (store?.network_node_id) storesByNodeId.set(String(store.network_node_id), store);
+  }
+
+  const itemImageCache = new Map();
+  const shipmentSnapshotCache = new Map();
+
+  let offset = 0;
+  let pageCount = 0;
+  let totalFetched = 0;
+  let totalSynced = 0;
+  let paging = null;
+
+  while (pageCount < pageLimit) {
+    const ordersUrl = buildOrdersSearchUrl({
+      sellerId: String(connection.seller_id),
+      dateFrom,
+      dateTo,
+      statusFilter,
+      updatedFrom,
+      offset,
+    });
+
+    const ordersResponse = await fetch(ordersUrl, {
+      headers: {
+        Authorization: `Bearer ${connection.access_token}`,
+      },
+    });
+
+    if (!ordersResponse.ok) {
+      const errorText = await ordersResponse.text();
+      throw new Error(`Falha ao buscar pedidos no Mercado Livre: ${errorText}`);
+    }
+
+    const ordersPayload = await ordersResponse.json();
+    const pageOrders = Array.isArray(ordersPayload.results) ? ordersPayload.results : [];
+    paging = ordersPayload.paging || paging;
+
+    if (pageOrders.length === 0) {
+      break;
+    }
+
+    const pageRecords = [];
+
+    for (const order of pageOrders) {
+      const item = order.order_items?.[0];
+      if (!item) continue;
+
+      const itemId = item.item?.id || null;
+      const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
+      const productImageUrl = await getItemImageUrl(connection.access_token, itemId, itemImageCache);
+      const shipmentSnapshot = await getShipmentSnapshot(
+        connection.access_token,
+        shippingId,
+        shipmentSnapshotCache
+      );
+      const shipmentReceiverName =
+        typeof shipmentSnapshot?.receiver_name === "string"
+          ? shipmentSnapshot.receiver_name
+          : null;
+      const buyerNameFromOrder = order.buyer?.first_name
+        ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
+        : null;
+      const buyerName =
+        shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+      const depositSnapshot = buildDepositSnapshot(
+        order,
+        shipmentSnapshot,
+        storesById,
+        storesByNodeId
+      );
+
+      pageRecords.push({
+        connection_id: connection.id,
+        order_id: String(order.id),
+        sale_number: String(order.id),
+        sale_date: order.date_created,
+        buyer_name: buyerName,
+        buyer_nickname: order.buyer?.nickname || null,
+        item_title: item.item?.title || null,
+        item_id: itemId,
+        product_image_url: productImageUrl,
+        sku: item.item?.seller_sku || null,
+        quantity: item.quantity || 1,
+        amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
+        order_status: order.status || null,
+        shipping_id: shippingId,
+        raw_data: {
+          ...order,
+          shipment_snapshot: shipmentSnapshot,
+          deposit_snapshot: depositSnapshot,
+        },
+      });
+    }
+
+    await upsertOrders(pageRecords);
+
+    totalFetched += pageOrders.length;
+    totalSynced += pageRecords.length;
+    pageCount += 1;
+    offset += pageOrders.length;
+
+    const totalAvailable = Number(ordersPayload?.paging?.total ?? 0);
+    if (pageOrders.length < ML_PAGE_LIMIT || (totalAvailable > 0 && offset >= totalAvailable)) {
+      break;
+    }
+  }
+
+  await updateLastSync(connection.id);
+
+  return {
+    success: true,
+    totalFetched,
+    synced: totalSynced,
+    pages: pageCount,
+    paging,
+  };
 }
 
 export default async function handler(request, response) {
@@ -322,156 +498,20 @@ export default async function handler(request, response) {
       return response.status(400).json({ success: false, error: "connection_id is required" });
     }
 
-    const initialConnection = await getConnection(connection_id);
-
-    if (!initialConnection?.seller_id) {
-      return response.status(404).json({ success: false, error: "Connection not found" });
-    }
-
-    if (isTokenExpiringSoon(initialConnection.token_expires_at)) {
-      await primeSupabaseSync({
-        connection_id,
-        date_from,
-        date_to,
-        status_filter,
-        updated_from,
-      });
-    }
-
-    const connection = (await getConnection(connection_id)) || initialConnection;
-
-    if (!connection?.access_token || !connection?.seller_id) {
-      return response.status(400).json({
-        success: false,
-        error: "Conexao do Mercado Livre sem token valido.",
-      });
-    }
-
-    const sellerStores = await getSellerStores(connection.access_token, String(connection.seller_id));
-    const storesById = new Map();
-    const storesByNodeId = new Map();
-
-    for (const store of sellerStores) {
-      if (store?.id) storesById.set(String(store.id), store);
-      if (store?.network_node_id) storesByNodeId.set(String(store.network_node_id), store);
-    }
-
-    const itemImageCache = new Map();
-    const shipmentSnapshotCache = new Map();
-
-    let offset = 0;
-    let pageCount = 0;
-    let totalFetched = 0;
-    let totalSynced = 0;
-    let paging = null;
-
-    while (pageCount < MAX_PAGES) {
-      const ordersUrl = buildOrdersSearchUrl({
-        sellerId: String(connection.seller_id),
-        dateFrom: date_from,
-        dateTo: date_to,
-        statusFilter: status_filter,
-        updatedFrom: updated_from,
-        offset,
-      });
-
-      const ordersResponse = await fetch(ordersUrl, {
-        headers: {
-          Authorization: `Bearer ${connection.access_token}`,
-        },
-      });
-
-      if (!ordersResponse.ok) {
-        const errorText = await ordersResponse.text();
-        return response.status(ordersResponse.status).json({
-          success: false,
-          error: "Falha ao buscar pedidos no Mercado Livre.",
-          details: errorText,
-        });
-      }
-
-      const ordersPayload = await ordersResponse.json();
-      const pageOrders = Array.isArray(ordersPayload.results) ? ordersPayload.results : [];
-      paging = ordersPayload.paging || paging;
-
-      if (pageOrders.length === 0) {
-        break;
-      }
-
-      const pageRecords = [];
-
-      for (const order of pageOrders) {
-        const item = order.order_items?.[0];
-        if (!item) continue;
-
-        const itemId = item.item?.id || null;
-        const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
-        const productImageUrl = await getItemImageUrl(connection.access_token, itemId, itemImageCache);
-        const shipmentSnapshot = await getShipmentSnapshot(
-          connection.access_token,
-          shippingId,
-          shipmentSnapshotCache
-        );
-        const shipmentReceiverName =
-          typeof shipmentSnapshot?.receiver_name === "string"
-            ? shipmentSnapshot.receiver_name
-            : null;
-        const buyerNameFromOrder = order.buyer?.first_name
-          ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
-          : null;
-        const buyerName =
-          shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
-        const depositSnapshot = buildDepositSnapshot(
-          order,
-          shipmentSnapshot,
-          storesById,
-          storesByNodeId
-        );
-
-        pageRecords.push({
-          connection_id: connection.id,
-          order_id: String(order.id),
-          sale_number: String(order.id),
-          sale_date: order.date_created,
-          buyer_name: buyerName,
-          buyer_nickname: order.buyer?.nickname || null,
-          item_title: item.item?.title || null,
-          item_id: itemId,
-          product_image_url: productImageUrl,
-          sku: item.item?.seller_sku || null,
-          quantity: item.quantity || 1,
-          amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
-          order_status: order.status || null,
-          shipping_id: shippingId,
-          raw_data: {
-            ...order,
-            shipment_snapshot: shipmentSnapshot,
-            deposit_snapshot: depositSnapshot,
-          },
-        });
-      }
-
-      await upsertOrders(pageRecords);
-
-      totalFetched += pageOrders.length;
-      totalSynced += pageRecords.length;
-      pageCount += 1;
-      offset += pageOrders.length;
-
-      const totalAvailable = Number(ordersPayload?.paging?.total ?? 0);
-      if (pageOrders.length < ML_PAGE_LIMIT || (totalAvailable > 0 && offset >= totalAvailable)) {
-        break;
-      }
-    }
-
-    await updateLastSync(connection.id);
+    const result = await runMercadoLivreSync({
+      connectionId: connection_id,
+      dateFrom: date_from,
+      dateTo: date_to,
+      statusFilter: status_filter,
+      updatedFrom: updated_from,
+    });
 
     return response.status(200).json({
       success: true,
-      total_fetched: totalFetched,
-      synced: totalSynced,
-      pages: pageCount,
-      paging,
+      total_fetched: result.totalFetched,
+      synced: result.synced,
+      pages: result.pages,
+      paging: result.paging,
     });
   } catch (error) {
     return response.status(500).json({

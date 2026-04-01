@@ -1,15 +1,15 @@
-const SUPABASE_URL = "https://gyaddryvtuzllcggorjc.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_USdCDZTlvuXFTOBlAvYSpQ_ne5ka8Ee";
+import {
+  SUPABASE_URL,
+  getSupabaseHeaders,
+  hasServiceRoleKey,
+} from "./_lib/server-config.js";
 
 export default async function handler(_request, response) {
   try {
     const connectionResponse = await fetch(
       `${SUPABASE_URL}/rest/v1/ml_connections?select=seller_id,access_token&order=created_at.desc&limit=1`,
       {
-        headers: {
-          apikey: SUPABASE_PUBLISHABLE_KEY,
-          Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
-        },
+        headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
       }
     );
 
