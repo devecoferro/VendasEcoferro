@@ -196,7 +196,12 @@ export async function exchangeMLCode(params: {
 
 export async function syncMLOrders(
   connectionId: string,
-  filters?: { date_from?: string; date_to?: string; status_filter?: string }
+  filters?: {
+    date_from?: string;
+    date_to?: string;
+    status_filter?: string;
+    updated_from?: string;
+  }
 ): Promise<{ total_fetched: number; synced: number }> {
   try {
     const response = await fetch("/api/ml/sync", {

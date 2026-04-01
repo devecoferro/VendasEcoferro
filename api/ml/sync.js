@@ -42,6 +42,13 @@ async function primeSupabaseSync(payload) {
   }
 }
 
+function isTokenExpiringSoon(tokenExpiresAt) {
+  if (!tokenExpiresAt) return true;
+  const expiresAt = new Date(tokenExpiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return true;
+  return expiresAt.getTime() <= Date.now() + 60 * 1000;
+}
+
 async function getSellerStores(accessToken, sellerId) {
   try {
     const storesResponse = await fetch(
@@ -227,7 +234,14 @@ function buildDepositSnapshot(order, shipmentSnapshot, storesById, storesByNodeI
   };
 }
 
-function buildOrdersSearchUrl({ sellerId, dateFrom, dateTo, statusFilter, offset }) {
+function buildOrdersSearchUrl({
+  sellerId,
+  dateFrom,
+  dateTo,
+  statusFilter,
+  updatedFrom,
+  offset,
+}) {
   const params = new URLSearchParams({
     seller: sellerId,
     sort: "date_desc",
@@ -245,6 +259,10 @@ function buildOrdersSearchUrl({ sellerId, dateFrom, dateTo, statusFilter, offset
 
   if (statusFilter) {
     params.set("order.status", statusFilter);
+  }
+
+  if (updatedFrom) {
+    params.set("order.date_last_updated.from", updatedFrom);
   }
 
   return `https://api.mercadolibre.com/orders/search?${params.toString()}`;
@@ -297,6 +315,7 @@ export default async function handler(request, response) {
       date_from,
       date_to,
       status_filter,
+      updated_from,
     } = typeof request.body === "string" ? JSON.parse(request.body) : request.body || {};
 
     if (!connection_id) {
@@ -309,12 +328,15 @@ export default async function handler(request, response) {
       return response.status(404).json({ success: false, error: "Connection not found" });
     }
 
-    await primeSupabaseSync({
-      connection_id,
-      date_from,
-      date_to,
-      status_filter,
-    });
+    if (isTokenExpiringSoon(initialConnection.token_expires_at)) {
+      await primeSupabaseSync({
+        connection_id,
+        date_from,
+        date_to,
+        status_filter,
+        updated_from,
+      });
+    }
 
     const connection = (await getConnection(connection_id)) || initialConnection;
 
@@ -349,6 +371,7 @@ export default async function handler(request, response) {
         dateFrom: date_from,
         dateTo: date_to,
         statusFilter: status_filter,
+        updatedFrom: updated_from,
         offset,
       });
 

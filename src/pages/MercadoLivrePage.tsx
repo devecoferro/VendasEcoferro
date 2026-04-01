@@ -296,6 +296,11 @@ export default function MercadoLivrePage() {
     if (!connection) return;
     if (syncInFlightRef.current) return;
 
+    const updatedFrom =
+      silent && !dateFrom && !dateTo && statusFilter === "all"
+        ? connection.last_sync_at || new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+        : undefined;
+
     syncInFlightRef.current = true;
     if (!silent) {
       setSyncing(true);
@@ -306,6 +311,7 @@ export default function MercadoLivrePage() {
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
         status_filter: statusFilter === "all" ? undefined : statusFilter,
+        updated_from: updatedFrom,
       });
 
       await refreshImportedData(connection);
