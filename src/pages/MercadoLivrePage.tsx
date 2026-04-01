@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -73,6 +73,8 @@ const SHIPMENT_FILTERS: Array<{ key: ShipmentBucket; label: string }> = [
   { key: "in_transit", label: "Em transito" },
   { key: "finalized", label: "Finalizadas" },
 ];
+
+const AUTO_SYNC_INTERVAL_MS = 15000;
 
 function getRawData(order: MLOrder): any {
   return order.raw_data && typeof order.raw_data === "object" ? order.raw_data : null;
@@ -233,6 +235,28 @@ export default function MercadoLivrePage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const syncInFlightRef = useRef(false);
+
+  const refreshImportedData = useCallback(async (currentConnection: MLConnection | null) => {
+    if (!currentConnection) {
+      setOrders([]);
+      setStores([]);
+      return;
+    }
+
+    const [importedOrders, storesResponse, refreshedConnection] = await Promise.all([
+      getMLOrders(),
+      fetch("/api/ml/stores").then(async (response) => {
+        if (!response.ok) return { stores: [] };
+        return response.json();
+      }),
+      getMLConnectionStatus(),
+    ]);
+
+    setOrders(importedOrders);
+    setStores(Array.isArray(storesResponse.stores) ? storesResponse.stores : []);
+    setConnection(refreshedConnection);
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -241,25 +265,17 @@ export default function MercadoLivrePage() {
       setConnection(currentConnection);
 
       if (currentConnection) {
-        const [importedOrders, storesResponse] = await Promise.all([
-          getMLOrders(),
-          fetch("/api/ml/stores").then(async (response) => {
-            if (!response.ok) return { stores: [] };
-            return response.json();
-          }),
-        ]);
-
-        setOrders(importedOrders);
-        setStores(Array.isArray(storesResponse.stores) ? storesResponse.stores : []);
+        await refreshImportedData(currentConnection);
       } else {
         setStores([]);
+        setOrders([]);
       }
     } catch (error) {
       console.error("Failed to load Mercado Livre data:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshImportedData]);
 
   useEffect(() => {
     loadData();
@@ -276,10 +292,15 @@ export default function MercadoLivrePage() {
     }
   };
 
-  const handleSync = async () => {
+  const performSync = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!connection) return;
+    if (syncInFlightRef.current) return;
 
-    setSyncing(true);
+    syncInFlightRef.current = true;
+    if (!silent) {
+      setSyncing(true);
+    }
+
     try {
       const result = await syncMLOrders(connection.id, {
         date_from: dateFrom || undefined,
@@ -287,25 +308,40 @@ export default function MercadoLivrePage() {
         status_filter: statusFilter === "all" ? undefined : statusFilter,
       });
 
-      toast.success(`${result.synced} pedidos sincronizados de ${result.total_fetched} encontrados`);
+      await refreshImportedData(connection);
 
-      const [importedOrders, storesResponse] = await Promise.all([
-        getMLOrders(),
-        fetch("/api/ml/stores").then(async (response) => {
-          if (!response.ok) return { stores: [] };
-          return response.json();
-        }),
-      ]);
-      setOrders(importedOrders);
-      setStores(Array.isArray(storesResponse.stores) ? storesResponse.stores : []);
-      const currentConnection = await getMLConnectionStatus();
-      setConnection(currentConnection);
+      if (!silent) {
+        toast.success(`${result.synced} pedidos sincronizados de ${result.total_fetched} encontrados`);
+      }
     } catch (error: any) {
-      toast.error(error.message || "Erro ao sincronizar");
+      if (silent) {
+        console.error("Auto sync failed:", error);
+      } else {
+        toast.error(error.message || "Erro ao sincronizar");
+      }
     } finally {
-      setSyncing(false);
+      syncInFlightRef.current = false;
+      if (!silent) {
+        setSyncing(false);
+      }
     }
+  }, [connection, dateFrom, dateTo, refreshImportedData, statusFilter]);
+
+  const handleSync = async () => {
+    await performSync();
   };
+
+  useEffect(() => {
+    if (!connection) return;
+
+    const intervalId = window.setInterval(() => {
+      void performSync({ silent: true });
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [connection, performSync]);
 
   const handleDisconnect = async () => {
     if (!connection) return;
@@ -465,6 +501,13 @@ export default function MercadoLivrePage() {
                   </p>
                   <p className="font-medium text-foreground">{orders.length}</p>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Badge variant="secondary">Auto-sync 15s ativo</Badge>
+                <span>
+                  A tela atualiza automaticamente enquanto este canal estiver aberto.
+                </span>
               </div>
 
               <div className="flex flex-wrap gap-2">

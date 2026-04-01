@@ -198,14 +198,33 @@ export async function syncMLOrders(
   connectionId: string,
   filters?: { date_from?: string; date_to?: string; status_filter?: string }
 ): Promise<{ total_fetched: number; synced: number }> {
-  const { data, error } = await supabase.functions.invoke("ml-sync-orders", {
-    body: { connection_id: connectionId, ...filters },
-  });
+  try {
+    const response = await fetch("/api/ml/sync", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ connection_id: connectionId, ...filters }),
+    });
 
-  if (error || !data?.success) {
-    throw new Error(data?.error || "Failed to sync orders");
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data?.success) {
+      throw new Error(data?.details || data?.error || "Failed to sync orders");
+    }
+
+    return { total_fetched: data.total_fetched, synced: data.synced };
+  } catch (routeError) {
+    const { data, error } = await supabase.functions.invoke("ml-sync-orders", {
+      body: { connection_id: connectionId, ...filters },
+    });
+
+    if (error || !data?.success) {
+      throw new Error(data?.error || (routeError instanceof Error ? routeError.message : "Failed to sync orders"));
+    }
+
+    return { total_fetched: data.total_fetched, synced: data.synced };
   }
-  return { total_fetched: data.total_fetched, synced: data.synced };
 }
 
 export async function disconnectML(connectionId: string): Promise<void> {
@@ -223,7 +242,7 @@ export async function getMLOrders(): Promise<MLOrder[]> {
     .from("ml_orders")
     .select("id, order_id, sale_number, sale_date, buyer_name, buyer_nickname, item_title, item_id, product_image_url, sku, quantity, amount, order_status, raw_data")
     .order("sale_date", { ascending: false })
-    .limit(100);
+    .limit(500);
 
   if (error) throw error;
   return (data as MLOrder[]) ?? [];
