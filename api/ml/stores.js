@@ -1,24 +1,7 @@
 const SUPABASE_URL = "https://gyaddryvtuzllcggorjc.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_USdCDZTlvuXFTOBlAvYSpQ_ne5ka8Ee";
 
-type ConnectionRow = {
-  seller_id: string;
-  access_token: string;
-};
-
-type StoreRecord = {
-  id: string | number;
-  description?: string | null;
-  network_node_id?: string | null;
-  location?: {
-    address_line?: string | null;
-    street_name?: string | null;
-    city?: string | null;
-  } | null;
-  services?: Record<string, unknown> | null;
-};
-
-export default async function handler(_request: any, response: any) {
+export default async function handler(_request, response) {
   try {
     const connectionResponse = await fetch(
       `${SUPABASE_URL}/rest/v1/ml_connections?select=seller_id,access_token&order=created_at.desc&limit=1`,
@@ -34,7 +17,7 @@ export default async function handler(_request: any, response: any) {
       return response.status(200).json({ stores: [] });
     }
 
-    const connections = (await connectionResponse.json()) as ConnectionRow[];
+    const connections = await connectionResponse.json();
     const connection = connections[0];
 
     if (!connection?.seller_id || !connection?.access_token) {
@@ -56,7 +39,7 @@ export default async function handler(_request: any, response: any) {
 
     const storesPayload = await storesResponse.json();
     const stores = Array.isArray(storesPayload.results)
-      ? storesPayload.results.map((store: StoreRecord) => ({
+      ? storesPayload.results.map((store) => ({
           id: String(store.id),
           description: store.description || null,
           network_node_id: store.network_node_id || null,
