@@ -14,9 +14,11 @@ const USABLE_H = PAGE_H - MARGIN_Y * 2;
 const CARD_H = Math.floor((USABLE_H - GAP * (CARDS_PER_PAGE - 1)) / CARDS_PER_PAGE);
 const CARD_W = USABLE_W;
 
-const LEFT_W = 40;
+const LEFT_W = 45;
 const RIGHT_W = 34;
 const CENTER_W = CARD_W - LEFT_W - RIGHT_W;
+const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
+let ecoferroLogoDataUrlPromise: Promise<string | null> | null = null;
 
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (!url) return null;
@@ -35,6 +37,14 @@ async function loadImageAsDataUrl(url: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function loadEcoferroLogoDataUrl(): Promise<string | null> {
+  if (!ecoferroLogoDataUrlPromise) {
+    ecoferroLogoDataUrlPromise = loadImageAsDataUrl(ECOFERRO_LOGO_URL);
+  }
+
+  return ecoferroLogoDataUrlPromise;
 }
 
 function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {
@@ -83,6 +93,59 @@ function drawContainedImage(
   doc.addImage(imageData, getImageFormat(imageData), offsetX, offsetY, drawW, drawH);
 }
 
+function drawObservationBox(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  maxHeight: number,
+  compactRows: boolean
+): number {
+  const trimmed = text.trim();
+  if (!trimmed || maxHeight < 4) return 0;
+
+  const labelFontSize = compactRows ? 4.9 : 5.6;
+  const textFontSize = compactRows ? 5.6 : 6.3;
+  const labelHeight = compactRows ? 2.2 : 2.8;
+  const lineHeight = compactRows ? 2.1 : 2.5;
+  const innerPadX = 1.7;
+  const innerPadY = compactRows ? 1.1 : 1.4;
+  const maxLines = Math.max(
+    1,
+    Math.floor((maxHeight - innerPadY * 2 - labelHeight) / lineHeight)
+  );
+
+  let lines = doc.splitTextToSize(trimmed, Math.max(10, width - innerPadX * 2));
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    const lastLine = String(lines[lines.length - 1] || "");
+    lines[lines.length - 1] =
+      lastLine.length > 2 ? `${lastLine.slice(0, Math.max(0, lastLine.length - 2))}…` : `${lastLine}…`;
+  }
+
+  const boxHeight = Math.min(
+    maxHeight,
+    innerPadY * 2 + labelHeight + lines.length * lineHeight + 0.6
+  );
+
+  doc.setFillColor(255, 247, 230);
+  doc.setDrawColor(244, 210, 141);
+  doc.roundedRect(x, y, width, boxHeight, 1.2, 1.2, "FD");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(labelFontSize);
+  doc.setTextColor(161, 98, 7);
+  doc.text("OBSERVAÇÃO", x + innerPadX, y + innerPadY + labelHeight - 0.4);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(textFontSize);
+  doc.setTextColor(124, 74, 3);
+  doc.text(lines, x + innerPadX, y + innerPadY + labelHeight + lineHeight);
+
+  return boxHeight + 1.2;
+}
+
 async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) {
   doc.setDrawColor(185, 185, 195);
   doc.setLineWidth(0.25);
@@ -90,129 +153,216 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
 
   const pad = 3;
   const innerH = CARD_H - pad * 2;
+  const groupedItems = sale.groupedItems || [];
+  const displayItems = groupedItems.length > 1
+    ? groupedItems
+    : [
+        {
+          itemTitle: sale.productName,
+          sku: sale.sku,
+          quantity: sale.quantity,
+          amount: sale.amount,
+          productImageUrl: sale.productImageData || sale.productImageUrl,
+          productImageData: sale.productImageData,
+        },
+      ];
+  const rowGap = 1.2;
+  const rowCount = Math.max(1, displayItems.length);
+  const rowHeight = (innerH - rowGap * (rowCount - 1)) / rowCount;
+  const compactRows = rowCount > 1;
+  const veryCompactRows = rowCount > 2;
+  const centerX = x0 + LEFT_W + 2.5;
+  const maxTextW = CENTER_W - 6;
+  const rightX = x0 + LEFT_W + CENTER_W + 3.5;
+  const dividerX = rightX - 2.5;
+  const rightContentW = RIGHT_W - 6;
+  const logoData = await loadEcoferroLogoDataUrl();
+  const labelObservation = sale.labelObservation?.trim() || "";
 
-  const imgBoxSize = Math.min(LEFT_W - 10, innerH - 4);
-  const imgX = x0 + 5;
-  const imgY = y0 + pad + (innerH - imgBoxSize) / 2;
+  doc.setDrawColor(215, 215, 225);
+  doc.setLineWidth(0.15);
+  doc.line(dividerX, y0 + pad, dividerX, y0 + CARD_H - pad);
 
-  const imageSource = sale.productImageData || sale.productImageUrl;
-  const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
+  for (let index = 0; index < displayItems.length; index += 1) {
+    const item = displayItems[index];
+    const rowTop = y0 + pad + index * (rowHeight + rowGap);
+    const rowBottom = rowTop + rowHeight;
 
-  if (imgData) {
-    try {
-      drawContainedImage(doc, imgData, imgX, imgY, imgBoxSize, imgBoxSize);
-    } catch {
-      drawPlaceholder(doc, imgX, imgY, imgBoxSize, imgBoxSize);
+    if (index > 0) {
+      const separatorY = rowTop - rowGap / 2;
+      doc.setDrawColor(226, 232, 240);
+      doc.line(x0 + 2.5, separatorY, x0 + CARD_W - 2.5, separatorY);
     }
-  } else {
-    drawPlaceholder(doc, imgX, imgY, imgBoxSize, imgBoxSize);
-  }
 
-  const cx = x0 + LEFT_W + 2.5;
-  let cy = y0 + pad + 1.6;
-  const maxTextW = CENTER_W - 4.5;
+    const imageX = x0 + 2.5;
+    const imageY = rowTop + 0.6;
+    const imageW = LEFT_W - 6;
+    const imageH = rowHeight - 1.2;
+    const imageSource = item.productImageData || item.productImageUrl || sale.productImageData || sale.productImageUrl;
+    const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
 
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(45, 45, 55);
-  doc.text(`SKU: ${sale.sku || "-"}`, cx, cy);
-  cy += 4.8;
+    if (imgData) {
+      try {
+        drawContainedImage(doc, imgData, imageX, imageY, imageW, imageH);
+      } catch {
+        drawPlaceholder(doc, imageX, imageY, imageW, imageH);
+      }
+    } else {
+      drawPlaceholder(doc, imageX, imageY, imageW, imageH);
+    }
 
-  doc.setFontSize(8.5);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(30, 30, 40);
-  const productLines = doc.splitTextToSize(sale.productName || "-", maxTextW);
-  doc.text(productLines.slice(0, 2), cx, cy);
-  cy += Math.min(productLines.length, 2) * 3.7 + 1.2;
+    let textY = rowTop + 2.2;
+    const skuFont = veryCompactRows ? 5.5 : compactRows ? 6 : 7.4;
+    const titleFont = veryCompactRows ? 6.6 : compactRows ? 7.4 : 9.2;
+    const customerFont = veryCompactRows ? 6.2 : compactRows ? 7.2 : 8.8;
+    const nicknameFont = veryCompactRows ? 5.8 : compactRows ? 6.4 : 7.8;
+    const saleNumberFont = veryCompactRows ? 5.5 : compactRows ? 6 : 7.1;
+    const saleMetaFont = veryCompactRows ? 5.2 : compactRows ? 5.6 : 6.7;
 
-  doc.setFontSize(9.2);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(45, 45, 55);
-  doc.text(sale.customerName || "-", cx, cy, { maxWidth: maxTextW });
-  cy += 4.6;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(skuFont);
+    doc.setTextColor(38, 51, 72);
+    doc.text(`SKU: ${item.sku || "-"}`, centerX, textY);
+    textY += compactRows ? 3.5 : 4.5;
 
-  doc.setFontSize(8.2);
-  doc.setTextColor(120, 120, 130);
-  doc.text(sale.customerNickname || "-", cx, cy, { maxWidth: maxTextW });
-  cy += 4.2;
+    doc.setFontSize(titleFont);
+    doc.setTextColor(21, 35, 57);
+    const productLines = doc.splitTextToSize(item.itemTitle || sale.productName || "-", maxTextW);
+    const maxProductLines = compactRows ? 2 : 2;
+    doc.text(productLines.slice(0, maxProductLines), centerX, textY);
+    textY += Math.min(productLines.length, maxProductLines) * (compactRows ? 3 : 3.8) + 0.8;
 
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(95, 95, 105);
-  doc.text(`#${sale.saleNumber || "-"}`, cx, cy, { maxWidth: maxTextW });
-  cy += 4;
+    doc.setFontSize(customerFont);
+    doc.text(sale.customerName || "-", centerX, textY, { maxWidth: maxTextW });
+    textY += compactRows ? 3.3 : 4.1;
 
-  doc.setFontSize(5.8);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(120, 120, 130);
-  doc.text(`${sale.saleDate || "-"} ${sale.saleTime || ""}`.trim(), cx, cy, {
-    maxWidth: maxTextW,
-  });
-  cy += 3.8;
+    doc.setFontSize(nicknameFont);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(107, 114, 128);
+    doc.text(sale.customerNickname || "-", centerX, textY, { maxWidth: maxTextW });
+    textY += compactRows ? 3.1 : 4;
 
-  const saleQrData = await generateQRCodeDataUrl(sale.saleQrcodeValue);
-  const saleQrSize = 11.5;
-  const saleQrX = cx;
-  const saleQrY = cy;
+    const saleNumberText = `#${sale.saleNumber || "-"}`;
+    doc.setFontSize(saleNumberFont);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(77, 90, 108);
+    doc.text(saleNumberText, centerX, textY, { maxWidth: maxTextW * 0.56 });
 
-  doc.setFontSize(5.1);
-  doc.setTextColor(120, 120, 130);
-  doc.text("QR VENDA", saleQrX + saleQrSize / 2, saleQrY - 0.8, { align: "center" });
+    const saleNumberWidth = doc.getTextWidth(saleNumberText);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(saleMetaFont);
+    doc.setTextColor(120, 120, 130);
+    doc.text(
+      `${sale.saleDate || "-"} ${sale.saleTime || ""}`.trim(),
+      centerX + saleNumberWidth + 3,
+      textY,
+      { maxWidth: Math.max(10, maxTextW - saleNumberWidth - 3) }
+    );
 
-  if (saleQrData) {
-    try {
-      doc.addImage(saleQrData, "PNG", saleQrX, saleQrY, saleQrSize, saleQrSize);
-    } catch {
+    const saleQrSize = veryCompactRows ? 10.5 : compactRows ? 12.8 : 18.5;
+    const saleQrX = centerX;
+    const saleQrY = rowBottom - saleQrSize - (compactRows ? 4.8 : 6.6);
+    const showObservation = index === 0 && Boolean(labelObservation);
+
+    if (showObservation) {
+      const noteTop = textY + 1.3;
+      const availableNoteHeight = saleQrY - noteTop - 1;
+      const noteWidth = Math.min(maxTextW, compactRows ? 40 : 58);
+      textY += drawObservationBox(
+        doc,
+        labelObservation,
+        centerX,
+        noteTop,
+        noteWidth,
+        availableNoteHeight,
+        compactRows
+      );
+    }
+
+    const saleQrData = await generateQRCodeDataUrl(sale.saleQrcodeValue);
+
+    if (saleQrData) {
+      try {
+        doc.addImage(saleQrData, "PNG", saleQrX, saleQrY, saleQrSize, saleQrSize);
+      } catch {
+        doc.setFontSize(5);
+        doc.setTextColor(170, 170, 180);
+        doc.text("Sem QR", saleQrX + saleQrSize / 2, saleQrY + saleQrSize / 2, {
+          align: "center",
+        });
+      }
+    } else {
       doc.setFontSize(5);
       doc.setTextColor(170, 170, 180);
       doc.text("Sem QR", saleQrX + saleQrSize / 2, saleQrY + saleQrSize / 2, {
         align: "center",
       });
     }
-  } else {
-    doc.setFontSize(5);
-    doc.setTextColor(170, 170, 180);
-    doc.text("Sem QR", saleQrX + saleQrSize / 2, saleQrY + saleQrSize / 2, {
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(veryCompactRows ? 4.6 : 5.4);
+    doc.setTextColor(120, 120, 130);
+    doc.text("QR VENDA", saleQrX + saleQrSize / 2, saleQrY + saleQrSize + (compactRows ? 2 : 2.8), {
+      align: "center",
+    });
+
+    if (logoData) {
+      try {
+        drawContainedImage(
+          doc,
+          logoData,
+          saleQrX + saleQrSize + (compactRows ? 4 : 6),
+          saleQrY + (compactRows ? 1.3 : 2.4),
+          compactRows ? 16 : 22,
+          compactRows ? 11 : 16
+        );
+      } catch {
+        // Ignore logo render failures and keep PDF generation running.
+      }
+    }
+
+    let qrY = rowTop + 2.4;
+    const pieceQrData = await generateQRCodeDataUrl(item.sku || "");
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(compactRows ? 5.8 : 7);
+    doc.setTextColor(156, 163, 175);
+    doc.text("QR PECA", rightX + rightContentW / 2, qrY + 1.4, { align: "center" });
+    qrY += compactRows ? 4.4 : 5.2;
+
+    const pieceQrSize = Math.max(veryCompactRows ? 9.5 : compactRows ? 12 : 21.5, Math.min(rowHeight - (compactRows ? 10.5 : 11), compactRows ? 12 : 21.5));
+    if (pieceQrData) {
+      const qrX = rightX + (rightContentW - pieceQrSize) / 2;
+      try {
+        doc.addImage(pieceQrData, "PNG", qrX, qrY, pieceQrSize, pieceQrSize);
+      } catch {
+        doc.setFontSize(5);
+        doc.setTextColor(170, 170, 180);
+        doc.text("Sem QR", rightX + rightContentW / 2, qrY + pieceQrSize / 2, {
+          align: "center",
+        });
+      }
+    } else {
+      doc.setFontSize(5);
+      doc.setTextColor(170, 170, 180);
+      doc.text("Sem QR", rightX + rightContentW / 2, qrY + pieceQrSize / 2, {
+        align: "center",
+      });
+    }
+
+    doc.setFontSize(compactRows ? 6.5 : 8);
+    doc.setTextColor(107, 114, 128);
+    doc.text(item.sku || "-", rightX + rightContentW / 2, qrY + pieceQrSize + (compactRows ? 2.6 : 3.4), {
+      align: "center",
+    });
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(compactRows ? 7.8 : 9.6);
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Qtd: ${item.quantity || 1}`, rightX + rightContentW / 2, qrY + pieceQrSize + (compactRows ? 6 : 7.6), {
       align: "center",
     });
   }
-
-  const rx = x0 + LEFT_W + CENTER_W + 2;
-  doc.setDrawColor(215, 215, 225);
-  doc.setLineWidth(0.15);
-  doc.line(rx - 2, y0 + pad, rx - 2, y0 + CARD_H - pad);
-
-  let ry = y0 + pad + 2;
-  const codeW = RIGHT_W - 6;
-  const qrData = await generateQRCodeDataUrl(sale.qrcodeValue);
-
-  doc.setFontSize(5.4);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(120, 120, 130);
-  doc.text("QR PEÇA", rx + codeW / 2, ry + 1, { align: "center" });
-  ry += 4.2;
-
-  const qrSize = Math.min(innerH - 10, 20);
-  if (qrData) {
-    const qrX = rx + (codeW - qrSize) / 2;
-    try {
-      doc.addImage(qrData, "PNG", qrX, ry, qrSize, qrSize);
-    } catch {
-      doc.setFontSize(5);
-      doc.setTextColor(170, 170, 180);
-      doc.text("Sem QR", rx + codeW / 2, ry + qrSize / 2, { align: "center" });
-    }
-  } else {
-    doc.setFontSize(5);
-    doc.setTextColor(170, 170, 180);
-    doc.text("Sem QR", rx + codeW / 2, ry + qrSize / 2, { align: "center" });
-  }
-
-  doc.setFontSize(5.2);
-  doc.setTextColor(120, 120, 130);
-  doc.text(sale.qrcodeValue || "-", rx + codeW / 2, ry + qrSize + 2.8, {
-    align: "center",
-  });
 }
 
 function getFileName(sale: SaleData): string {

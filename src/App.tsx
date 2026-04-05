@@ -1,39 +1,70 @@
+import { lazy, Suspense } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ExtractionProvider } from "@/contexts/ExtractionContext";
-import DashboardPage from "./pages/DashboardPage";
-import UploadPage from "./pages/UploadPage";
-import ReviewPage from "./pages/ReviewPage";
-import HistoryPage from "./pages/HistoryPage";
-import MercadoLivrePage from "./pages/MercadoLivrePage";
-import MercadoLivreFantomPage from "./pages/MercadoLivreFantomPage";
-import MLCallbackPage from "./pages/MLCallbackPage";
-import NotFound from "./pages/NotFound";
+import { AuthProvider } from "@/contexts/AuthContext";
+import { ProtectedRoute } from "@/components/ProtectedRoute";
 
 const queryClient = new QueryClient();
+
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const UploadPage = lazy(() => import("./pages/UploadPage"));
+const ReviewPage = lazy(() => import("./pages/ReviewPage"));
+const HistoryPage = lazy(() => import("./pages/HistoryPage"));
+const MercadoLivrePage = lazy(() => import("./pages/MercadoLivrePage"));
+const MercadoLivreFantomPage = lazy(() => import("./pages/MercadoLivreFantomPage"));
+const MLCallbackPage = lazy(() => import("./pages/MLCallbackPage"));
+const MLReconnectPage = lazy(() => import("./pages/MLReconnectPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const UsersPage = lazy(() => import("./pages/UsersPage"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+
+function RouteFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="glass-card px-6 py-4 text-sm text-muted-foreground">
+        Carregando painel...
+      </div>
+    </div>
+  );
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
-        <ExtractionProvider>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/upload" element={<UploadPage />} />
-            <Route path="/review" element={<ReviewPage />} />
-            <Route path="/history" element={<HistoryPage />} />
-            <Route path="/mercado-livre" element={<MercadoLivrePage />} />
-            <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
-            <Route path="/ml-callback" element={<MLCallbackPage />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </ExtractionProvider>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <Suspense fallback={<RouteFallback />}>
+            <ExtractionProvider>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/ml-callback" element={<MLCallbackPage />} />
+
+                <Route element={<ProtectedRoute />}>
+                  <Route path="/" element={<DashboardPage />} />
+                  <Route path="/upload" element={<UploadPage />} />
+                  <Route path="/review" element={<ReviewPage />} />
+                  <Route path="/history" element={<HistoryPage />} />
+                  <Route path="/mercado-livre" element={<MercadoLivrePage />} />
+                  <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
+                  <Route path="/mercado-livre/reconnect" element={<MLReconnectPage />} />
+                </Route>
+
+                <Route element={<ProtectedRoute requireAdmin />}>
+                  <Route path="/users" element={<UsersPage />} />
+                </Route>
+
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </ExtractionProvider>
+          </Suspense>
+        </BrowserRouter>
+      </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

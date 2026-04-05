@@ -19,6 +19,11 @@ interface TextLine {
   y: number;
 }
 
+interface PdfTextItemLike {
+  str?: string;
+  transform?: number[];
+}
+
 const RENDER_SCALE = 2.25;
 const LINE_Y_TOLERANCE = 4;
 
@@ -99,11 +104,15 @@ async function extractSaleAnchors(pdf: pdfjsLib.PDFDocumentProxy, saleNumbers: s
     const viewport = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
     const items: TextItem[] = content.items
-      .filter((item: any) => typeof item.str === "string" && Array.isArray(item.transform))
-      .map((item: any) => ({
-        str: item.str,
-        x: item.transform[4],
-        y: viewport.height - item.transform[5],
+      .map((item) => (item && typeof item === "object" ? (item as PdfTextItemLike) : null))
+      .filter(
+        (item): item is PdfTextItemLike =>
+          Boolean(item) && typeof item.str === "string" && Array.isArray(item.transform)
+      )
+      .map((item) => ({
+        str: item.str || "",
+        x: item.transform?.[4] ?? 0,
+        y: viewport.height - (item.transform?.[5] ?? 0),
       }));
 
     const lines = buildLines(items);

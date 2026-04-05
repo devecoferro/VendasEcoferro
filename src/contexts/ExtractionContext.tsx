@@ -1,17 +1,77 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { ProcessingResult } from "@/services/fileProcessor";
 
 interface ExtractionContextType {
   results: ProcessingResult[];
-  setResults: (results: ProcessingResult[]) => void;
+  setResults: Dispatch<SetStateAction<ProcessingResult[]>>;
+  updateSaleObservation: (saleId: string, observation: string) => void;
+  clearResults: () => void;
 }
 
 const ExtractionContext = createContext<ExtractionContextType | null>(null);
+const EXTRACTION_STORAGE_KEY = "ecoferro.extraction.results";
+
+function readStoredResults(): ProcessingResult[] {
+  if (typeof window === "undefined") return [];
+
+  try {
+    const rawValue = window.sessionStorage.getItem(EXTRACTION_STORAGE_KEY);
+    if (!rawValue) return [];
+    const parsed = JSON.parse(rawValue);
+    return Array.isArray(parsed) ? (parsed as ProcessingResult[]) : [];
+  } catch {
+    return [];
+  }
+}
 
 export function ExtractionProvider({ children }: { children: ReactNode }) {
-  const [results, setResults] = useState<ProcessingResult[]>([]);
+  const [results, setResults] = useState<ProcessingResult[]>(() => readStoredResults());
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (results.length === 0) {
+      window.sessionStorage.removeItem(EXTRACTION_STORAGE_KEY);
+      return;
+    }
+
+    window.sessionStorage.setItem(EXTRACTION_STORAGE_KEY, JSON.stringify(results));
+  }, [results]);
+
+  const value = useMemo<ExtractionContextType>(
+    () => ({
+      results,
+      setResults,
+      updateSaleObservation: (saleId, observation) =>
+        setResults((current) =>
+          current.map((result) =>
+            result.sale.id === saleId
+              ? {
+                  ...result,
+                  sale: {
+                    ...result.sale,
+                    labelObservation: observation,
+                  },
+                }
+              : result
+          )
+        ),
+      clearResults: () => setResults([]),
+    }),
+    [results]
+  );
+
   return (
-    <ExtractionContext.Provider value={{ results, setResults }}>
+    <ExtractionContext.Provider value={value}>
       {children}
     </ExtractionContext.Provider>
   );

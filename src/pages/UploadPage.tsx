@@ -28,10 +28,10 @@ export default function UploadPage() {
       setResults(results);
       toast.success(`${results.length} venda(s) extraída(s) com sucesso!`);
       navigate("/review");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Processing error:", err);
       toast.error("Erro ao processar arquivo", {
-        description: err.message || "Tente novamente com outro arquivo",
+        description: err instanceof Error ? err.message : "Tente novamente com outro arquivo",
       });
     } finally {
       setProcessing(false);

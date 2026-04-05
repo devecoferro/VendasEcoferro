@@ -1,28 +1,15 @@
-import {
-  SUPABASE_URL,
-  getSupabaseHeaders,
-  hasServiceRoleKey,
-} from "./_lib/server-config.js";
+import { getLatestConnection } from "./_lib/storage.js";
+import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 
 export default async function handler(_request, response) {
   try {
-    const connectionResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/ml_connections?select=seller_id,access_token&order=created_at.desc&limit=1`,
-      {
-        headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
-      }
-    );
+    const baseConnection = getLatestConnection();
 
-    if (!connectionResponse.ok) {
+    if (!baseConnection?.seller_id || !baseConnection?.access_token) {
       return response.status(200).json({ stores: [] });
     }
 
-    const connections = await connectionResponse.json();
-    const connection = connections[0];
-
-    if (!connection?.seller_id || !connection?.access_token) {
-      return response.status(200).json({ stores: [] });
-    }
+    const connection = await ensureValidAccessToken(baseConnection);
 
     const storesResponse = await fetch(
       `https://api.mercadolibre.com/users/${connection.seller_id}/stores/search?tags=stock_location`,

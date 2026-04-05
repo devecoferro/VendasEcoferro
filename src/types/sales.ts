@@ -14,13 +14,24 @@ export interface SaleData {
   saleQrcodeValue: string;
   productImageUrl: string;
   productImageData?: string;
+  labelObservation?: string;
+  groupedItems?: SaleItemData[];
+}
+
+export interface SaleItemData {
+  itemTitle: string;
+  sku: string;
+  quantity: number;
+  amount?: number;
+  productImageUrl?: string;
+  productImageData?: string;
 }
 
 export interface DocumentRecord {
   id: string;
   fileName: string;
-  fileType: 'pdf' | 'png' | 'jpg' | 'jpeg';
-  processingStatus: 'processing' | 'review' | 'completed' | 'failed';
+  fileType: string;
+  processingStatus: "completed" | "review" | "processing" | "error";
   sales: SaleData[];
   createdAt: string;
 }

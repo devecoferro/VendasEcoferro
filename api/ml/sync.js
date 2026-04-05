@@ -1,69 +1,14 @@
+import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import {
-  SUPABASE_URL,
-  getSupabaseHeaders,
-  hasServiceRoleKey,
-} from "./_lib/server-config.js";
+  deleteOrdersByOrderIds,
+  getConnectionById,
+  getConnectionBySellerId as getStoredConnectionBySellerId,
+  updateConnectionLastSync,
+  upsertOrders,
+} from "./_lib/storage.js";
 
 const ML_PAGE_LIMIT = 50;
 const MAX_PAGES = 20;
-
-async function getConnection(connectionId) {
-  const connectionResponse = await fetch(
-    `${SUPABASE_URL}/rest/v1/ml_connections?select=id,seller_id,seller_nickname,access_token,last_sync_at,token_expires_at&` +
-      `id=eq.${encodeURIComponent(connectionId)}&limit=1`,
-    {
-      headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
-    }
-  );
-
-  if (!connectionResponse.ok) {
-    throw new Error("Nao foi possivel carregar a conexao do Mercado Livre.");
-  }
-
-  const connections = await connectionResponse.json();
-  return connections[0] ?? null;
-}
-
-export async function getConnectionBySellerId(sellerId) {
-  const connectionResponse = await fetch(
-    `${SUPABASE_URL}/rest/v1/ml_connections?select=id,seller_id,seller_nickname,access_token,last_sync_at,token_expires_at&` +
-      `seller_id=eq.${encodeURIComponent(sellerId)}&limit=1`,
-    {
-      headers: getSupabaseHeaders({ service: hasServiceRoleKey() }),
-    }
-  );
-
-  if (!connectionResponse.ok) {
-    throw new Error("Nao foi possivel carregar a conexao por vendedor.");
-  }
-
-  const connections = await connectionResponse.json();
-  return connections[0] ?? null;
-}
-
-async function primeSupabaseSync(payload) {
-  try {
-    await fetch(`${SUPABASE_URL}/functions/v1/ml-sync-orders`, {
-      method: "POST",
-      headers: getSupabaseHeaders({
-        service: hasServiceRoleKey(),
-        extra: {
-          "Content-Type": "application/json",
-        },
-      }),
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // The paginated sync below is still able to continue if the current token remains valid.
-  }
-}
-
-function isTokenExpiringSoon(tokenExpiresAt) {
-  if (!tokenExpiresAt) return true;
-  const expiresAt = new Date(tokenExpiresAt);
-  if (Number.isNaN(expiresAt.getTime())) return true;
-  return expiresAt.getTime() <= Date.now() + 60 * 1000;
-}
 
 async function getSellerStores(accessToken, sellerId) {
   try {
@@ -105,9 +50,7 @@ async function getItemImageUrl(accessToken, itemId, cache) {
 
     const itemPayload = await itemResponse.json();
     const pictures = Array.isArray(itemPayload.pictures) ? itemPayload.pictures : [];
-    const firstPicture =
-      pictures.find((picture) => picture?.secure_url || picture?.url) ?? null;
-
+    const firstPicture = pictures.find((picture) => picture?.secure_url || picture?.url) ?? null;
     const imageUrl =
       firstPicture?.secure_url ||
       firstPicture?.url ||
@@ -179,8 +122,116 @@ async function getShipmentSnapshot(accessToken, shippingId, cache) {
   }
 }
 
-function buildDepositSnapshot(order, shipmentSnapshot, storesById, storesByNodeId) {
-  const stock = order?.order_items?.[0]?.stock;
+async function getShipmentSlaSnapshot(accessToken, shippingId, cache) {
+  if (!shippingId) return null;
+  if (cache.has(shippingId)) return cache.get(shippingId) ?? null;
+
+  try {
+    const slaResponse = await fetch(`https://api.mercadolibre.com/shipments/${shippingId}/sla`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!slaResponse.ok) {
+      cache.set(shippingId, null);
+      return null;
+    }
+
+    const slaPayload = await slaResponse.json();
+    const snapshot = {
+      status: slaPayload?.status ?? null,
+      expected_date: slaPayload?.expected_date ?? null,
+      service: slaPayload?.service ?? null,
+      last_updated: slaPayload?.last_updated ?? null,
+    };
+
+    cache.set(shippingId, snapshot);
+    return snapshot;
+  } catch {
+    cache.set(shippingId, null);
+    return null;
+  }
+}
+
+function shouldFetchBillingInfo(order, shipmentSnapshot) {
+  const orderStatus = String(order?.status || "").toLowerCase();
+  const shipmentStatus = String(shipmentSnapshot?.status || "").toLowerCase();
+  const shipmentSubstatus = String(shipmentSnapshot?.substatus || "").toLowerCase();
+
+  return (
+    ["paid", "confirmed", "pending", "handling", "ready_to_ship"].includes(orderStatus) ||
+    ["pending", "handling", "ready_to_ship"].includes(shipmentStatus) ||
+    shipmentSubstatus === "invoice_pending"
+  );
+}
+
+async function getOrderBillingInfoSnapshot(accessToken, orderId, cache) {
+  if (!orderId) {
+    return { available: false, status: "missing_order_id", data: null };
+  }
+
+  if (cache.has(orderId)) {
+    return cache.get(orderId);
+  }
+
+  try {
+    const billingResponse = await fetch(
+      `https://api.mercadolibre.com/orders/${orderId}/billing_info`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "x-version": "2",
+        },
+      }
+    );
+
+    if (billingResponse.ok) {
+      const payload = await billingResponse.json();
+      const snapshot = {
+        available: true,
+        status: "available",
+        data: payload,
+      };
+
+      cache.set(orderId, snapshot);
+      return snapshot;
+    }
+
+    const status =
+      billingResponse.status === 401 || billingResponse.status === 403
+        ? "forbidden"
+        : billingResponse.status === 404
+          ? "not_found"
+          : "error";
+
+    const details = await billingResponse.text();
+    const snapshot = {
+      available: false,
+      status,
+      data: null,
+      error_status: billingResponse.status,
+      error_message: details || null,
+    };
+
+    cache.set(orderId, snapshot);
+    return snapshot;
+  } catch (error) {
+    const snapshot = {
+      available: false,
+      status: "error",
+      data: null,
+      error_status: 0,
+      error_message: error instanceof Error ? error.message : "billing_info_fetch_failed",
+    };
+
+    cache.set(orderId, snapshot);
+    return snapshot;
+  }
+}
+
+function buildDepositSnapshot(order, orderItem, shipmentSnapshot, storesById, storesByNodeId) {
+  const stock = orderItem?.stock || order?.order_items?.[0]?.stock;
   const storeId = stock?.store_id ? String(stock.store_id) : null;
   const nodeId = stock?.node_id ? String(stock.node_id) : null;
   const logisticType =
@@ -284,46 +335,8 @@ function buildOrdersSearchUrl({
   return `https://api.mercadolibre.com/orders/search?${params.toString()}`;
 }
 
-async function upsertOrders(orderRecords) {
-  if (orderRecords.length === 0) {
-    return;
-  }
-
-  const upsertResponse = await fetch(
-    `${SUPABASE_URL}/rest/v1/ml_orders?on_conflict=order_id`,
-    {
-      method: "POST",
-      headers: getSupabaseHeaders({
-        service: hasServiceRoleKey(),
-        extra: {
-          "Content-Type": "application/json",
-          Prefer: "resolution=merge-duplicates,return=minimal",
-        },
-      }),
-      body: JSON.stringify(orderRecords),
-    }
-  );
-
-  if (!upsertResponse.ok) {
-    const errorText = await upsertResponse.text();
-    throw new Error(`Falha ao gravar pedidos sincronizados: ${errorText}`);
-  }
-}
-
-async function updateLastSync(connectionId) {
-  await fetch(`${SUPABASE_URL}/rest/v1/ml_connections?id=eq.${encodeURIComponent(connectionId)}`, {
-    method: "PATCH",
-    headers: getSupabaseHeaders({
-      service: hasServiceRoleKey(),
-      extra: {
-        "Content-Type": "application/json",
-        Prefer: "return=minimal",
-      },
-    }),
-    body: JSON.stringify({
-      last_sync_at: new Date().toISOString(),
-    }),
-  });
+export async function getConnectionBySellerId(sellerId) {
+  return getStoredConnectionBySellerId(sellerId);
 }
 
 export async function runMercadoLivreSync({
@@ -334,28 +347,13 @@ export async function runMercadoLivreSync({
   updatedFrom,
   pageLimit = MAX_PAGES,
 }) {
-  const initialConnection = await getConnection(connectionId);
+  const baseConnection = getConnectionById(connectionId);
 
-  if (!initialConnection?.seller_id) {
+  if (!baseConnection?.seller_id) {
     throw new Error("Connection not found");
   }
 
-  if (isTokenExpiringSoon(initialConnection.token_expires_at)) {
-    await primeSupabaseSync({
-      connection_id: connectionId,
-      date_from: dateFrom,
-      date_to: dateTo,
-      status_filter: statusFilter,
-      updated_from: updatedFrom,
-    });
-  }
-
-  const connection = (await getConnection(connectionId)) || initialConnection;
-
-  if (!connection?.access_token || !connection?.seller_id) {
-    throw new Error("Conexao do Mercado Livre sem token valido.");
-  }
-
+  const connection = await ensureValidAccessToken(baseConnection);
   const sellerStores = await getSellerStores(connection.access_token, String(connection.seller_id));
   const storesById = new Map();
   const storesByNodeId = new Map();
@@ -367,6 +365,8 @@ export async function runMercadoLivreSync({
 
   const itemImageCache = new Map();
   const shipmentSnapshotCache = new Map();
+  const shipmentSlaCache = new Map();
+  const billingInfoCache = new Map();
 
   let offset = 0;
   let pageCount = 0;
@@ -404,19 +404,28 @@ export async function runMercadoLivreSync({
     }
 
     const pageRecords = [];
+    const orderIdsToReplace = [];
 
     for (const order of pageOrders) {
-      const item = order.order_items?.[0];
-      if (!item) continue;
-
-      const itemId = item.item?.id || null;
+      const orderId = String(order.id);
       const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
-      const productImageUrl = await getItemImageUrl(connection.access_token, itemId, itemImageCache);
       const shipmentSnapshot = await getShipmentSnapshot(
         connection.access_token,
         shippingId,
         shipmentSnapshotCache
       );
+      const shipmentSlaSnapshot = await getShipmentSlaSnapshot(
+        connection.access_token,
+        shippingId,
+        shipmentSlaCache
+      );
+      const billingInfoSnapshot = shouldFetchBillingInfo(order, shipmentSnapshot)
+        ? await getOrderBillingInfoSnapshot(connection.access_token, orderId, billingInfoCache)
+        : {
+            available: false,
+            status: "skipped",
+            data: null,
+          };
       const shipmentReceiverName =
         typeof shipmentSnapshot?.receiver_name === "string"
           ? shipmentSnapshot.receiver_name
@@ -424,39 +433,61 @@ export async function runMercadoLivreSync({
       const buyerNameFromOrder = order.buyer?.first_name
         ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
         : null;
-      const buyerName =
-        shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
-      const depositSnapshot = buildDepositSnapshot(
-        order,
-        shipmentSnapshot,
-        storesById,
-        storesByNodeId
-      );
+      const buyerName = shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+      const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
 
-      pageRecords.push({
-        connection_id: connection.id,
-        order_id: String(order.id),
-        sale_number: String(order.id),
-        sale_date: order.date_created,
-        buyer_name: buyerName,
-        buyer_nickname: order.buyer?.nickname || null,
-        item_title: item.item?.title || null,
-        item_id: itemId,
-        product_image_url: productImageUrl,
-        sku: item.item?.seller_sku || null,
-        quantity: item.quantity || 1,
-        amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
-        order_status: order.status || null,
-        shipping_id: shippingId,
-        raw_data: {
-          ...order,
-          shipment_snapshot: shipmentSnapshot,
-          deposit_snapshot: depositSnapshot,
-        },
-      });
+      if (orderItems.length === 0) {
+        continue;
+      }
+
+      orderIdsToReplace.push(orderId);
+
+      for (const [itemIndex, item] of orderItems.entries()) {
+        const itemId = item.item?.id || null;
+        const productImageUrl = await getItemImageUrl(connection.access_token, itemId, itemImageCache);
+        const depositSnapshot = buildDepositSnapshot(
+          order,
+          item,
+          shipmentSnapshot,
+          storesById,
+          storesByNodeId
+        );
+        const recordId = `${orderId}:${itemId || item.item?.seller_sku || itemIndex}`;
+
+        pageRecords.push({
+          id: recordId,
+          connection_id: connection.id,
+          order_id: orderId,
+          sale_number: orderId,
+          sale_date: order.date_created,
+          buyer_name: buyerName,
+          buyer_nickname: order.buyer?.nickname || null,
+          item_title: item.item?.title || null,
+          item_id: itemId,
+          product_image_url: productImageUrl,
+          sku: item.item?.seller_sku || null,
+          quantity: item.quantity || 1,
+          amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
+          order_status: order.status || null,
+          shipping_id: shippingId,
+          raw_data: {
+            ...order,
+            order_item_index: itemIndex,
+            order_item_snapshot: item,
+            shipment_snapshot: shipmentSnapshot,
+            sla_snapshot: shipmentSlaSnapshot,
+            deposit_snapshot: depositSnapshot,
+            billing_info_snapshot: billingInfoSnapshot.data,
+            billing_info_status: billingInfoSnapshot.status,
+            billing_info_error_status: billingInfoSnapshot.error_status ?? null,
+            billing_info_error_message: billingInfoSnapshot.error_message ?? null,
+          },
+        });
+      }
     }
 
-    await upsertOrders(pageRecords);
+    deleteOrdersByOrderIds(orderIdsToReplace);
+    upsertOrders(pageRecords);
 
     totalFetched += pageOrders.length;
     totalSynced += pageRecords.length;
@@ -469,7 +500,7 @@ export async function runMercadoLivreSync({
     }
   }
 
-  await updateLastSync(connection.id);
+  updateConnectionLastSync(connection.id);
 
   return {
     success: true,
