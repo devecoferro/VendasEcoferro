@@ -3,6 +3,7 @@ import {
   deleteOrdersByOrderIds,
   getConnectionById,
   getConnectionBySellerId as getStoredConnectionBySellerId,
+  replaceOrdersByOrderIds,
   updateConnectionLastSync,
   upsertOrders,
 } from "./_lib/storage.js";
@@ -28,7 +29,7 @@ function cachedFetch(cache, key, fetchFn) {
       return result;
     })
     .catch((err) => {
-      cache.set(key, null);
+      // Don't cache errors — allow retry on next access
       inflightPromises.delete(key);
       return null;
     });
@@ -327,11 +328,11 @@ function buildOrdersSearchUrl({
   });
 
   if (dateFrom) {
-    params.set("order.date_created.from", `${dateFrom}T00:00:00.000-00:00`);
+    params.set("order.date_created.from", `${dateFrom}T00:00:00.000-03:00`);
   }
 
   if (dateTo) {
-    params.set("order.date_created.to", `${dateTo}T23:59:59.000-00:00`);
+    params.set("order.date_created.to", `${dateTo}T23:59:59.000-03:00`);
   }
 
   if (statusFilter) {
@@ -369,7 +370,7 @@ export async function runMercadoLivreSync({
     throw new Error("Connection not found");
   }
 
-  const connection = await ensureValidAccessToken(baseConnection);
+  let connection = await ensureValidAccessToken(baseConnection);
   const sellerStores = await getSellerStores(connection.access_token, String(connection.seller_id));
   const storesById = new Map();
   const storesByNodeId = new Map();
@@ -392,6 +393,14 @@ export async function runMercadoLivreSync({
   const touchedPackIds = new Set();
 
   while (pageCount < effectivePageLimit) {
+    // Refresh token if needed during long syncs
+    if (pageCount > 0 && pageCount % 50 === 0) {
+      const refreshedConnection = await ensureValidAccessToken(connection);
+      if (refreshedConnection.access_token !== connection.access_token) {
+        connection = refreshedConnection;
+      }
+    }
+
     const ordersUrl = buildOrdersSearchUrl({
       sellerId: String(connection.seller_id),
       dateFrom,
@@ -475,19 +484,27 @@ export async function runMercadoLivreSync({
             const unitPrice = item.unit_price ?? null;
             const fullUnitPrice = item.full_unit_price ?? null;
             const isSingleItem = orderItems.length === 1;
+            const currencyId = order.currency_id || null;
             let amount = null;
-            if (isSingleItem && typeof order.total_amount === "number" && order.total_amount > 0) {
-              amount = Number(order.total_amount.toFixed(2));
-            } else {
-              const price = unitPrice ?? fullUnitPrice;
-              if (price != null) {
-                amount = Number((Math.round(price * qty * 100) / 100).toFixed(2));
-              } else if (typeof order.total_amount === "number" && order.total_amount > 0) {
-                // Fallback: distribuir o total_amount proporcionalmente quando unit_price
-                // não está disponível (ocorre em alguns tipos de pedido multi-item).
-                const totalItems = orderItems.reduce((s, it) => s + (it.quantity || 1), 0);
-                amount = Number((Math.round((order.total_amount * qty / totalItems) * 100) / 100).toFixed(2));
-              }
+
+            // 1) Prefer unit_price * qty (actual sale price, excludes shipping)
+            if (unitPrice != null && unitPrice > 0) {
+              amount = Number((Math.round(unitPrice * qty * 100) / 100).toFixed(2));
+            }
+            // 2) Fallback to full_unit_price * qty (pre-discount, still excludes shipping)
+            else if (fullUnitPrice != null && fullUnitPrice > 0) {
+              amount = Number((Math.round(fullUnitPrice * qty * 100) / 100).toFixed(2));
+            }
+            // 3) Single-item: total_amount minus shipping cost (total_amount includes shipping)
+            else if (isSingleItem && typeof order.total_amount === "number" && order.total_amount > 0) {
+              const shippingCost = order.shipping?.cost ?? 0;
+              const productAmount = order.total_amount - shippingCost;
+              amount = Number((Math.round(Math.max(productAmount, 0) * 100) / 100).toFixed(2));
+            }
+            // 4) Last resort: proportional distribution of total_amount
+            else if (typeof order.total_amount === "number" && order.total_amount > 0) {
+              const totalItems = orderItems.reduce((s, it) => s + (it.quantity || 1), 0);
+              amount = Number((Math.round((order.total_amount * qty / totalItems) * 100) / 100).toFixed(2));
             }
 
             return {
@@ -504,6 +521,7 @@ export async function runMercadoLivreSync({
               sku: item.item?.seller_sku || null,
               quantity: qty,
               amount,
+              currency_id: currencyId,
               order_status: order.status || null,
               shipping_id: shippingId,
               raw_data: {
@@ -535,8 +553,7 @@ export async function runMercadoLivreSync({
       pageRecords.push(...result.records);
     }
 
-    deleteOrdersByOrderIds(orderIdsToReplace);
-    upsertOrders(pageRecords);
+    replaceOrdersByOrderIds(orderIdsToReplace, pageRecords);
 
     totalFetched += pageOrders.length;
     totalSynced += pageRecords.length;

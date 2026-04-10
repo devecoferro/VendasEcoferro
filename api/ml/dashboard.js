@@ -11,7 +11,7 @@ import {
 } from "./_lib/private-seller-center-storage.js";
 import { buildPrivateSellerCenterPostSaleAudit } from "./_lib/private-seller-center-audit.js";
 
-const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship"]);
+const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
 const OPERATIONAL_BUCKETS = ["today", "upcoming", "in_transit", "finalized"];
@@ -998,6 +998,7 @@ export async function buildDashboardPayload(options = {}) {
   const todayKey = getCalendarKey(today);
   const orders = fetchStoredOrders();
   const depositsMap = new Map();
+  const countedPacks = new Set();
 
     for (const order of orders) {
       const depositInfo = getDepositInfo(order);
@@ -1016,10 +1017,20 @@ export async function buildDashboardPayload(options = {}) {
       if (!bucket || !OPERATIONAL_BUCKETS.includes(bucket)) {
         // Keep walking. Native ML buckets are computed separately.
       } else {
-        deposit.counts[bucket] += 1;
+        const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
+        const packDedupeKey = packId ? `${depositInfo.key}:${bucket}:${packId}` : null;
+        const isPackAlreadyCounted = packDedupeKey && countedPacks.has(packDedupeKey);
+
+        // Always track order IDs (for grid display)
         deposit.order_ids_by_bucket[bucket].push(order.id);
-        deposit.native_counts[bucket] += 1;
         deposit.native_order_ids_by_bucket[bucket].push(order.id);
+
+        // Only increment count once per pack (or always for non-pack orders)
+        if (!isPackAlreadyCounted) {
+          deposit.counts[bucket] += 1;
+          deposit.native_counts[bucket] += 1;
+          if (packDedupeKey) countedPacks.add(packDedupeKey);
+        }
       }
     }
 

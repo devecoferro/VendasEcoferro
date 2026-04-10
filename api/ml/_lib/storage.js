@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { db } from "./db.js";
 
 const OPERATIONAL_ORDER_STATUSES = [
+  "confirmed",
+  "paid",
   "pending",
   "handling",
   "ready_to_ship",
@@ -561,6 +563,14 @@ export function deleteOrdersByOrderIds(orderIds) {
   const stmt = db.prepare(`DELETE FROM ml_orders WHERE order_id IN (${placeholders})`);
   const result = stmt.run(...uniqueOrderIds);
   return Number(result.changes || 0);
+}
+
+export function replaceOrdersByOrderIds(orderIdsToDelete, newRecords) {
+  const transaction = db.transaction(() => {
+    deleteOrdersByOrderIds(orderIdsToDelete);
+    upsertOrders(newRecords);
+  });
+  transaction();
 }
 
 export function upsertOrders(records) {

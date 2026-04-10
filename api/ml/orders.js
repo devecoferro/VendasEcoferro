@@ -8,7 +8,7 @@ import {
   getPaginatedOrderSummaries,
 } from "./_lib/storage.js";
 
-const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship"]);
+const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const DELIVERED_STATUSES = new Set(["delivered"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
