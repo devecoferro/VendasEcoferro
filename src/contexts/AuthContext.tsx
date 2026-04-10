@@ -51,13 +51,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hydrateAuthState = useCallback(async () => {
     try {
       try {
-        const authenticatedUser = await getCurrentRemoteUser();
+        // Dispara ambas as chamadas em paralelo para evitar waterfall sequencial.
+        // listRemoteUsers retorna 401 se não for admin — tratamos silenciosamente.
+        const [authenticatedUser, allUsers] = await Promise.all([
+          getCurrentRemoteUser(),
+          listRemoteUsers().catch(() => null),
+        ]);
+
         if (authenticatedUser) {
           setCurrentUser(authenticatedUser);
 
-          if (authenticatedUser.role === "admin") {
-            const remoteUsers = await listRemoteUsers();
-            setUsers(remoteUsers);
+          if (authenticatedUser.role === "admin" && Array.isArray(allUsers)) {
+            setUsers(allUsers);
           } else {
             setUsers([authenticatedUser]);
           }

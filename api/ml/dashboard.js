@@ -362,20 +362,21 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "upcoming";
   }
 
+  // FIX: Contar TODAS as orders em trânsito, não apenas as enviadas hoje.
+  // O Seller Center mostra todas as orders em trânsito independente da data de envio.
   if (TRANSIT_STATUSES.has(status)) {
-    if (substatus !== "none" && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
-      return "in_transit";
-    }
-
-    return null;
+    return "in_transit";
   }
 
+  // FIX: Contar TODAS as orders finalizadas com exceção, não apenas as de hoje.
+  // Isso inclui cancelled, not_delivered, returned — alinhado com o Seller Center.
   if (FINAL_EXCEPTION_STATUSES.has(status)) {
-    if (isSameCalendarDay(dates.finalExceptionDateKey, todayKey)) {
-      return "finalized";
-    }
+    return "finalized";
+  }
 
-    return null;
+  // Orders com status "delivered" são classificadas como finalizadas
+  if (status === "delivered") {
+    return "finalized";
   }
 
   return null;
@@ -402,20 +403,19 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
+  // FIX: Contar TODAS as orders em trânsito do fulfillment, não apenas as de hoje.
   if (TRANSIT_STATUSES.has(status)) {
-    if (substatus !== "none" && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
-      return "in_transit";
-    }
-
-    return null;
+    return "in_transit";
   }
 
+  // FIX: Contar TODAS as orders finalizadas com exceção do fulfillment.
   if (FINAL_EXCEPTION_STATUSES.has(status)) {
-    if (isSameCalendarDay(dates.finalExceptionDateKey, todayKey)) {
-      return "finalized";
-    }
+    return "finalized";
+  }
 
-    return null;
+  // Orders entregues pelo fulfillment são finalizadas
+  if (status === "delivered") {
+    return "finalized";
   }
 
   return null;

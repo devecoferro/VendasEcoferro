@@ -7,6 +7,7 @@ const OPERATIONAL_ORDER_STATUSES = [
   "ready_to_ship",
   "shipped",
   "in_transit",
+  "delivered",
   "cancelled",
   "not_delivered",
   "returned",

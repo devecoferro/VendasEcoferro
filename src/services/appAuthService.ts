@@ -98,16 +98,20 @@ export async function signOutRemote(): Promise<void> {
 }
 
 export async function getCurrentRemoteUser(): Promise<AuthUser | null> {
-  const response = await fetch("/api/app-auth", {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      action: "session",
+  const response = await withTimeout(
+    fetch("/api/app-auth", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "session",
+      }),
     }),
-  });
+    REMOTE_AUTH_TIMEOUT_MS,
+    "Timeout ao verificar sessao."
+  );
 
   const data = await parseJsonResponse<SessionResponse>(response);
   if (response.status === 401) {

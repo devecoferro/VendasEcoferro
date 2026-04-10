@@ -7,10 +7,10 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    port: Number(process.env.PORT || 8080),
     proxy: {
       "/api": {
-        target: process.env.VITE_API_PROXY_TARGET || "http://localhost:3000",
+        target: process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:3000",
         changeOrigin: true,
       },
     },
@@ -36,12 +36,10 @@ export default defineConfig(({ mode }) => ({
           if (id.includes("node_modules/recharts") || id.includes("node_modules/d3-")) {
             return "vendor-recharts";
           }
-          // jsPDF + QRCode + html2canvas — usados só em Review/Export
+          // jsPDF + QRCode — usados só em Review/Export
           if (
             id.includes("node_modules/jspdf") ||
-            id.includes("node_modules/html2canvas") ||
-            id.includes("node_modules/qrcode") ||
-            id.includes("node_modules/jsbarcode")
+            id.includes("node_modules/qrcode")
           ) {
             return "vendor-pdf-export";
           }

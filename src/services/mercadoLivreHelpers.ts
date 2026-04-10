@@ -237,6 +237,26 @@ export function getPayments(order: MLOrder): Record<string, unknown>[] {
   return asRecordArray(getRawData(order).payments);
 }
 
+/**
+ * Verifica se o pedido possui pagamento aprovado.
+ * Usado para calcular receita real — exclui pedidos pendentes sem pagamento.
+ */
+export function hasConfirmedPayment(order: MLOrder): boolean {
+  const rawData = getRawData(order);
+  const orderStatus = normalizeState(rawData.status || order.order_status);
+  const payments = getPayments(order);
+
+  // Se não há array de payments, infere do status do pedido
+  if (payments.length === 0) {
+    return ["paid", "confirmed"].includes(orderStatus);
+  }
+
+  // Pelo menos um pagamento deve estar aprovado
+  return payments.some(
+    (payment) => normalizeState(payment.status) === "approved"
+  );
+}
+
 export function getDepositInfo(order: MLOrder): OrderDepositInfo {
   const depositSnapshot = getDepositSnapshot(order);
   const key = normalizeText(depositSnapshot.key) || "without-deposit";

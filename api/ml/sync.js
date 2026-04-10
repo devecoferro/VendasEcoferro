@@ -13,6 +13,29 @@ import { invalidateDashboardCache } from "./dashboard.js";
 import { invalidateOrdersCache } from "./orders.js";
 import { invalidatePrivateSellerCenterComparisonCache } from "./private-seller-center-comparison.js";
 
+// Promise deduplication — prevents duplicate HTTP calls when running in parallel.
+// If two concurrent tasks call cachedFetch with the same key, only one HTTP request fires;
+// the second awaits the same promise.
+const inflightPromises = new Map();
+function cachedFetch(cache, key, fetchFn) {
+  if (key == null) return Promise.resolve(null);
+  if (cache.has(key)) return Promise.resolve(cache.get(key) ?? null);
+  if (inflightPromises.has(key)) return inflightPromises.get(key);
+  const promise = fetchFn()
+    .then((result) => {
+      cache.set(key, result);
+      inflightPromises.delete(key);
+      return result;
+    })
+    .catch((err) => {
+      cache.set(key, null);
+      inflightPromises.delete(key);
+      return null;
+    });
+  inflightPromises.set(key, promise);
+  return promise;
+}
+
 const ML_PAGE_LIMIT = 50;
 const DEFAULT_INCREMENTAL_MAX_PAGES = 20;
 const DEFAULT_FULL_MAX_PAGES = 200;
@@ -92,124 +115,69 @@ async function getSellerStores(accessToken, sellerId) {
 
 async function getItemImageUrl(accessToken, itemId, cache) {
   if (!itemId) return null;
-  if (cache.has(itemId)) return cache.get(itemId) ?? null;
-
-  try {
+  return cachedFetch(cache, itemId, async () => {
     const itemResponse = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
-
-    if (!itemResponse.ok) {
-      cache.set(itemId, null);
-      return null;
-    }
-
+    if (!itemResponse.ok) return null;
     const itemPayload = await itemResponse.json();
     const pictures = Array.isArray(itemPayload.pictures) ? itemPayload.pictures : [];
-    const firstPicture = pictures.find((picture) => picture?.secure_url || picture?.url) ?? null;
-    const imageUrl =
-      firstPicture?.secure_url ||
-      firstPicture?.url ||
-      itemPayload.secure_thumbnail ||
-      itemPayload.thumbnail ||
-      null;
-
-    cache.set(itemId, imageUrl);
-    return imageUrl;
-  } catch {
-    cache.set(itemId, null);
-    return null;
-  }
+    const firstPicture = pictures.find((p) => p?.secure_url || p?.url) ?? null;
+    return firstPicture?.secure_url || firstPicture?.url ||
+      itemPayload.secure_thumbnail || itemPayload.thumbnail || null;
+  });
 }
 
 async function getShipmentSnapshot(accessToken, shippingId, cache) {
   if (!shippingId) return null;
-  if (cache.has(shippingId)) return cache.get(shippingId) ?? null;
-
-  try {
+  return cachedFetch(cache, shippingId, async () => {
     const shipmentResponse = await fetch(
       `https://api.mercadolibre.com/shipments/${shippingId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-
-    if (!shipmentResponse.ok) {
-      cache.set(shippingId, null);
-      return null;
-    }
-
-    const shipmentPayload = await shipmentResponse.json();
-    const snapshot = {
-      id: shipmentPayload?.id ?? null,
-      status: shipmentPayload?.status ?? null,
-      substatus: shipmentPayload?.substatus ?? null,
-      logistic_type: shipmentPayload?.logistic_type ?? null,
-      mode: shipmentPayload?.mode ?? null,
-      receiver_name:
-        shipmentPayload?.receiver_address?.receiver_name ||
-        shipmentPayload?.receiver_name ||
-        null,
+    if (!shipmentResponse.ok) return null;
+    const p = await shipmentResponse.json();
+    return {
+      id: p?.id ?? null,
+      status: p?.status ?? null,
+      substatus: p?.substatus ?? null,
+      logistic_type: p?.logistic_type ?? null,
+      mode: p?.mode ?? null,
+      receiver_name: p?.receiver_address?.receiver_name || p?.receiver_name || null,
       status_history: {
-        date_handling: shipmentPayload?.status_history?.date_handling ?? null,
-        date_ready_to_ship: shipmentPayload?.status_history?.date_ready_to_ship ?? null,
-        date_shipped: shipmentPayload?.status_history?.date_shipped ?? null,
-        date_delivered: shipmentPayload?.status_history?.date_delivered ?? null,
-        date_cancelled: shipmentPayload?.status_history?.date_cancelled ?? null,
-        date_returned: shipmentPayload?.status_history?.date_returned ?? null,
-        date_not_delivered: shipmentPayload?.status_history?.date_not_delivered ?? null,
+        date_handling: p?.status_history?.date_handling ?? null,
+        date_ready_to_ship: p?.status_history?.date_ready_to_ship ?? null,
+        date_shipped: p?.status_history?.date_shipped ?? null,
+        date_delivered: p?.status_history?.date_delivered ?? null,
+        date_cancelled: p?.status_history?.date_cancelled ?? null,
+        date_returned: p?.status_history?.date_returned ?? null,
+        date_not_delivered: p?.status_history?.date_not_delivered ?? null,
       },
       shipping_option: {
-        name: shipmentPayload?.shipping_option?.name ?? null,
-        estimated_delivery_limit:
-          shipmentPayload?.shipping_option?.estimated_delivery_limit?.date ?? null,
-        estimated_delivery_final:
-          shipmentPayload?.shipping_option?.estimated_delivery_final?.date ?? null,
+        name: p?.shipping_option?.name ?? null,
+        estimated_delivery_limit: p?.shipping_option?.estimated_delivery_limit?.date ?? null,
+        estimated_delivery_final: p?.shipping_option?.estimated_delivery_final?.date ?? null,
       },
     };
-
-    cache.set(shippingId, snapshot);
-    return snapshot;
-  } catch {
-    cache.set(shippingId, null);
-    return null;
-  }
+  });
 }
 
 async function getShipmentSlaSnapshot(accessToken, shippingId, cache) {
   if (!shippingId) return null;
-  if (cache.has(shippingId)) return cache.get(shippingId) ?? null;
-
-  try {
-    const slaResponse = await fetch(`https://api.mercadolibre.com/shipments/${shippingId}/sla`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-
-    if (!slaResponse.ok) {
-      cache.set(shippingId, null);
-      return null;
-    }
-
-    const slaPayload = await slaResponse.json();
-    const snapshot = {
-      status: slaPayload?.status ?? null,
-      expected_date: slaPayload?.expected_date ?? null,
-      service: slaPayload?.service ?? null,
-      last_updated: slaPayload?.last_updated ?? null,
+  return cachedFetch(cache, `sla:${shippingId}`, async () => {
+    const slaResponse = await fetch(
+      `https://api.mercadolibre.com/shipments/${shippingId}/sla`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!slaResponse.ok) return null;
+    const p = await slaResponse.json();
+    return {
+      status: p?.status ?? null,
+      expected_date: p?.expected_date ?? null,
+      service: p?.service ?? null,
+      last_updated: p?.last_updated ?? null,
     };
-
-    cache.set(shippingId, snapshot);
-    return snapshot;
-  } catch {
-    cache.set(shippingId, null);
-    return null;
-  }
+  });
 }
 
 function shouldFetchBillingInfo(order, shipmentSnapshot) {
@@ -229,63 +197,47 @@ async function getOrderBillingInfoSnapshot(accessToken, orderId, cache) {
     return { available: false, status: "missing_order_id", data: null };
   }
 
-  if (cache.has(orderId)) {
-    return cache.get(orderId);
-  }
+  return cachedFetch(cache, `billing:${orderId}`, async () => {
+    try {
+      const billingResponse = await fetch(
+        `https://api.mercadolibre.com/orders/${orderId}/billing_info`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "x-version": "2",
+          },
+        }
+      );
 
-  try {
-    const billingResponse = await fetch(
-      `https://api.mercadolibre.com/orders/${orderId}/billing_info`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "x-version": "2",
-        },
+      if (billingResponse.ok) {
+        const payload = await billingResponse.json();
+        return { available: true, status: "available", data: payload };
       }
-    );
 
-    if (billingResponse.ok) {
-      const payload = await billingResponse.json();
-      const snapshot = {
-        available: true,
-        status: "available",
-        data: payload,
+      const status =
+        billingResponse.status === 401 || billingResponse.status === 403
+          ? "forbidden"
+          : billingResponse.status === 404
+            ? "not_found"
+            : "error";
+      const details = await billingResponse.text();
+      return {
+        available: false,
+        status,
+        data: null,
+        error_status: billingResponse.status,
+        error_message: details || null,
       };
-
-      cache.set(orderId, snapshot);
-      return snapshot;
+    } catch (error) {
+      return {
+        available: false,
+        status: "error",
+        data: null,
+        error_status: 0,
+        error_message: error instanceof Error ? error.message : "billing_info_fetch_failed",
+      };
     }
-
-    const status =
-      billingResponse.status === 401 || billingResponse.status === 403
-        ? "forbidden"
-        : billingResponse.status === 404
-          ? "not_found"
-          : "error";
-
-    const details = await billingResponse.text();
-    const snapshot = {
-      available: false,
-      status,
-      data: null,
-      error_status: billingResponse.status,
-      error_message: details || null,
-    };
-
-    cache.set(orderId, snapshot);
-    return snapshot;
-  } catch (error) {
-    const snapshot = {
-      available: false,
-      status: "error",
-      data: null,
-      error_status: 0,
-      error_message: error instanceof Error ? error.message : "billing_info_fetch_failed",
-    };
-
-    cache.set(orderId, snapshot);
-    return snapshot;
-  }
+  });
 }
 
 function buildDepositSnapshot(order, orderItem, shipmentSnapshot, storesById, storesByNodeId) {
@@ -530,6 +482,11 @@ export async function runMercadoLivreSync({
               const price = unitPrice ?? fullUnitPrice;
               if (price != null) {
                 amount = Number((Math.round(price * qty * 100) / 100).toFixed(2));
+              } else if (typeof order.total_amount === "number" && order.total_amount > 0) {
+                // Fallback: distribuir o total_amount proporcionalmente quando unit_price
+                // não está disponível (ocorre em alguns tipos de pedido multi-item).
+                const totalItems = orderItems.reduce((s, it) => s + (it.quantity || 1), 0);
+                amount = Number((Math.round((order.total_amount * qty / totalItems) * 100) / 100).toFixed(2));
               }
             }
 

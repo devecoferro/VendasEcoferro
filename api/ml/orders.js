@@ -10,6 +10,7 @@ import {
 
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
+const DELIVERED_STATUSES = new Set(["delivered"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
 const ORDERS_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PAGINATION_LIMIT = 300;
@@ -232,6 +233,7 @@ function isOperationalOrder(order) {
   return (
     OPEN_STATUSES.has(status) ||
     TRANSIT_STATUSES.has(status) ||
+    DELIVERED_STATUSES.has(status) ||
     FINAL_EXCEPTION_STATUSES.has(status)
   );
 }

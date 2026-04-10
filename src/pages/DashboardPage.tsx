@@ -32,6 +32,7 @@ import {
   formatSaleMoment,
   getDepositInfo,
   getShipmentPresentation,
+  hasConfirmedPayment,
   hasBillingInfoSnapshot,
   isOrderForCollection,
   isOrderInvoicePending,
@@ -270,7 +271,8 @@ export default function DashboardPage() {
         (order) =>
           order.order_status !== "cancelled" &&
           order.order_status !== "returned" &&
-          order.order_status !== "not_delivered"
+          order.order_status !== "not_delivered" &&
+          hasConfirmedPayment(order)
       ),
     [permittedOrders]
   );

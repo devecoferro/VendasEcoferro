@@ -7,7 +7,7 @@ const defaultDataDir = path.join(projectRoot, "data");
 export const APP_PORT = Number(process.env.PORT || 3000);
 export const APP_HOST = String(process.env.HOST || "0.0.0.0");
 export const APP_BASE_URL = String(
-  process.env.APP_BASE_URL || `http://localhost:${APP_PORT}`
+  process.env.APP_BASE_URL || `http://127.0.0.1:${APP_PORT}`
 ).trim();
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || defaultDataDir);
 export const DB_PATH = path.resolve(DATA_DIR, "ecoferro.db");
