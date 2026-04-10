@@ -37,6 +37,14 @@ const CROSS_DOCKING_NATIVE_IN_TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "receiver_absent",
   "not_visited",
 ]);
+// Substatuses for "shipped" that mean truly in transit (not just waiting for carrier)
+const SHIPPED_IN_TRANSIT_SUBSTATUSES = new Set([
+  "out_for_delivery",
+  "receiver_absent",
+  "not_visited",
+  "at_customs",
+  "waiting_for_withdrawal",
+]);
 const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
   "picked_up",
   "authorized_by_carrier",
@@ -362,21 +370,30 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "upcoming";
   }
 
-  // FIX: Contar TODAS as orders em trânsito, não apenas as enviadas hoje.
-  // O Seller Center mostra todas as orders em trânsito independente da data de envio.
-  if (TRANSIT_STATUSES.has(status)) {
+  // "shipped" com substatuses específicos = realmente em trânsito
+  // "shipped" sem substatus ou com substatus genérico = ainda aguardando coleta → upcoming
+  // Isso replica a lógica do Seller Center onde "shipped" sem movimento não é "Em trânsito"
+  if (status === "shipped") {
+    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    return "upcoming";
+  }
+
+  // "in_transit" como status direto = definitivamente em trânsito
+  if (status === "in_transit") {
     return "in_transit";
   }
 
-  // FIX: Contar TODAS as orders finalizadas com exceção, não apenas as de hoje.
-  // Isso inclui cancelled, not_delivered, returned — alinhado com o Seller Center.
+  // Finalizadas: cancelled, not_delivered, returned — alinhado com o Seller Center
   if (FINAL_EXCEPTION_STATUSES.has(status)) {
     return "finalized";
   }
 
-  // Orders com status "delivered" são classificadas como finalizadas
+  // "delivered" não aparece no painel operacional do Seller Center — pedidos entregues somem
+  // Retornar null para não contá-los em nenhum bucket operacional
   if (status === "delivered") {
-    return "finalized";
+    return null;
   }
 
   return null;
@@ -403,19 +420,26 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // FIX: Contar TODAS as orders em trânsito do fulfillment, não apenas as de hoje.
-  if (TRANSIT_STATUSES.has(status)) {
+  // Fulfillment: "shipped" com substatuses de trânsito real = in_transit
+  // "shipped" sem substatus = still in ML warehouse/processing → upcoming
+  if (status === "shipped") {
+    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    return "upcoming";
+  }
+
+  if (status === "in_transit") {
     return "in_transit";
   }
 
-  // FIX: Contar TODAS as orders finalizadas com exceção do fulfillment.
   if (FINAL_EXCEPTION_STATUSES.has(status)) {
     return "finalized";
   }
 
-  // Orders entregues pelo fulfillment são finalizadas
+  // "delivered" no fulfillment também não aparece no operacional do Seller Center
   if (status === "delivered") {
-    return "finalized";
+    return null;
   }
 
   return null;
