@@ -33,7 +33,8 @@ export default defineConfig(({ mode }) => ({
         // possa cacheá-las independentemente do código da aplicação
         manualChunks(id) {
           // Recharts — biblioteca de gráficos, usada só no Dashboard
-          if (id.includes("node_modules/recharts") || id.includes("node_modules/d3-")) {
+          // Nota: d3-* NÃO vai aqui — vai para vendor-misc para evitar referência circular
+          if (id.includes("node_modules/recharts")) {
             return "vendor-recharts";
           }
           // jsPDF + QRCode — usados só em Review/Export
