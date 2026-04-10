@@ -41,10 +41,8 @@ import {
 } from "@/services/mercadoLivreHelpers";
 import type { MLOperationalBucket, MLOrder } from "@/services/mercadoLivreService";
 import {
-  AlertCircle,
   BarChart3,
   CheckCircle,
-  Clock3,
   FileCheck2,
   Loader2,
   Package,
@@ -232,7 +230,9 @@ function statusBadgeClassName(tone: PriorityOrderRow["statusTone"]): string {
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { canAccessLocation } = useAuth();
-  const { connection, orders, dashboard, loading, error } = useMercadoLivreData();
+  const { connection, orders, dashboard, loading } = useMercadoLivreData({
+    ordersView: "dashboard",
+  });
 
   const permittedOrders = useMemo(
     () => orders.filter((order) => canAccessLocation(getDepositInfo(order).label)),
@@ -264,12 +264,23 @@ export default function DashboardPage() {
     [permittedOrders]
   );
 
+  const paidOrders = useMemo(
+    () =>
+      permittedOrders.filter(
+        (order) =>
+          order.order_status !== "cancelled" &&
+          order.order_status !== "returned" &&
+          order.order_status !== "not_delivered"
+      ),
+    [permittedOrders]
+  );
+
   const totalRevenue = useMemo(
     () =>
-      permittedOrders.reduce((sum, order) => {
+      paidOrders.reduce((sum, order) => {
         return sum + (typeof order.amount === "number" ? order.amount : 0);
       }, 0),
-    [permittedOrders]
+    [paidOrders]
   );
 
   const printableRevenue = useMemo(
@@ -285,7 +296,8 @@ export default function DashboardPage() {
       BUCKET_META.map((bucket) => ({
         ...bucket,
         total: accessibleDeposits.reduce(
-          (sum, deposit) => sum + (deposit.counts?.[bucket.key] || 0),
+          (sum, deposit) =>
+            sum + (deposit.internal_operational_counts?.[bucket.key] || deposit.counts?.[bucket.key] || 0),
           0
         ),
       })),
@@ -352,7 +364,13 @@ export default function DashboardPage() {
       };
 
       current.pedidos += 1;
-      current.faturamento += typeof order.amount === "number" ? order.amount : 0;
+      const isCancelled =
+        order.order_status === "cancelled" ||
+        order.order_status === "returned" ||
+        order.order_status === "not_delivered";
+      if (!isCancelled) {
+        current.faturamento += typeof order.amount === "number" ? order.amount : 0;
+      }
 
       if (isOrderReadyToPrintLabel(order)) {
         current.etiquetas += 1;
@@ -443,12 +461,6 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {error && (
-            <div className="rounded-[20px] border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-
           <div className="rounded-[28px] border border-[#e6ebf4] bg-white px-8 py-16 text-center shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
             <div className="mx-auto flex max-w-2xl flex-col items-center gap-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#eef5ff] text-[#3483fa]">
@@ -506,12 +518,6 @@ export default function DashboardPage() {
             </Button>
           </div>
         </div>
-
-        {error && (
-          <div className="rounded-[20px] border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
           <StatsCard

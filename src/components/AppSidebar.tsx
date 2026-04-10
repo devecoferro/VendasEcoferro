@@ -8,6 +8,7 @@ import {
   History,
   LayoutDashboard,
   LogOut,
+  Package,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -33,6 +34,7 @@ const baseNavItems: SidebarNavItem[] = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/review", icon: ClipboardCheck, label: "Conferencia" },
   { to: "/history", icon: History, label: "Historico" },
+  { to: "/stock", icon: Package, label: "Estoque" },
   {
     to: "/mercado-livre",
     label: "EcoFerro",

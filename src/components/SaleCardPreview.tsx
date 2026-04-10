@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { cn } from "@/lib/utils";
-import { SaleData } from "@/types/sales";
+import { type SaleData } from "@/types/sales";
 
 interface SaleCardPreviewProps {
   sale: SaleData;
@@ -176,7 +176,7 @@ function ObservationBlock({ text }: { text: string }) {
   return (
     <div className="rounded-xl border border-[#f4d28d] bg-[#fff7e6] px-3 py-2.5">
       <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#a16207]">
-        Observação
+        Observacao
       </p>
       <p className="mt-1 text-[13px] font-medium leading-[1.35] text-[#7c4a03]">{text}</p>
     </div>
@@ -227,7 +227,10 @@ export function SaleCardPreview({
             const shouldShowObservation = index === 0 && Boolean(labelObservation);
 
             return (
-              <div key={`${item.sku || item.itemTitle}-${index}`} className="flex flex-col md:flex-row">
+              <div
+                key={`${item.sku || item.itemTitle}-${index}`}
+                className="flex flex-col md:flex-row"
+              >
                 <div className="p-4 md:w-[24%] md:pr-2">
                   <ProductImageBlock
                     src={rowImageSrc}

@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import { ProcessingResult } from "@/services/fileProcessor";
+import { type ProcessingResult } from "@/services/fileProcessor";
 
 interface ExtractionContextType {
   results: ProcessingResult[];
@@ -71,9 +71,7 @@ export function ExtractionProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ExtractionContext.Provider value={value}>
-      {children}
-    </ExtractionContext.Provider>
+    <ExtractionContext.Provider value={value}>{children}</ExtractionContext.Provider>
   );
 }
 

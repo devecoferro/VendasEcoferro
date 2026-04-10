@@ -3,7 +3,6 @@ import { ArrowRight, Check, Eye, EyeOff, Loader2, Lock, User } from "lucide-reac
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 
-const REMEMBERED_USERNAME_KEY = "ecoferro.remembered-username";
 const LOGIN_BACKGROUND = "/ChatGPT Image 2 de abr. de 2026, 11_27_17.png";
 const LOGO_PATH = "/login-ecoferro-logo-transparent.png";
 
@@ -14,7 +13,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberUser, setRememberUser] = useState(true);
+  const [rememberUser, setRememberUser] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,24 +28,10 @@ export default function LoginPage() {
     }
   }, [currentUser, navigate, redirectTarget]);
 
-  useEffect(() => {
-    const savedUsername = window.localStorage.getItem(REMEMBERED_USERNAME_KEY);
-    if (savedUsername) {
-      setUsername(savedUsername);
-      setRememberUser(true);
-    }
-  }, []);
-
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitting(true);
     setError("");
-
-    if (rememberUser && username.trim()) {
-      window.localStorage.setItem(REMEMBERED_USERNAME_KEY, username.trim());
-    } else {
-      window.localStorage.removeItem(REMEMBERED_USERNAME_KEY);
-    }
 
     try {
       await login(username.trim(), password);
@@ -105,8 +90,8 @@ export default function LoginPage() {
                   <input
                     value={username}
                     onChange={(event) => setUsername(event.target.value)}
-                    placeholder="admin.ecoferro"
-                    autoComplete="username"
+                    placeholder=""
+                    autoComplete="off"
                     className="w-full bg-transparent text-[16px] text-slate-900 outline-none placeholder:text-slate-500"
                   />
                 </InputShell>

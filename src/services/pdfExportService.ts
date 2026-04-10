@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import QRCode from "qrcode";
-import { SaleData } from "@/types/sales";
+import { type SaleData } from "@/types/sales";
 
 const PAGE_W = 210;
 const PAGE_H = 297;
@@ -121,7 +121,9 @@ function drawObservationBox(
     lines = lines.slice(0, maxLines);
     const lastLine = String(lines[lines.length - 1] || "");
     lines[lines.length - 1] =
-      lastLine.length > 2 ? `${lastLine.slice(0, Math.max(0, lastLine.length - 2))}…` : `${lastLine}…`;
+      lastLine.length > 2
+        ? `${lastLine.slice(0, Math.max(0, lastLine.length - 2))}...`
+        : `${lastLine}...`;
   }
 
   const boxHeight = Math.min(
@@ -136,7 +138,7 @@ function drawObservationBox(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(labelFontSize);
   doc.setTextColor(161, 98, 7);
-  doc.text("OBSERVAÇÃO", x + innerPadX, y + innerPadY + labelHeight - 0.4);
+  doc.text("OBSERVACAO", x + innerPadX, y + innerPadY + labelHeight - 0.4);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(textFontSize);
@@ -154,18 +156,19 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
   const pad = 3;
   const innerH = CARD_H - pad * 2;
   const groupedItems = sale.groupedItems || [];
-  const displayItems = groupedItems.length > 1
-    ? groupedItems
-    : [
-        {
-          itemTitle: sale.productName,
-          sku: sale.sku,
-          quantity: sale.quantity,
-          amount: sale.amount,
-          productImageUrl: sale.productImageData || sale.productImageUrl,
-          productImageData: sale.productImageData,
-        },
-      ];
+  const displayItems =
+    groupedItems.length > 1
+      ? groupedItems
+      : [
+          {
+            itemTitle: sale.productName,
+            sku: sale.sku,
+            quantity: sale.quantity,
+            amount: sale.amount,
+            productImageUrl: sale.productImageData || sale.productImageUrl,
+            productImageData: sale.productImageData,
+          },
+        ];
   const rowGap = 1.2;
   const rowCount = Math.max(1, displayItems.length);
   const rowHeight = (innerH - rowGap * (rowCount - 1)) / rowCount;
@@ -198,7 +201,11 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     const imageY = rowTop + 0.6;
     const imageW = LEFT_W - 6;
     const imageH = rowHeight - 1.2;
-    const imageSource = item.productImageData || item.productImageUrl || sale.productImageData || sale.productImageUrl;
+    const imageSource =
+      item.productImageData ||
+      item.productImageUrl ||
+      sale.productImageData ||
+      sale.productImageUrl;
     const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
 
     if (imgData) {
@@ -227,8 +234,11 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
 
     doc.setFontSize(titleFont);
     doc.setTextColor(21, 35, 57);
-    const productLines = doc.splitTextToSize(item.itemTitle || sale.productName || "-", maxTextW);
-    const maxProductLines = compactRows ? 2 : 2;
+    const productLines = doc.splitTextToSize(
+      item.itemTitle || sale.productName || "-",
+      maxTextW
+    );
+    const maxProductLines = 2;
     doc.text(productLines.slice(0, maxProductLines), centerX, textY);
     textY += Math.min(productLines.length, maxProductLines) * (compactRows ? 3 : 3.8) + 0.8;
 
@@ -302,9 +312,14 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(veryCompactRows ? 4.6 : 5.4);
     doc.setTextColor(120, 120, 130);
-    doc.text("QR VENDA", saleQrX + saleQrSize / 2, saleQrY + saleQrSize + (compactRows ? 2 : 2.8), {
-      align: "center",
-    });
+    doc.text(
+      "QR VENDA",
+      saleQrX + saleQrSize / 2,
+      saleQrY + saleQrSize + (compactRows ? 2 : 2.8),
+      {
+        align: "center",
+      }
+    );
 
     if (logoData) {
       try {
@@ -317,7 +332,7 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
           compactRows ? 11 : 16
         );
       } catch {
-        // Ignore logo render failures and keep PDF generation running.
+        // Keep PDF generation running even if logo render fails.
       }
     }
 
@@ -330,7 +345,11 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     doc.text("QR PECA", rightX + rightContentW / 2, qrY + 1.4, { align: "center" });
     qrY += compactRows ? 4.4 : 5.2;
 
-    const pieceQrSize = Math.max(veryCompactRows ? 9.5 : compactRows ? 12 : 21.5, Math.min(rowHeight - (compactRows ? 10.5 : 11), compactRows ? 12 : 21.5));
+    const pieceQrSize = Math.max(
+      veryCompactRows ? 9.5 : compactRows ? 12 : 21.5,
+      Math.min(rowHeight - (compactRows ? 10.5 : 11), compactRows ? 12 : 21.5)
+    );
+
     if (pieceQrData) {
       const qrX = rightX + (rightContentW - pieceQrSize) / 2;
       try {
@@ -359,9 +378,14 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(compactRows ? 7.8 : 9.6);
     doc.setTextColor(51, 65, 85);
-    doc.text(`Qtd: ${item.quantity || 1}`, rightX + rightContentW / 2, qrY + pieceQrSize + (compactRows ? 6 : 7.6), {
-      align: "center",
-    });
+    doc.text(
+      `Qtd: ${item.quantity || 1}`,
+      rightX + rightContentW / 2,
+      qrY + pieceQrSize + (compactRows ? 6 : 7.6),
+      {
+        align: "center",
+      }
+    );
   }
 }
 

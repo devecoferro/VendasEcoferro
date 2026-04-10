@@ -1,3 +1,12 @@
+export interface SaleItemData {
+  itemTitle: string;
+  sku: string;
+  quantity: number;
+  amount?: number;
+  productImageUrl?: string;
+  productImageData?: string;
+}
+
 export interface SaleData {
   id: string;
   saleNumber: string;
@@ -18,20 +27,11 @@ export interface SaleData {
   groupedItems?: SaleItemData[];
 }
 
-export interface SaleItemData {
-  itemTitle: string;
-  sku: string;
-  quantity: number;
-  amount?: number;
-  productImageUrl?: string;
-  productImageData?: string;
-}
-
 export interface DocumentRecord {
   id: string;
   fileName: string;
-  fileType: string;
-  processingStatus: "completed" | "review" | "processing" | "error";
+  fileType: "pdf" | "png" | "jpg" | "jpeg";
+  processingStatus: "processing" | "review" | "completed" | "failed";
   sales: SaleData[];
   createdAt: string;
 }

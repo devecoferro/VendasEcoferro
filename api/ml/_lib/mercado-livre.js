@@ -3,10 +3,7 @@ import {
   ML_CLIENT_SECRET,
   ensureMercadoLivreCredentials,
 } from "./app-config.js";
-import {
-  getConnectionById,
-  updateConnectionTokens,
-} from "./storage.js";
+import { getConnectionById, updateConnectionTokens } from "./storage.js";
 
 export function isTokenExpiringSoon(tokenExpiresAt) {
   if (!tokenExpiresAt) return true;
@@ -20,7 +17,7 @@ export async function refreshMercadoLivreToken(connectionId) {
 
   const connection = getConnectionById(connectionId);
   if (!connection?.refresh_token) {
-    throw new Error("Conexão sem refresh token válido.");
+    throw new Error("Conexao sem refresh token valido.");
   }
 
   const response = await fetch("https://api.mercadolibre.com/oauth/token", {
@@ -53,7 +50,7 @@ export async function refreshMercadoLivreToken(connectionId) {
 
 export async function ensureValidAccessToken(connection) {
   if (!connection?.id) {
-    throw new Error("Conexão do Mercado Livre não encontrada.");
+    throw new Error("Conexao do Mercado Livre nao encontrada.");
   }
 
   if (!isTokenExpiringSoon(connection.token_expires_at)) {

@@ -6,9 +6,67 @@ import {
   updateConnectionLastSync,
   upsertOrders,
 } from "./_lib/storage.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import { syncClaims, syncPacks, syncReturns } from "./_lib/mirror-sync.js";
+import { getMirrorEntityStats } from "./_lib/mirror-storage.js";
+import { invalidateDashboardCache } from "./dashboard.js";
+import { invalidateOrdersCache } from "./orders.js";
+import { invalidatePrivateSellerCenterComparisonCache } from "./private-seller-center-comparison.js";
 
 const ML_PAGE_LIMIT = 50;
-const MAX_PAGES = 20;
+const DEFAULT_INCREMENTAL_MAX_PAGES = 20;
+const DEFAULT_FULL_MAX_PAGES = 200;
+const ABSOLUTE_MAX_PAGES = 500;
+const INCREMENTAL_SYNC_COOLDOWN_MS = 120000;
+const MIRROR_SYNC_COOLDOWN_MS = 15 * 60 * 1000;
+const syncRequestsInFlight = new Map();
+
+function parseIsoDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function shouldSkipIncrementalSync(connection, updatedFrom) {
+  const normalizedUpdatedFrom = typeof updatedFrom === "string" ? updatedFrom.trim() : "";
+  if (!normalizedUpdatedFrom || !connection?.last_sync_at) {
+    return false;
+  }
+
+  const updatedFromDate = parseIsoDate(normalizedUpdatedFrom);
+  const lastSyncDate = parseIsoDate(connection.last_sync_at);
+  if (!updatedFromDate || !lastSyncDate) {
+    return false;
+  }
+
+  if (lastSyncDate.getTime() < updatedFromDate.getTime()) {
+    return false;
+  }
+
+  return Date.now() - lastSyncDate.getTime() <= INCREMENTAL_SYNC_COOLDOWN_MS;
+}
+
+function shouldRunMirrorEntitySync(connection, entity, options = {}) {
+  const sellerId = connection?.seller_id ? String(connection.seller_id) : null;
+  if (!sellerId) {
+    return true;
+  }
+
+  if (options.force) {
+    return true;
+  }
+
+  const stats = getMirrorEntityStats(entity, { sellerId });
+  const lastSyncedAt = parseIsoDate(stats?.last_synced_at);
+  if (!lastSyncedAt) {
+    return true;
+  }
+
+  return Date.now() - lastSyncedAt.getTime() > MIRROR_SYNC_COOLDOWN_MS;
+}
 
 async function getSellerStores(accessToken, sellerId) {
   try {
@@ -345,8 +403,14 @@ export async function runMercadoLivreSync({
   dateTo,
   statusFilter,
   updatedFrom,
-  pageLimit = MAX_PAGES,
+  pageLimit,
 }) {
+  const effectivePageLimit = Number.isFinite(Number(pageLimit))
+    ? Math.max(1, Math.min(Number(pageLimit), ABSOLUTE_MAX_PAGES))
+    : updatedFrom
+      ? DEFAULT_INCREMENTAL_MAX_PAGES
+      : DEFAULT_FULL_MAX_PAGES;
+
   const baseConnection = getConnectionById(connectionId);
 
   if (!baseConnection?.seller_id) {
@@ -373,8 +437,9 @@ export async function runMercadoLivreSync({
   let totalFetched = 0;
   let totalSynced = 0;
   let paging = null;
+  const touchedPackIds = new Set();
 
-  while (pageCount < pageLimit) {
+  while (pageCount < effectivePageLimit) {
     const ordersUrl = buildOrdersSearchUrl({
       sellerId: String(connection.seller_id),
       dateFrom,
@@ -403,87 +468,114 @@ export async function runMercadoLivreSync({
       break;
     }
 
+    // Collect pack IDs before parallel processing
+    for (const order of pageOrders) {
+      const packId = order.pack_id ? String(order.pack_id) : null;
+      if (packId) touchedPackIds.add(packId);
+    }
+
+    // Fetch all external data for every order in this page concurrently
+    const orderResults = await Promise.all(
+      pageOrders.map(async (order) => {
+        const orderId = String(order.id);
+        const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
+
+        const [shipmentSnapshot, shipmentSlaSnapshot] = await Promise.all([
+          getShipmentSnapshot(connection.access_token, shippingId, shipmentSnapshotCache),
+          getShipmentSlaSnapshot(connection.access_token, shippingId, shipmentSlaCache),
+        ]);
+
+        const billingInfoSnapshot = shouldFetchBillingInfo(order, shipmentSnapshot)
+          ? await getOrderBillingInfoSnapshot(connection.access_token, orderId, billingInfoCache)
+          : { available: false, status: "skipped", data: null };
+
+        const shipmentReceiverName =
+          typeof shipmentSnapshot?.receiver_name === "string"
+            ? shipmentSnapshot.receiver_name
+            : null;
+        const buyerNameFromOrder = order.buyer?.first_name
+          ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
+          : null;
+        const buyerName =
+          shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+        const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
+
+        if (orderItems.length === 0) return null;
+
+        const itemRecords = await Promise.all(
+          orderItems.map(async (item, itemIndex) => {
+            const itemId = item.item?.id || null;
+            const productImageUrl = await getItemImageUrl(
+              connection.access_token,
+              itemId,
+              itemImageCache
+            );
+            const depositSnapshot = buildDepositSnapshot(
+              order,
+              item,
+              shipmentSnapshot,
+              storesById,
+              storesByNodeId
+            );
+            const recordId = `${orderId}:${itemId || item.item?.seller_sku || itemIndex}`;
+
+            const qty = item.quantity || 1;
+            const unitPrice = item.unit_price ?? null;
+            const fullUnitPrice = item.full_unit_price ?? null;
+            const isSingleItem = orderItems.length === 1;
+            let amount = null;
+            if (isSingleItem && typeof order.total_amount === "number" && order.total_amount > 0) {
+              amount = Number(order.total_amount.toFixed(2));
+            } else {
+              const price = unitPrice ?? fullUnitPrice;
+              if (price != null) {
+                amount = Number((Math.round(price * qty * 100) / 100).toFixed(2));
+              }
+            }
+
+            return {
+              id: recordId,
+              connection_id: connection.id,
+              order_id: orderId,
+              sale_number: orderId,
+              sale_date: order.date_created,
+              buyer_name: buyerName,
+              buyer_nickname: order.buyer?.nickname || null,
+              item_title: item.item?.title || null,
+              item_id: itemId,
+              product_image_url: productImageUrl,
+              sku: item.item?.seller_sku || null,
+              quantity: qty,
+              amount,
+              order_status: order.status || null,
+              shipping_id: shippingId,
+              raw_data: {
+                ...order,
+                order_item_index: itemIndex,
+                order_item_snapshot: item,
+                shipment_snapshot: shipmentSnapshot,
+                sla_snapshot: shipmentSlaSnapshot,
+                deposit_snapshot: depositSnapshot,
+                billing_info_snapshot: billingInfoSnapshot.data,
+                billing_info_status: billingInfoSnapshot.status,
+                billing_info_error_status: billingInfoSnapshot.error_status ?? null,
+                billing_info_error_message: billingInfoSnapshot.error_message ?? null,
+              },
+            };
+          })
+        );
+
+        return { orderId, records: itemRecords };
+      })
+    );
+
     const pageRecords = [];
     const orderIdsToReplace = [];
 
-    for (const order of pageOrders) {
-      const orderId = String(order.id);
-      const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
-      const shipmentSnapshot = await getShipmentSnapshot(
-        connection.access_token,
-        shippingId,
-        shipmentSnapshotCache
-      );
-      const shipmentSlaSnapshot = await getShipmentSlaSnapshot(
-        connection.access_token,
-        shippingId,
-        shipmentSlaCache
-      );
-      const billingInfoSnapshot = shouldFetchBillingInfo(order, shipmentSnapshot)
-        ? await getOrderBillingInfoSnapshot(connection.access_token, orderId, billingInfoCache)
-        : {
-            available: false,
-            status: "skipped",
-            data: null,
-          };
-      const shipmentReceiverName =
-        typeof shipmentSnapshot?.receiver_name === "string"
-          ? shipmentSnapshot.receiver_name
-          : null;
-      const buyerNameFromOrder = order.buyer?.first_name
-        ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
-        : null;
-      const buyerName = shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
-      const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
-
-      if (orderItems.length === 0) {
-        continue;
-      }
-
-      orderIdsToReplace.push(orderId);
-
-      for (const [itemIndex, item] of orderItems.entries()) {
-        const itemId = item.item?.id || null;
-        const productImageUrl = await getItemImageUrl(connection.access_token, itemId, itemImageCache);
-        const depositSnapshot = buildDepositSnapshot(
-          order,
-          item,
-          shipmentSnapshot,
-          storesById,
-          storesByNodeId
-        );
-        const recordId = `${orderId}:${itemId || item.item?.seller_sku || itemIndex}`;
-
-        pageRecords.push({
-          id: recordId,
-          connection_id: connection.id,
-          order_id: orderId,
-          sale_number: orderId,
-          sale_date: order.date_created,
-          buyer_name: buyerName,
-          buyer_nickname: order.buyer?.nickname || null,
-          item_title: item.item?.title || null,
-          item_id: itemId,
-          product_image_url: productImageUrl,
-          sku: item.item?.seller_sku || null,
-          quantity: item.quantity || 1,
-          amount: item.unit_price ? item.unit_price * (item.quantity || 1) : null,
-          order_status: order.status || null,
-          shipping_id: shippingId,
-          raw_data: {
-            ...order,
-            order_item_index: itemIndex,
-            order_item_snapshot: item,
-            shipment_snapshot: shipmentSnapshot,
-            sla_snapshot: shipmentSlaSnapshot,
-            deposit_snapshot: depositSnapshot,
-            billing_info_snapshot: billingInfoSnapshot.data,
-            billing_info_status: billingInfoSnapshot.status,
-            billing_info_error_status: billingInfoSnapshot.error_status ?? null,
-            billing_info_error_message: billingInfoSnapshot.error_message ?? null,
-          },
-        });
-      }
+    for (const result of orderResults) {
+      if (!result) continue;
+      orderIdsToReplace.push(result.orderId);
+      pageRecords.push(...result.records);
     }
 
     deleteOrdersByOrderIds(orderIdsToReplace);
@@ -500,7 +592,107 @@ export async function runMercadoLivreSync({
     }
   }
 
-  updateConnectionLastSync(connection.id);
+  const mirror = {
+    packs: null,
+    claims: null,
+    returns: null,
+    warnings: [],
+  };
+
+  const shouldForceMirrorSync = !updatedFrom;
+  const shouldRunPacksSync = shouldRunMirrorEntitySync(connection, "packs", {
+    force: shouldForceMirrorSync,
+  });
+  const shouldRunClaimsSync = shouldRunMirrorEntitySync(connection, "claims", {
+    force: shouldForceMirrorSync,
+  });
+  const shouldRunReturnsSync = shouldRunMirrorEntitySync(connection, "returns", {
+    force: shouldForceMirrorSync,
+  });
+
+  if (shouldRunPacksSync) {
+    try {
+      mirror.packs = await syncPacks({
+        connectionId: connection.id,
+        packIds: updatedFrom ? [...touchedPackIds] : undefined,
+      });
+    } catch (error) {
+      mirror.warnings.push({
+        entity: "packs",
+        error: error instanceof Error ? error.message : "pack_sync_failed",
+      });
+    }
+  } else {
+    mirror.packs = {
+      ok: true,
+      entity: "packs",
+      status: "skipped_recent_sync",
+      incomplete: false,
+      seller_id: String(connection.seller_id),
+      fetched: 0,
+      synced: 0,
+      pages: 0,
+      records: [],
+    };
+  }
+
+  if (shouldRunClaimsSync) {
+    try {
+      mirror.claims = await syncClaims({
+        connectionId: connection.id,
+        updatedFrom: updatedFrom || baseConnection.last_sync_at || null,
+        pageLimit: effectivePageLimit,
+      });
+    } catch (error) {
+      mirror.warnings.push({
+        entity: "claims",
+        error: error instanceof Error ? error.message : "claim_sync_failed",
+      });
+    }
+  } else {
+    mirror.claims = {
+      ok: true,
+      entity: "claims",
+      status: "skipped_recent_sync",
+      incomplete: false,
+      seller_id: String(connection.seller_id),
+      fetched: 0,
+      synced: 0,
+      pages: 0,
+      records: [],
+    };
+  }
+
+  if (shouldRunReturnsSync) {
+    try {
+      mirror.returns = await syncReturns({
+        connectionId: connection.id,
+        claims: mirror.claims?.status === "synced" ? mirror.claims.records || null : null,
+      });
+    } catch (error) {
+      mirror.warnings.push({
+        entity: "returns",
+        error: error instanceof Error ? error.message : "return_sync_failed",
+      });
+    }
+  } else {
+    mirror.returns = {
+      ok: true,
+      entity: "returns",
+      status: "skipped_recent_sync",
+      incomplete: false,
+      seller_id: String(connection.seller_id),
+      fetched: 0,
+      synced: 0,
+      pages: 0,
+      records: [],
+    };
+  }
+
+  const updatedConnection = updateConnectionLastSync(connection.id);
+  invalidateDashboardCache();
+  invalidateOrdersCache();
+  invalidatePrivateSellerCenterComparisonCache();
 
   return {
     success: true,
@@ -508,6 +700,8 @@ export async function runMercadoLivreSync({
     synced: totalSynced,
     pages: pageCount,
     paging,
+    mirror,
+    connection_last_sync_at: updatedConnection?.last_sync_at || null,
   };
 }
 
@@ -517,25 +711,61 @@ export default async function handler(request, response) {
   }
 
   try {
+    await requireAuthenticatedProfile(request);
+
     const {
       connection_id,
       date_from,
       date_to,
       status_filter,
       updated_from,
+      page_limit,
     } = typeof request.body === "string" ? JSON.parse(request.body) : request.body || {};
 
     if (!connection_id) {
       return response.status(400).json({ success: false, error: "connection_id is required" });
     }
 
-    const result = await runMercadoLivreSync({
-      connectionId: connection_id,
-      dateFrom: date_from,
-      dateTo: date_to,
-      statusFilter: status_filter,
-      updatedFrom: updated_from,
-    });
+    const connection = getConnectionById(connection_id);
+    if (!connection?.id) {
+      return response.status(404).json({
+        success: false,
+        error: "Connection not found",
+      });
+    }
+
+    if (shouldSkipIncrementalSync(connection, updated_from)) {
+      return response.status(200).json({
+        success: true,
+        total_fetched: 0,
+        synced: 0,
+        pages: 0,
+        paging: null,
+        mirror: null,
+        skipped: true,
+        connection_last_sync_at: connection.last_sync_at || null,
+      });
+    }
+
+    let syncPromise = syncRequestsInFlight.get(connection_id);
+    if (!syncPromise) {
+      syncPromise = runMercadoLivreSync({
+        connectionId: connection_id,
+        dateFrom: date_from,
+        dateTo: date_to,
+        statusFilter: status_filter,
+        updatedFrom: updated_from,
+        pageLimit: page_limit,
+      }).finally(() => {
+        if (syncRequestsInFlight.get(connection_id) === syncPromise) {
+          syncRequestsInFlight.delete(connection_id);
+        }
+      });
+
+      syncRequestsInFlight.set(connection_id, syncPromise);
+    }
+
+    const result = await syncPromise;
 
     return response.status(200).json({
       success: true,
@@ -543,6 +773,9 @@ export default async function handler(request, response) {
       synced: result.synced,
       pages: result.pages,
       paging: result.paging,
+      mirror: result.mirror,
+      skipped: false,
+      connection_last_sync_at: result.connection_last_sync_at || null,
     });
   } catch (error) {
     return response.status(500).json({

@@ -11,7 +11,6 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 const queryClient = new QueryClient();
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
-const UploadPage = lazy(() => import("./pages/UploadPage"));
 const ReviewPage = lazy(() => import("./pages/ReviewPage"));
 const HistoryPage = lazy(() => import("./pages/HistoryPage"));
 const MercadoLivrePage = lazy(() => import("./pages/MercadoLivrePage"));
@@ -20,6 +19,7 @@ const MLCallbackPage = lazy(() => import("./pages/MLCallbackPage"));
 const MLReconnectPage = lazy(() => import("./pages/MLReconnectPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
+const StockPage = lazy(() => import("./pages/StockPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -47,12 +47,12 @@ const App = () => (
 
                 <Route element={<ProtectedRoute />}>
                   <Route path="/" element={<DashboardPage />} />
-                  <Route path="/upload" element={<UploadPage />} />
                   <Route path="/review" element={<ReviewPage />} />
                   <Route path="/history" element={<HistoryPage />} />
                   <Route path="/mercado-livre" element={<MercadoLivrePage />} />
                   <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
                   <Route path="/mercado-livre/reconnect" element={<MLReconnectPage />} />
+                  <Route path="/stock" element={<StockPage />} />
                 </Route>
 
                 <Route element={<ProtectedRoute requireAdmin />}>

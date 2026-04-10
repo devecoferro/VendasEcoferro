@@ -1,8 +1,45 @@
-import { getOrders } from "./_lib/storage.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import {
+  countOrdersByScope,
+  getOperationalOrders,
+  getOrders,
+  getOrderSummariesByScope,
+  getPaginatedOrderRows,
+  getPaginatedOrderSummaries,
+} from "./_lib/storage.js";
+
+const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship"]);
+const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
+const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
+const ORDERS_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_PAGINATION_LIMIT = 300;
+const MAX_PAGINATION_LIMIT = 1000;
+const CLIENT_RAW_DATA_KEYS = [
+  "status",
+  "payments",
+  "tags",
+  "context",
+  "shipment_snapshot",
+  "sla_snapshot",
+  "deposit_snapshot",
+  "billing_info_status",
+  "billing_info_snapshot",
+  "shipping_id",
+];
+
+const ordersCache = new Map();
+
+export function invalidateOrdersCache() {
+  ordersCache.clear();
+}
 
 function toFiniteNumber(value, fallback = 0) {
   const numericValue = Number(value);
   return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function normalizeState(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 function normalizeOrderItem(row) {
@@ -40,6 +77,188 @@ function buildOrderSku(items) {
   }
 
   return uniqueSkus[0];
+}
+
+function pickClientRawData(rawData) {
+  if (!rawData || typeof rawData !== "object") {
+    return {};
+  }
+
+  const payload = {};
+
+  for (const key of CLIENT_RAW_DATA_KEYS) {
+    if (rawData[key] !== undefined) {
+      payload[key] = rawData[key];
+    }
+  }
+
+  if (
+    rawData.shipping &&
+    typeof rawData.shipping === "object" &&
+    (rawData.shipping.id != null || rawData.shipping.status != null)
+  ) {
+    payload.shipping = {
+      id: rawData.shipping.id ?? null,
+      status: rawData.shipping.status ?? null,
+    };
+  }
+
+  return payload;
+}
+
+function pickDashboardRawData(rawData) {
+  if (!rawData || typeof rawData !== "object") {
+    return {};
+  }
+
+  const payload = {};
+
+  if (rawData.status !== undefined) {
+    payload.status = rawData.status;
+  }
+
+  if (Array.isArray(rawData.tags)) {
+    payload.tags = rawData.tags;
+  }
+
+  if (rawData.billing_info_status !== undefined) {
+    payload.billing_info_status = rawData.billing_info_status;
+  }
+
+  if (Array.isArray(rawData.payments)) {
+    payload.payments = rawData.payments
+      .map((payment) => ({
+        status: payment?.status ?? null,
+      }))
+      .filter((payment) => payment.status);
+  }
+
+  if (rawData.context && typeof rawData.context === "object") {
+    payload.context = {
+      flows: Array.isArray(rawData.context.flows) ? rawData.context.flows : [],
+    };
+  }
+
+  if (rawData.deposit_snapshot && typeof rawData.deposit_snapshot === "object") {
+    payload.deposit_snapshot = {
+      key: rawData.deposit_snapshot.key ?? null,
+      label: rawData.deposit_snapshot.label ?? null,
+      logistic_type: rawData.deposit_snapshot.logistic_type ?? null,
+    };
+  }
+
+  if (rawData.sla_snapshot && typeof rawData.sla_snapshot === "object") {
+    payload.sla_snapshot = {
+      expected_date: rawData.sla_snapshot.expected_date ?? null,
+      status: rawData.sla_snapshot.status ?? null,
+    };
+  }
+
+  if (rawData.shipment_snapshot && typeof rawData.shipment_snapshot === "object") {
+    payload.shipment_snapshot = {
+      status: rawData.shipment_snapshot.status ?? null,
+      substatus: rawData.shipment_snapshot.substatus ?? null,
+      logistic_type: rawData.shipment_snapshot.logistic_type ?? null,
+      status_history:
+        rawData.shipment_snapshot.status_history &&
+        typeof rawData.shipment_snapshot.status_history === "object"
+          ? {
+              date_handling: rawData.shipment_snapshot.status_history.date_handling ?? null,
+              date_ready_to_ship:
+                rawData.shipment_snapshot.status_history.date_ready_to_ship ?? null,
+              date_shipped: rawData.shipment_snapshot.status_history.date_shipped ?? null,
+              date_cancelled: rawData.shipment_snapshot.status_history.date_cancelled ?? null,
+              date_returned: rawData.shipment_snapshot.status_history.date_returned ?? null,
+              date_not_delivered:
+                rawData.shipment_snapshot.status_history.date_not_delivered ?? null,
+            }
+          : null,
+      shipping_option:
+        rawData.shipment_snapshot.shipping_option &&
+        typeof rawData.shipment_snapshot.shipping_option === "object"
+          ? {
+              name: rawData.shipment_snapshot.shipping_option.name ?? null,
+              estimated_delivery_limit:
+                rawData.shipment_snapshot.shipping_option.estimated_delivery_limit ?? null,
+              estimated_delivery_final:
+                rawData.shipment_snapshot.shipping_option.estimated_delivery_final ?? null,
+            }
+          : null,
+    };
+  }
+
+  return payload;
+}
+
+function sanitizeOrderForClient(order) {
+  return {
+    ...order,
+    raw_data: pickClientRawData(order.raw_data),
+  };
+}
+
+function shapeOrderForView(order, view = "full") {
+  const sanitizedOrder = sanitizeOrderForClient(order);
+
+  if (view !== "dashboard") {
+    return sanitizedOrder;
+  }
+
+  return {
+    id: sanitizedOrder.id,
+    order_id: sanitizedOrder.order_id,
+    sale_number: sanitizedOrder.sale_number,
+    sale_date: sanitizedOrder.sale_date,
+    buyer_name: sanitizedOrder.buyer_name,
+    buyer_nickname: sanitizedOrder.buyer_nickname,
+    item_title: sanitizedOrder.item_title,
+    item_id: sanitizedOrder.item_id,
+    product_image_url: null,
+    sku: sanitizedOrder.sku,
+    quantity: sanitizedOrder.quantity,
+    amount: sanitizedOrder.amount,
+    order_status: sanitizedOrder.order_status,
+    raw_data: pickDashboardRawData(sanitizedOrder.raw_data),
+    items: [],
+  };
+}
+
+function isOperationalOrder(order) {
+  const shipmentSnapshot =
+    order?.raw_data && typeof order.raw_data === "object"
+      ? order.raw_data.shipment_snapshot || {}
+      : {};
+  const status = normalizeState(shipmentSnapshot.status || order.order_status);
+  return (
+    OPEN_STATUSES.has(status) ||
+    TRANSIT_STATUSES.has(status) ||
+    FINAL_EXCEPTION_STATUSES.has(status)
+  );
+}
+
+function getCacheKey({ limit, offset = 0, scope, view }) {
+  return `${scope || "all"}:${view || "full"}:${limit == null ? "all" : limit}:${offset}`;
+}
+
+function readOrdersCache(key) {
+  const cached = ordersCache.get(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    ordersCache.delete(key);
+    return null;
+  }
+
+  return cached.payload;
+}
+
+function writeOrdersCache(key, payload) {
+  ordersCache.set(key, {
+    payload,
+    expiresAt: Date.now() + ORDERS_CACHE_TTL_MS,
+  });
 }
 
 export function consolidateOrders(rows) {
@@ -111,25 +330,101 @@ export function consolidateOrders(rows) {
   });
 }
 
+function sanitizePaginationLimit(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return DEFAULT_PAGINATION_LIMIT;
+  }
+
+  return Math.max(1, Math.min(Math.trunc(numericValue), MAX_PAGINATION_LIMIT));
+}
+
+function sanitizePaginationOffset(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.trunc(numericValue));
+}
+
 export default async function handler(request, response) {
   if (request.method !== "GET") {
     return response.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const limitParam = Number(request.query.limit || 1000);
-    const limit = Number.isFinite(limitParam)
-      ? Math.max(1, Math.min(limitParam, 1000))
-      : 1000;
+    await requireAuthenticatedProfile(request);
 
-    const rows = getOrders(limit);
-    const consolidatedOrders = consolidateOrders(rows);
+    const scope = String(request.query.scope || "all").trim().toLowerCase();
+    const hasExplicitLimit =
+      request.query.limit != null && String(request.query.limit).trim() !== "";
+    const hasExplicitOffset =
+      request.query.offset != null && String(request.query.offset).trim() !== "";
+    const limit = hasExplicitLimit
+      ? sanitizePaginationLimit(request.query.limit)
+      : null;
+    const offset = hasExplicitOffset ? sanitizePaginationOffset(request.query.offset) : 0;
+    const view = String(request.query.view || "full").trim().toLowerCase();
+    const cacheKey = getCacheKey({ limit, offset, scope, view });
+    const cachedPayload = readOrdersCache(cacheKey);
+    if (cachedPayload) {
+      return response.status(200).json(cachedPayload);
+    }
 
-    return response.status(200).json({
-      orders: consolidatedOrders,
-    });
+    const shouldPaginate = limit != null || hasExplicitOffset;
+    const isDashboardView = view === "dashboard";
+    const scopedOrders = isDashboardView
+      ? shouldPaginate
+        ? getPaginatedOrderSummaries({
+            scope,
+            limit: limit ?? DEFAULT_PAGINATION_LIMIT,
+            offset,
+          })
+        : getOrderSummariesByScope(scope)
+      : (() => {
+          const rows = shouldPaginate
+            ? getPaginatedOrderRows({
+                scope,
+                limit: limit ?? DEFAULT_PAGINATION_LIMIT,
+                offset,
+              })
+            : scope === "operational"
+              ? getOperationalOrders()
+              : getOrders();
+          const consolidatedOrders = consolidateOrders(rows);
+          return shouldPaginate
+            ? consolidatedOrders
+            : scope === "operational"
+              ? consolidatedOrders.filter(isOperationalOrder)
+              : consolidatedOrders;
+        })();
+    const clientOrders = scopedOrders.map((order) => shapeOrderForView(order, view));
+    const totalOrders = shouldPaginate ? countOrdersByScope(scope) : clientOrders.length;
+    const effectiveLimit = limit ?? clientOrders.length;
+    const nextOffset =
+      shouldPaginate && offset + clientOrders.length < totalOrders
+        ? offset + clientOrders.length
+        : null;
+    const payload = {
+      orders: clientOrders,
+      pagination: {
+        offset,
+        limit: effectiveLimit,
+        total: totalOrders,
+        loaded: shouldPaginate
+          ? Math.min(offset + clientOrders.length, totalOrders)
+          : clientOrders.length,
+        has_more: nextOffset != null,
+        next_offset: nextOffset,
+      },
+    };
+
+    writeOrdersCache(cacheKey, payload);
+
+    return response.status(200).json(payload);
   } catch (error) {
-    return response.status(500).json({
+    return response.status(error.statusCode || 500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }

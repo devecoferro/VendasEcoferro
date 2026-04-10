@@ -1,8 +1,11 @@
 import { getLatestConnection } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 
-export default async function handler(_request, response) {
+export default async function handler(request, response) {
   try {
+    await requireAuthenticatedProfile(request);
+
     const baseConnection = getLatestConnection();
 
     if (!baseConnection?.seller_id || !baseConnection?.access_token) {

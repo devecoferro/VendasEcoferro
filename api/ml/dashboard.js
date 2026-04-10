@@ -1,23 +1,104 @@
-import { getLatestConnection, getOrders } from "./_lib/storage.js";
-import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
-import { consolidateOrders } from "./orders.js";
+import { getLatestConnection, getOrderSummariesByScope } from "./_lib/storage.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import {
+  getMirrorEntityStatusBreakdown,
+  getSellerCenterMirrorOverview,
+} from "./_lib/mirror-storage.js";
+import { listNfeDocumentsBySellerId } from "../nfe/_lib/nfe-storage.js";
+import {
+  getLatestPrivateSellerCenterSnapshotsByStoreAndTab,
+  getPrivateSellerCenterSnapshotStatus,
+} from "./_lib/private-seller-center-storage.js";
+import { buildPrivateSellerCenterPostSaleAudit } from "./_lib/private-seller-center-audit.js";
 
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
 const OPERATIONAL_BUCKETS = ["today", "upcoming", "in_transit", "finalized"];
+const NATIVE_TODAY_SUBSTATUSES = new Set([
+  "ready_for_pickup",
+  "in_warehouse",
+  "ready_to_pack",
+  "packed",
+]);
+const NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES = new Set([
+  "invoice_pending",
+  "in_packing_list",
+  "in_hub",
+]);
+const NATIVE_IN_TRANSIT_SUBSTATUSES = new Set(["waiting_for_withdrawal"]);
+const NATIVE_FINALIZED_NOT_DELIVERED_SUBSTATUSES = new Set(["lost"]);
+const CROSS_DOCKING_NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES = new Set([
+  "invoice_pending",
+  "in_packing_list",
+]);
+const CROSS_DOCKING_NATIVE_IN_TRANSIT_SHIPPED_SUBSTATUSES = new Set([
+  "out_for_delivery",
+  "receiver_absent",
+  "not_visited",
+]);
+const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
+  "picked_up",
+  "authorized_by_carrier",
+  "in_hub",
+]);
+const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "packed"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
+const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const SELLER_CENTER_MIRROR_SOURCE =
+  "internal_operational_baseline+public_entities_tracked_separately";
+const SELLER_CENTER_FINALIZED_STATUS_KEYWORDS = [
+  "accepted",
+  "approved",
+  "cancel",
+  "closed",
+  "complete",
+  "completed",
+  "done",
+  "expired",
+  "finish",
+  "final",
+  "refunded",
+  "reject",
+  "resolved",
+  "returned",
+  "success",
+];
+const UNDER_REVIEW_KEYWORDS = [
+  "review",
+  "pending_review",
+  "pending_cancel",
+  "hold",
+  "blocked",
+  "rejected",
+  "missing",
+  "damage",
+  "not_found",
+];
+const INTERNAL_OPERATIONAL_NOTE =
+  "Resumo operacional interno calculado a partir de pedidos sincronizados e snapshots logísticos.";
 const calendarFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: OPERATIONAL_TIMEZONE,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
 });
+let dashboardCache = null;
+
+export function invalidateDashboardCache() {
+  dashboardCache = null;
+}
 
 function normalizeState(value, fallback = "none") {
   if (typeof value !== "string") return fallback;
   const normalized = value.trim().toLowerCase();
   return normalized || fallback;
+}
+
+function normalizeNullable(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
 }
 
 function parseDate(value) {
@@ -68,6 +149,16 @@ function getDepositSnapshot(order) {
 
 function getSlaSnapshot(order) {
   return getRawData(order).sla_snapshot || {};
+}
+
+function getLogisticType(order) {
+  const shipmentSnapshot = getShipmentSnapshot(order);
+  const depositSnapshot = getDepositSnapshot(order);
+
+  return normalizeState(
+    shipmentSnapshot.logistic_type || depositSnapshot.logistic_type || "",
+    ""
+  );
 }
 
 function getPayments(order) {
@@ -142,120 +233,32 @@ function getHeadlineForDeposit(depositInfo) {
     : `Coleta | ${depositInfo.label}`;
 }
 
-function fetchStoredOrders(limit = 1000) {
-  return consolidateOrders(getOrders(limit));
+function fetchStoredOrders(limit = null) {
+  if (limit != null) {
+    return getOrderSummariesByScope("operational").slice(0, Math.max(0, Number(limit) || 0));
+  }
+
+  return getOrderSummariesByScope("operational");
 }
 
-async function fetchItemInventoryId(accessToken, itemId, cache) {
-  if (!itemId) return null;
-  if (cache.has(itemId)) return cache.get(itemId) ?? null;
-
-  try {
-    const response = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      cache.set(itemId, null);
-      return null;
-    }
-
-    const payload = await response.json();
-    const inventoryId =
-      typeof payload.inventory_id === "string" && payload.inventory_id.trim()
-        ? payload.inventory_id.trim()
-        : null;
-
-    cache.set(itemId, inventoryId);
-    return inventoryId;
-  } catch {
-    cache.set(itemId, null);
+function readDashboardCache() {
+  if (!dashboardCache) {
     return null;
   }
-}
 
-function findShipmentReference(operation) {
-  const references = Array.isArray(operation?.external_references)
-    ? operation.external_references
-    : [];
-
-  const shipmentRef = references.find((reference) => reference?.type === "shipment_id");
-  return shipmentRef?.value ? String(shipmentRef.value) : null;
-}
-
-async function fetchFulfillmentOperationsByOrder(connection, orders) {
-  const relevantOrders = orders.filter((order) => {
-    const { logisticType } = getDepositInfo(order);
-    if (logisticType !== "fulfillment") return false;
-
-    const { status, substatus } = getShipmentStatus(order);
-    if (OPEN_STATUSES.has(status)) return true;
-    if (TRANSIT_STATUSES.has(status) && substatus !== "none") return true;
-    if (FINAL_EXCEPTION_STATUSES.has(status)) return true;
-    return false;
-  });
-
-  if (relevantOrders.length === 0) {
-    return new Map();
+  if (dashboardCache.expiresAt <= Date.now()) {
+    dashboardCache = null;
+    return null;
   }
 
-  const inventoryIdCache = new Map();
-  const operationsByOrderId = new Map();
+  return dashboardCache.payload;
+}
 
-  for (const order of relevantOrders) {
-    const shipmentSnapshot = getShipmentSnapshot(order);
-    const shipmentId =
-      shipmentSnapshot.id || getRawData(order).shipping_id || getRawData(order).shipping?.id;
-    const representativeItemId =
-      order.item_id || order.items?.find((item) => item.item_id)?.item_id || null;
-    const inventoryId = await fetchItemInventoryId(
-      connection.access_token,
-      representativeItemId,
-      inventoryIdCache
-    );
-
-    if (!inventoryId || !shipmentId) {
-      continue;
-    }
-
-    const url =
-      `https://api.mercadolibre.com/stock/fulfillment/operations/search?` +
-      `seller_id=${encodeURIComponent(connection.seller_id)}` +
-      `&inventory_id=${encodeURIComponent(inventoryId)}` +
-      `&external_references.shipment_id=${encodeURIComponent(String(shipmentId))}` +
-      `&limit=1`;
-
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${connection.access_token}`,
-        },
-      });
-
-      if (!response.ok) {
-        continue;
-      }
-
-      const payload = await response.json();
-      const firstOperation = Array.isArray(payload.results) ? payload.results[0] || null : null;
-      if (!firstOperation) {
-        continue;
-      }
-
-      operationsByOrderId.set(order.id, {
-        inventoryId,
-        type: firstOperation.type || null,
-        dateCreated: parseDate(firstOperation.date_created),
-        shipmentId: findShipmentReference(firstOperation),
-      });
-    } catch {
-      // Ignore fulfillment enrichment failures so the dashboard can still render.
-    }
-  }
-
-  return operationsByOrderId;
+function writeDashboardCache(payload) {
+  dashboardCache = {
+    payload,
+    expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
+  };
 }
 
 function isOrderReadyForInvoiceLabel(order) {
@@ -286,6 +289,38 @@ function isOrderInvoicePending(order) {
   );
 }
 
+function isOrderUnderReview(order) {
+  const rawData = getRawData(order);
+  const shipmentSnapshot = getShipmentSnapshot(order);
+  const orderStatus = normalizeState(rawData.status || order.order_status);
+  const shipmentStatus = normalizeState(shipmentSnapshot.status);
+  const shipmentSubstatus = normalizeState(shipmentSnapshot.substatus);
+  const candidateStates = [
+    orderStatus,
+    shipmentStatus,
+    shipmentSubstatus,
+    normalizeState(rawData.status_detail || ""),
+    normalizeState(rawData.cancel_detail || ""),
+    normalizeState(shipmentSnapshot.substatus_detail || ""),
+  ];
+
+  if (FINAL_EXCEPTION_STATUSES.has(shipmentStatus)) {
+    return true;
+  }
+
+  return candidateStates.some((value) =>
+    UNDER_REVIEW_KEYWORDS.some((keyword) => value.includes(keyword))
+  );
+}
+
+function isOrderForCollection(order) {
+  if (!isOrderReadyToPrintLabel(order)) {
+    return false;
+  }
+
+  return NATIVE_TODAY_SUBSTATUSES.has(normalizeState(getShipmentSnapshot(order).substatus));
+}
+
 function isOrderOverdue(order, todayKey) {
   const { status } = getShipmentStatus(order);
   if (
@@ -305,12 +340,23 @@ function classifyCrossDockingOrder(order, todayKey) {
   const dates = getOperationalDates(order);
 
   if (OPEN_STATUSES.has(status)) {
-    if (dates.operationalDueDateKey) {
-      return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
+    // Mercado Livre documents "picked_up", "authorized_by_carrier" and "in_hub"
+    // as "En camino", so they should not inflate the "Envios de hoje" bucket.
+    if (status === "ready_to_ship" && CROSS_DOCKING_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
     }
 
-    if (status === "ready_to_ship" && ["picked_up", "ready_for_pickup"].includes(substatus)) {
+    // These orders are still in preparation, even when the stored SLA is overdue.
+    if (status === "ready_to_ship" && CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
+      return "upcoming";
+    }
+
+    if (status === "ready_to_ship" && substatus === "ready_for_pickup") {
       return "today";
+    }
+
+    if (dates.operationalDueDateKey) {
+      return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
     }
 
     return "upcoming";
@@ -375,6 +421,73 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   return null;
 }
 
+function classifyNativeMercadoLivreOrder(order) {
+  const { status, substatus } = getShipmentStatus(order);
+  const logisticType = getLogisticType(order);
+  const depositKey = getDepositSnapshot(order).key || "";
+  const isStoreDeposit = depositKey.startsWith("store:");
+
+  if (logisticType === "cross_docking" && isStoreDeposit) {
+    if (status === "ready_to_ship") {
+      if (substatus === "picked_up") {
+        return "in_transit";
+      }
+
+      if (NATIVE_TODAY_SUBSTATUSES.has(substatus)) {
+        return "today";
+      }
+
+      if (CROSS_DOCKING_NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
+        return "upcoming";
+      }
+
+      return null;
+    }
+
+    if (status === "shipped") {
+      if (substatus === "none") {
+        return "upcoming";
+      }
+
+      if (CROSS_DOCKING_NATIVE_IN_TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
+        return "in_transit";
+      }
+
+      return null;
+    }
+
+    if (status === "not_delivered" && substatus === "returned") {
+      return "finalized";
+    }
+
+    return null;
+  }
+
+  if (status === "ready_to_ship") {
+    if (substatus === "picked_up") {
+      return "in_transit";
+    }
+
+    if (NATIVE_TODAY_SUBSTATUSES.has(substatus)) {
+      return "today";
+    }
+
+    if (NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
+      return "upcoming";
+    }
+  }
+
+  if (status === "shipped" && NATIVE_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+    return "in_transit";
+  }
+
+  if (status === "not_delivered" && NATIVE_FINALIZED_NOT_DELIVERED_SUBSTATUSES.has(substatus)) {
+    return "finalized";
+  }
+
+  return null;
+}
+
 function buildCrossDockingSummaryRows(orders, todayKey) {
   let cancelled = 0;
   let overdue = 0;
@@ -428,23 +541,17 @@ function buildEmptyDepositEntry(info) {
     logistic_type: info.logisticType,
     lane: getLaneForDeposit(info),
     headline: getHeadlineForDeposit(info),
-    counts: {
-      today: 0,
-      upcoming: 0,
-      in_transit: 0,
-      finalized: 0,
-    },
-    order_ids_by_bucket: {
-      today: [],
-      upcoming: [],
-      in_transit: [],
-      finalized: [],
-    },
+    counts: buildEmptyBucketCounts(),
+    native_counts: buildEmptyBucketCounts(),
+    order_ids_by_bucket: buildEmptyBucketOrderIds(),
+    native_order_ids_by_bucket: buildEmptyBucketOrderIds(),
     operational_source:
       info.logisticType === "fulfillment"
         ? "shipment_snapshot+fulfillment_operations"
         : "shipment_sla+shipment_snapshot",
+    native_source: SELLER_CENTER_MIRROR_SOURCE,
     total_count: 0,
+    native_total_count: 0,
     summary_rows: [],
     summary_rows_by_bucket: {
       today: [],
@@ -456,28 +563,441 @@ function buildEmptyDepositEntry(info) {
   };
 }
 
-export default async function handler(request, response) {
-  if (request.method !== "GET") {
-    return response.status(405).json({ error: "Method not allowed" });
-  }
+function buildInternalOperationalLayerMetadata() {
+  return {
+    status: "ready",
+    note: INTERNAL_OPERATIONAL_NOTE,
+    source: "orders+shipments",
+  };
+}
 
-  try {
-    const baseConnection = getLatestConnection();
-    const orders = fetchStoredOrders(1000);
+function buildEmptyBucketCounts() {
+  return {
+    today: 0,
+    upcoming: 0,
+    in_transit: 0,
+    finalized: 0,
+  };
+}
 
-    if (!baseConnection?.id) {
-      return response.status(200).json({
-        backend_secure: true,
-        generated_at: new Date().toISOString(),
-        deposits: [],
-      });
+function cloneBucketCounts(source = {}) {
+  return {
+    today: Number(source.today || 0),
+    upcoming: Number(source.upcoming || 0),
+    in_transit: Number(source.in_transit || 0),
+    finalized: Number(source.finalized || 0),
+  };
+}
+
+function buildEmptyBucketOrderIds() {
+  return {
+    today: [],
+    upcoming: [],
+    in_transit: [],
+    finalized: [],
+  };
+}
+
+function cloneBucketOrderIds(source = {}) {
+  return {
+    today: Array.isArray(source.today) ? [...source.today] : [],
+    upcoming: Array.isArray(source.upcoming) ? [...source.upcoming] : [],
+    in_transit: Array.isArray(source.in_transit) ? [...source.in_transit] : [],
+    finalized: Array.isArray(source.finalized) ? [...source.finalized] : [],
+  };
+}
+
+function getOrderExternalReferences(order) {
+  const rawData = getRawData(order);
+  const shipmentSnapshot = getShipmentSnapshot(order);
+
+  return {
+    local_order_id: normalizeNullable(order?.id),
+    external_order_id: normalizeNullable(order?.order_id),
+    shipment_id:
+      normalizeNullable(order?.shipping_id) ||
+      normalizeNullable(rawData.shipping_id) ||
+      normalizeNullable(shipmentSnapshot.id),
+    pack_id: normalizeNullable(rawData.pack_id),
+  };
+}
+
+function buildSellerCenterOrderIndex(orders) {
+  const byExternalOrderId = new Map();
+  const byShipmentId = new Map();
+  const byPackId = new Map();
+
+  for (const order of orders) {
+    const refs = getOrderExternalReferences(order);
+    const depositInfo = getDepositInfo(order);
+    const reference = {
+      order,
+      local_order_id: refs.local_order_id,
+      external_order_id: refs.external_order_id,
+      shipment_id: refs.shipment_id,
+      pack_id: refs.pack_id,
+      deposit_info: depositInfo,
+    };
+
+    if (reference.external_order_id && !byExternalOrderId.has(reference.external_order_id)) {
+      byExternalOrderId.set(reference.external_order_id, reference);
     }
 
-    const connection = await ensureValidAccessToken(baseConnection);
-    const today = new Date();
-    const todayKey = getCalendarKey(today);
-    const fulfillmentOperationsByOrderId = await fetchFulfillmentOperationsByOrder(connection, orders);
-    const depositsMap = new Map();
+    if (reference.shipment_id && !byShipmentId.has(reference.shipment_id)) {
+      byShipmentId.set(reference.shipment_id, reference);
+    }
+
+    if (reference.pack_id) {
+      if (!byPackId.has(reference.pack_id)) {
+        byPackId.set(reference.pack_id, []);
+      }
+
+      byPackId.get(reference.pack_id).push(reference);
+    }
+  }
+
+  return {
+    byExternalOrderId,
+    byShipmentId,
+    byPackId,
+  };
+}
+
+function buildMirrorCoverage(rows) {
+  const coverage = {
+    orderIds: new Set(),
+    shipmentIds: new Set(),
+    packIds: new Set(),
+  };
+
+  for (const row of rows || []) {
+    const orderId = normalizeNullable(row?.order_id);
+    const shipmentId = normalizeNullable(row?.shipment_id);
+    const packId = normalizeNullable(row?.pack_id);
+
+    if (orderId) coverage.orderIds.add(orderId);
+    if (shipmentId) coverage.shipmentIds.add(shipmentId);
+    if (packId) coverage.packIds.add(packId);
+  }
+
+  return coverage;
+}
+
+function doesMirrorEntityOverlap(entity, coverage) {
+  const orderId = normalizeNullable(entity?.order_id);
+  const shipmentId = normalizeNullable(entity?.shipment_id);
+  const packId = normalizeNullable(entity?.pack_id);
+
+  return Boolean(
+    (orderId && coverage.orderIds.has(orderId)) ||
+      (shipmentId && coverage.shipmentIds.has(shipmentId)) ||
+      (packId && coverage.packIds.has(packId))
+  );
+}
+
+function isOrderCoveredByMirrorEntity(order, coverage) {
+  const refs = getOrderExternalReferences(order);
+
+  return Boolean(
+    (refs.external_order_id && coverage.orderIds.has(refs.external_order_id)) ||
+      (refs.shipment_id && coverage.shipmentIds.has(refs.shipment_id)) ||
+      (refs.pack_id && coverage.packIds.has(refs.pack_id))
+  );
+}
+
+function resolveMirrorEntityOrderReferences(entity, orderIndex) {
+  const refs = [];
+  const seen = new Set();
+
+  function append(reference) {
+    if (!reference) return;
+
+    const key =
+      reference.local_order_id ||
+      reference.external_order_id ||
+      reference.shipment_id ||
+      reference.pack_id;
+
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    refs.push(reference);
+  }
+
+  const orderId = normalizeNullable(entity?.order_id);
+  const shipmentId = normalizeNullable(entity?.shipment_id);
+  const packId = normalizeNullable(entity?.pack_id);
+
+  if (orderId && orderIndex.byExternalOrderId.has(orderId)) {
+    append(orderIndex.byExternalOrderId.get(orderId));
+  }
+
+  if (shipmentId && orderIndex.byShipmentId.has(shipmentId)) {
+    append(orderIndex.byShipmentId.get(shipmentId));
+  }
+
+  if (packId && orderIndex.byPackId.has(packId)) {
+    for (const reference of orderIndex.byPackId.get(packId)) {
+      append(reference);
+    }
+  }
+
+  return refs;
+}
+
+function buildFallbackWithoutDepositInfo() {
+  return {
+    key: "without-deposit",
+    label: "Vendas sem deposito",
+    logisticType: "unknown",
+  };
+}
+
+function resolveMirrorEntityDepositInfos(entity, orderIndex) {
+  const orderReferences = resolveMirrorEntityOrderReferences(entity, orderIndex);
+  if (orderReferences.length === 0) {
+    return [buildFallbackWithoutDepositInfo()];
+  }
+
+  const deposits = new Map();
+  for (const reference of orderReferences) {
+    const depositInfo = reference?.deposit_info;
+    if (!depositInfo?.key || deposits.has(depositInfo.key)) {
+      continue;
+    }
+
+    deposits.set(depositInfo.key, depositInfo);
+  }
+
+  return deposits.size > 0 ? Array.from(deposits.values()) : [buildFallbackWithoutDepositInfo()];
+}
+
+function isSellerCenterMirrorFinalStatus(rawStatus) {
+  const normalizedStatus = normalizeState(rawStatus, "");
+  if (!normalizedStatus) {
+    return false;
+  }
+
+  return SELLER_CENTER_FINALIZED_STATUS_KEYWORDS.some((keyword) =>
+    normalizedStatus.includes(keyword)
+  );
+}
+
+function classifySellerCenterMirrorEntity(entityType, entity) {
+  if (entityType === "packs") {
+    return null;
+  }
+
+  const rawStatus = normalizeState(entity?.raw_status, "");
+  const rawPayload = entity?.raw_payload && typeof entity.raw_payload === "object"
+    ? JSON.stringify(entity.raw_payload).toLowerCase()
+    : "";
+
+  if (isSellerCenterMirrorFinalStatus(rawStatus)) {
+    return "finalized";
+  }
+
+  const transitKeywords = [
+    "in_transit",
+    "in transit",
+    "in_the_way",
+    "a caminho",
+    "back_to_seller",
+    "shipped",
+    "transport",
+  ];
+
+  if (
+    transitKeywords.some(
+      (keyword) => rawStatus.includes(keyword) || rawPayload.includes(keyword)
+    )
+  ) {
+    return "in_transit";
+  }
+
+  return "upcoming";
+}
+
+function buildQueueEntry(label, orderIds = [], note = "") {
+  return {
+    label,
+    count: orderIds.length,
+    order_ids: [...new Set(orderIds.filter(Boolean).map(String))],
+    note,
+  };
+}
+
+function buildPostSaleOverview(sellerId) {
+  const mirrorOverview = getSellerCenterMirrorOverview(sellerId);
+  const claimsStatusBreakdown = getMirrorEntityStatusBreakdown("claims", {
+    sellerId,
+    limit: 8,
+  });
+  const returnsStatusBreakdown = getMirrorEntityStatusBreakdown("returns", {
+    sellerId,
+    limit: 8,
+  });
+  const packsStatusBreakdown = getMirrorEntityStatusBreakdown("packs", {
+    sellerId,
+    limit: 8,
+  });
+  const privateSnapshotStatus = getPrivateSellerCenterSnapshotStatus({ sellerId });
+  const latestPrivateSnapshots = getLatestPrivateSellerCenterSnapshotsByStoreAndTab({
+    sellerId,
+  });
+  const privateAudit = buildPrivateSellerCenterPostSaleAudit(
+    latestPrivateSnapshots,
+    privateSnapshotStatus
+  );
+
+  return {
+    total_open:
+      Number(mirrorOverview.entities?.claims?.count || 0) +
+      Number(mirrorOverview.entities?.returns?.count || 0),
+    entities: {
+      claims: {
+        ...mirrorOverview.entities.claims,
+        status_breakdown: claimsStatusBreakdown,
+      },
+      returns: {
+        ...mirrorOverview.entities.returns,
+        status_breakdown: returnsStatusBreakdown,
+      },
+      packs: {
+        ...mirrorOverview.entities.packs,
+        status_breakdown: packsStatusBreakdown,
+      },
+    },
+    private_audit: privateAudit,
+  };
+}
+
+function buildOperationalQueues(orders, sellerId, postSaleOverview) {
+  const readyToPrintOrderIds = [];
+  const invoicePendingOrderIds = [];
+  const underReviewOrderIds = [];
+  const collectionOrderIds = [];
+
+  for (const order of orders) {
+    if (isOrderReadyToPrintLabel(order)) {
+      readyToPrintOrderIds.push(order.order_id);
+    }
+
+    if (isOrderInvoicePending(order)) {
+      invoicePendingOrderIds.push(order.order_id);
+    }
+
+    if (isOrderUnderReview(order)) {
+      underReviewOrderIds.push(order.order_id);
+    }
+
+    if (isOrderForCollection(order)) {
+      collectionOrderIds.push(order.order_id);
+    }
+  }
+
+  const nfeDocuments = listNfeDocumentsBySellerId(sellerId, null);
+  const nfeSyncPendingOrderIds = nfeDocuments
+    .filter(
+      (document) =>
+        document.status === "authorized" &&
+        document.ml_sync_status !== "synced_with_mercadolivre"
+    )
+    .map((document) => document.order_id);
+  const nfeAttentionOrderIds = nfeDocuments
+    .filter((document) =>
+      ["blocked", "error", "pending_configuration", "pending_data", "rejected"].includes(
+        String(document.status || "").toLowerCase()
+      )
+    )
+    .map((document) => document.order_id);
+
+  return {
+    ready_to_print: buildQueueEntry(
+      "Prontas para imprimir",
+      readyToPrintOrderIds,
+      "Pedidos com etiqueta operacional liberada para expedicao."
+    ),
+    invoice_pending: buildQueueEntry(
+      "NF-e pendente",
+      invoicePendingOrderIds,
+      "Pedidos em invoice_pending, candidatos ao fluxo fiscal."
+    ),
+    under_review: buildQueueEntry(
+      "Em revisao",
+      underReviewOrderIds,
+      "Pedidos que exigem atencao antes da expedicao."
+    ),
+    collection_ready: buildQueueEntry(
+      "Para coleta",
+      collectionOrderIds,
+      "Pedidos operacionais na fila de coleta."
+    ),
+    nfe_sync_pending: buildQueueEntry(
+      "NF-e com sync pendente",
+      nfeSyncPendingOrderIds,
+      "Notas autorizadas localmente que ainda precisam refletir com seguranca no ML."
+    ),
+    nfe_attention: buildQueueEntry(
+      "NF-e com bloqueio ou erro",
+      nfeAttentionOrderIds,
+      "Pedidos com bloqueio fiscal, rejeicao ou configuracao pendente."
+    ),
+    post_sale_attention: {
+      label: "Pos-venda ativo",
+      count: Number(postSaleOverview.total_open || 0),
+      note:
+        "Volume de reclamacoes e devolucoes persistidas localmente para acompanhamento operacional.",
+    },
+    post_sale_ui_attention: {
+      label: "Pos-venda auditado",
+      count: Number(postSaleOverview?.private_audit?.totals?.action_required || 0),
+      note:
+        "Itens auditados na UI privada do Seller Center que exigem acao ou acompanhamento manual.",
+    },
+  };
+}
+
+export async function buildDashboardPayload(options = {}) {
+  const allowCache = options.allowCache !== false;
+
+  if (allowCache) {
+    const cachedPayload = readDashboardCache();
+    if (cachedPayload) {
+      return cachedPayload;
+    }
+  }
+
+  const baseConnection = getLatestConnection();
+  const sellerCenterMirrorOverview = getSellerCenterMirrorOverview(
+    baseConnection?.seller_id || null
+  );
+  const postSaleOverview = buildPostSaleOverview(baseConnection?.seller_id || null);
+
+  if (!baseConnection?.id) {
+    const emptyPayload = {
+      backend_secure: true,
+      generated_at: new Date().toISOString(),
+      internal_operational: buildInternalOperationalLayerMetadata(),
+      seller_center_mirror: sellerCenterMirrorOverview,
+      post_sale_overview: postSaleOverview,
+      operational_queues: buildOperationalQueues([], null, postSaleOverview),
+      deposits: [],
+    };
+
+    if (allowCache) {
+      writeDashboardCache(emptyPayload);
+    }
+
+    return emptyPayload;
+  }
+
+  const today = new Date();
+  const todayKey = getCalendarKey(today);
+  const orders = fetchStoredOrders();
+  const depositsMap = new Map();
 
     for (const order of orders) {
       const depositInfo = getDepositInfo(order);
@@ -488,22 +1008,23 @@ export default async function handler(request, response) {
       const deposit = depositsMap.get(depositInfo.key);
       deposit._orders.push(order);
 
-      const fulfillmentOperation = fulfillmentOperationsByOrderId.get(order.id) || null;
       const bucket =
         depositInfo.logisticType === "fulfillment"
-          ? classifyFulfillmentOrder(order, todayKey, fulfillmentOperation)
+          ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
       if (!bucket || !OPERATIONAL_BUCKETS.includes(bucket)) {
-        continue;
+        // Keep walking. Native ML buckets are computed separately.
+      } else {
+        deposit.counts[bucket] += 1;
+        deposit.order_ids_by_bucket[bucket].push(order.id);
+        deposit.native_counts[bucket] += 1;
+        deposit.native_order_ids_by_bucket[bucket].push(order.id);
       }
-
-      deposit.counts[bucket] += 1;
-      deposit.order_ids_by_bucket[bucket].push(order.id);
     }
 
-    const deposits = Array.from(depositsMap.values())
-      .map((deposit) => {
+  const deposits = Array.from(depositsMap.values())
+    .map((deposit) => {
         const summaryRowsByBucket = {
           today:
             deposit.logistic_type === "fulfillment"
@@ -551,28 +1072,75 @@ export default async function handler(request, response) {
           (total, count) => total + (count || 0),
           0
         );
+        const nativeTotalCount = Object.values(deposit.native_counts).reduce(
+          (total, count) => total + (count || 0),
+          0
+        );
 
-        return {
-          key: deposit.key,
-          label: deposit.label,
-          logistic_type: deposit.logistic_type,
-          lane: deposit.lane,
-          headline: deposit.headline,
-          counts: deposit.counts,
-          order_ids_by_bucket: deposit.order_ids_by_bucket,
-          operational_source: deposit.operational_source,
-          total_count: totalCount,
-          summary_rows: summaryRowsByBucket.today,
-          summary_rows_by_bucket: summaryRowsByBucket,
-        };
-      })
-      .sort((left, right) => left.label.localeCompare(right.label, "pt-BR"));
+      return {
+        key: deposit.key,
+        label: deposit.label,
+        logistic_type: deposit.logistic_type,
+        lane: deposit.lane,
+        headline: deposit.headline,
+        internal_operational_counts: deposit.counts,
+        internal_operational_order_ids_by_bucket: deposit.order_ids_by_bucket,
+        internal_operational_source: deposit.operational_source,
+        internal_operational_total_count: totalCount,
+        internal_operational_summary_rows: summaryRowsByBucket.today,
+        internal_operational_summary_rows_by_bucket: summaryRowsByBucket,
+        seller_center_mirror_counts: deposit.native_counts,
+        seller_center_mirror_order_ids_by_bucket: deposit.native_order_ids_by_bucket,
+        seller_center_mirror_source: deposit.native_source,
+        seller_center_mirror_total_count: nativeTotalCount,
+        seller_center_mirror_status: sellerCenterMirrorOverview.status,
+        seller_center_mirror_note: sellerCenterMirrorOverview.note,
+        counts: deposit.counts,
+        native_counts: deposit.native_counts,
+        order_ids_by_bucket: deposit.order_ids_by_bucket,
+        native_order_ids_by_bucket: deposit.native_order_ids_by_bucket,
+        operational_source: deposit.operational_source,
+        native_source: deposit.native_source,
+        total_count: totalCount,
+        native_total_count: nativeTotalCount,
+        summary_rows: summaryRowsByBucket.today,
+        summary_rows_by_bucket: summaryRowsByBucket,
+      };
+    })
+    .filter((deposit) => deposit.total_count > 0 || deposit.native_total_count > 0)
+    .sort((left, right) => left.label.localeCompare(right.label, "pt-BR"));
 
-    return response.status(200).json({
-      backend_secure: true,
-      generated_at: new Date().toISOString(),
-      deposits,
-    });
+  const operationalQueues = buildOperationalQueues(
+    orders,
+    baseConnection.seller_id,
+    postSaleOverview
+  );
+  const payload = {
+    backend_secure: true,
+    generated_at: new Date().toISOString(),
+    internal_operational: buildInternalOperationalLayerMetadata(),
+    seller_center_mirror: sellerCenterMirrorOverview,
+    post_sale_overview: postSaleOverview,
+    operational_queues: operationalQueues,
+    deposits,
+  };
+
+  if (allowCache) {
+    writeDashboardCache(payload);
+  }
+
+  return payload;
+}
+
+export default async function handler(request, response) {
+  if (request.method !== "GET") {
+    return response.status(405).json({ error: "Method not allowed" });
+  }
+
+  try {
+    await requireAuthenticatedProfile(request);
+    const payload = await buildDashboardPayload({ allowCache: true });
+    return response.status(200).json(payload);
   } catch (error) {
     return response.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
@@ -580,3 +1148,12 @@ export default async function handler(request, response) {
     });
   }
 }
+
+export const __dashboardTestables = {
+  classifyCrossDockingOrder,
+  classifyNativeMercadoLivreOrder,
+  classifySellerCenterMirrorEntity,
+  isSellerCenterMirrorFinalStatus,
+  isOrderForCollection,
+  isOrderUnderReview,
+};

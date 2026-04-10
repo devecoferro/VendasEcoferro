@@ -31,7 +31,10 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/public ./public
 COPY --from=build /app/server ./server
 COPY --from=build /app/api ./api
+COPY --from=build /app/scripts ./scripts
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 CMD ["node", "scripts/healthcheck-ping.mjs"]
 
 CMD ["node", "server/index.js"]

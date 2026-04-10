@@ -3,6 +3,7 @@ import {
   ML_CLIENT_SECRET,
   ensureMercadoLivreCredentials,
 } from "./_lib/app-config.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import {
   deleteConnection,
   getLatestConnection,
@@ -29,6 +30,8 @@ export default async function handler(request, response) {
   }
 
   try {
+    await requireAuthenticatedProfile(request);
+
     const body =
       typeof request.body === "string" ? JSON.parse(request.body) : request.body || {};
     const {

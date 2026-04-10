@@ -15,6 +15,7 @@ const ROUTE_TITLES: Array<{ match: RegExp; title: string }> = [
   { match: /^\/history/, title: "Historico" },
   { match: /^\/mercado-livre-fantom/, title: "Fantom" },
   { match: /^\/mercado-livre/, title: "EcoFerro" },
+  { match: /^\/stock/, title: "Estoque" },
   { match: /^\/users/, title: "Usuarios" },
 ];
 

@@ -1,6 +1,8 @@
 import { runMercadoLivreSync, getConnectionBySellerId } from "./sync.js";
+import { syncClaims, syncReturns } from "./_lib/mirror-sync.js";
+import { refreshNfeFromNotification } from "../nfe/_lib/mercado-livre-faturador.js";
 
-const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments"]);
+const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments", "post_purchase", "invoices"]);
 
 function getPayload(request) {
   if (!request.body) return {};
@@ -12,6 +14,23 @@ function getPayload(request) {
     }
   }
   return request.body;
+}
+
+function normalizeNullable(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function resolveSellerId(payload) {
+  const direct = normalizeNullable(payload?.user_id);
+  if (direct) {
+    return direct;
+  }
+
+  const resource = normalizeNullable(payload?.resource);
+  const matched = resource?.match(/\/users\/(\d+)/i);
+  return matched?.[1] || "";
 }
 
 export default async function handler(request, response) {
@@ -27,7 +46,7 @@ export default async function handler(request, response) {
 
   try {
     const topic = String(payload.topic || "");
-    const sellerId = payload.user_id ? String(payload.user_id) : "";
+    const sellerId = resolveSellerId(payload);
 
     if (!NOTIFICATION_TOPICS.has(topic) || !sellerId) {
       return response.status(200).json({ status: "ignored" });
@@ -41,6 +60,36 @@ export default async function handler(request, response) {
     const updatedFrom =
       connection.last_sync_at ||
       new Date(Date.now() - 15 * 60 * 1000).toISOString();
+
+    if (topic === "post_purchase") {
+      const claimsResult = await syncClaims({
+        connectionId: connection.id,
+        updatedFrom,
+        pageLimit: 3,
+      });
+      const returnsResult = await syncReturns({
+        connectionId: connection.id,
+        claims: claimsResult.records,
+      });
+
+      return response.status(200).json({
+        status: "ok",
+        topic,
+        claims_synced: claimsResult.synced,
+        returns_synced: returnsResult.synced,
+      });
+    }
+
+    if (topic === "invoices") {
+      const invoiceResult = await refreshNfeFromNotification(payload, { sellerId });
+      return response.status(200).json({
+        status: invoiceResult.status,
+        topic,
+        reason: invoiceResult.reason,
+        refreshed: invoiceResult.refreshed,
+        order_ids: invoiceResult.order_ids,
+      });
+    }
 
     const result = await runMercadoLivreSync({
       connectionId: connection.id,
@@ -61,4 +110,3 @@ export default async function handler(request, response) {
     });
   }
 }
-

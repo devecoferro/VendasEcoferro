@@ -7,18 +7,18 @@ interface FileUploadZoneProps {
   onFilesSelected: (files: File[]) => void;
 }
 
-const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpg", "image/jpeg"];
-
 export function FileUploadZone({ onFilesSelected }: FileUploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+
+  const acceptedTypes = ["application/pdf", "image/png", "image/jpg", "image/jpeg"];
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
       const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
-        ACCEPTED_TYPES.includes(f.type)
+        acceptedTypes.includes(f.type)
       );
       if (droppedFiles.length > 0) {
         setFiles((prev) => [...prev, ...droppedFiles]);
@@ -30,7 +30,7 @@ export function FileUploadZone({ onFilesSelected }: FileUploadZoneProps) {
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const selected = Array.from(e.target.files).filter((f) =>
-        ACCEPTED_TYPES.includes(f.type)
+        acceptedTypes.includes(f.type)
       );
       setFiles((prev) => [...prev, ...selected]);
     }

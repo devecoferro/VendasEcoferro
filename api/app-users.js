@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
+
+import { db } from "./_lib/db.js";
 import {
   ALL_LOCATIONS_ACCESS,
   assertAdminTransitionAllowed,
   buildLoginEmail,
-  createAdminClient,
-  hasServiceRoleKey,
+  createPasswordHash,
+  getProfileById,
+  getProfileByUsername,
   normalizeUsername,
   parseRequestBody,
   requireAdmin,
+  revokeSessionsByUserId,
   sanitizeAllowedLocations,
   serializeProfile,
 } from "./_lib/auth-server.js";
@@ -32,20 +37,27 @@ function buildAllowedLocations(role, allowedLocations) {
   return sanitized;
 }
 
-async function listProfiles(adminClient) {
-  const { data, error } = await adminClient
-    .from("app_user_profiles")
-    .select("id, username, login_email, role, allowed_locations, active, created_at, updated_at")
-    .order("created_at", { ascending: false });
+function listProfiles() {
+  const rows = db
+    .prepare(
+      `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+       FROM app_user_profiles
+       ORDER BY datetime(created_at) DESC`
+    )
+    .all();
 
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return Array.isArray(data) ? data.map(serializeProfile) : [];
+  return rows
+    .map((row) =>
+      serializeProfile({
+        ...row,
+        allowed_locations: JSON.parse(row.allowed_locations || "[]"),
+        active: Boolean(row.active),
+      })
+    )
+    .filter(Boolean);
 }
 
-async function createUser(adminClient, input) {
+function createUser(input) {
   const username = normalizeUsername(input.username);
   const role = sanitizeRole(input.role);
   const active = sanitizeBoolean(input.active, true);
@@ -60,138 +72,126 @@ async function createUser(adminClient, input) {
     throw new Error("Informe uma senha para o novo usuario.");
   }
 
+  if (getProfileByUsername(null, username)) {
+    throw new Error("Ja existe um usuario com esse nome.");
+  }
+
   if (role !== "admin" && allowedLocations.length === 0) {
     throw new Error("Selecione ao menos um local para este usuario.");
   }
 
-  const loginEmail = buildLoginEmail(username);
-  const { data, error } = await adminClient.auth.admin.createUser({
-    email: loginEmail,
-    password,
-    email_confirm: true,
-    user_metadata: {
-      username,
-    },
-  });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const userId = data.user?.id;
-  if (!userId) {
-    throw new Error("Nao foi possivel criar o usuario.");
-  }
-
-  const { error: profileError } = await adminClient.from("app_user_profiles").insert({
-    id: userId,
+  const timestamp = new Date().toISOString();
+  db.prepare(
+    `
+      INSERT INTO app_user_profiles (
+        id,
+        username,
+        login_email,
+        password_hash,
+        role,
+        allowed_locations,
+        active,
+        created_at,
+        updated_at
+      ) VALUES (
+        @id,
+        @username,
+        @login_email,
+        @password_hash,
+        @role,
+        @allowed_locations,
+        @active,
+        @created_at,
+        @updated_at
+      )
+    `
+  ).run({
+    id: randomUUID(),
     username,
-    login_email: loginEmail,
+    login_email: buildLoginEmail(username),
+    password_hash: createPasswordHash(password),
     role,
-    allowed_locations: allowedLocations,
-    active,
+    allowed_locations: JSON.stringify(allowedLocations),
+    active: active ? 1 : 0,
+    created_at: timestamp,
+    updated_at: timestamp,
   });
-
-  if (profileError) {
-    await adminClient.auth.admin.deleteUser(userId);
-    throw new Error(profileError.message);
-  }
 }
 
-async function updateUser(adminClient, actingUserId, input) {
+function updateUser(actingUserId, input) {
   const userId = String(input.id || "");
   if (!userId) {
     throw new Error("Usuario nao informado.");
   }
 
-  const currentProfile = await adminClient
-    .from("app_user_profiles")
-    .select("id, username, login_email, role, allowed_locations, active")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (currentProfile.error) {
-    throw new Error(currentProfile.error.message);
-  }
-
-  if (!currentProfile.data) {
+  const currentProfile = getProfileById(null, userId);
+  if (!currentProfile) {
     throw new Error("Usuario nao encontrado.");
   }
 
-  const username = normalizeUsername(input.username || currentProfile.data.username);
-  const role = sanitizeRole(input.role || currentProfile.data.role);
-  const active = sanitizeBoolean(input.active, currentProfile.data.active);
+  const username = normalizeUsername(input.username || currentProfile.username);
+  const role = sanitizeRole(input.role || currentProfile.role);
+  const active = sanitizeBoolean(input.active, currentProfile.active);
   const allowedLocations = buildAllowedLocations(
     role,
-    input.allowedLocations || currentProfile.data.allowed_locations
+    input.allowedLocations || currentProfile.allowed_locations
   );
 
   if (role !== "admin" && allowedLocations.length === 0) {
     throw new Error("Selecione ao menos um local para este usuario.");
   }
 
-  await assertAdminTransitionAllowed(adminClient, actingUserId, userId, role, active);
-
-  const loginEmail = buildLoginEmail(username);
-  const authUpdates = {
-    email: loginEmail,
-    user_metadata: { username },
-  };
-
-  if (input.password) {
-    authUpdates.password = input.password;
+  const conflictingProfile = getProfileByUsername(null, username);
+  if (conflictingProfile && conflictingProfile.id !== userId) {
+    throw new Error("Ja existe um usuario com esse nome.");
   }
 
-  const { error: authError } = await adminClient.auth.admin.updateUserById(userId, authUpdates);
-  if (authError) {
-    throw new Error(authError.message);
-  }
-
-  const { error: profileError } = await adminClient
-    .from("app_user_profiles")
-    .update({
+  return assertAdminTransitionAllowed(null, actingUserId, userId, role, active).then(() => {
+    db.prepare(
+      `
+        UPDATE app_user_profiles
+        SET
+          username = @username,
+          login_email = @login_email,
+          password_hash = COALESCE(@password_hash, password_hash),
+          role = @role,
+          allowed_locations = @allowed_locations,
+          active = @active,
+          updated_at = @updated_at
+        WHERE id = @id
+      `
+    ).run({
+      id: userId,
       username,
-      login_email: loginEmail,
+      login_email: buildLoginEmail(username),
+      password_hash: input.password ? createPasswordHash(input.password) : null,
       role,
-      allowed_locations: allowedLocations,
-      active,
-    })
-    .eq("id", userId);
-
-  if (profileError) {
-    throw new Error(profileError.message);
-  }
+      allowed_locations: JSON.stringify(allowedLocations),
+      active: active ? 1 : 0,
+      updated_at: new Date().toISOString(),
+    });
+  });
 }
 
-async function toggleUserActive(adminClient, actingUserId, userId) {
-  const { data, error } = await adminClient
-    .from("app_user_profiles")
-    .select("id, active")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  if (!data) {
+async function toggleUserActive(actingUserId, userId) {
+  const currentProfile = getProfileById(null, userId);
+  if (!currentProfile) {
     throw new Error("Usuario nao encontrado.");
   }
 
-  const nextActive = !data.active;
-  await assertAdminTransitionAllowed(adminClient, actingUserId, userId, undefined, nextActive);
+  const nextActive = !currentProfile.active;
+  await assertAdminTransitionAllowed(null, actingUserId, userId, undefined, nextActive);
 
-  const { error: updateError } = await adminClient
-    .from("app_user_profiles")
-    .update({ active: nextActive })
-    .eq("id", userId);
+  db.prepare(
+    `UPDATE app_user_profiles SET active = ?, updated_at = ? WHERE id = ?`
+  ).run(nextActive ? 1 : 0, new Date().toISOString(), userId);
 
-  if (updateError) {
-    throw new Error(updateError.message);
+  if (!nextActive) {
+    revokeSessionsByUserId(userId);
   }
 }
 
-async function deleteUser(adminClient, actingUserId, userId) {
+async function deleteUser(actingUserId, userId) {
   if (!userId) {
     throw new Error("Usuario nao informado.");
   }
@@ -200,27 +200,17 @@ async function deleteUser(adminClient, actingUserId, userId) {
     throw new Error("Nao e permitido remover o proprio usuario.");
   }
 
-  await assertAdminTransitionAllowed(adminClient, actingUserId, userId, "operator", false);
-
-  const { error } = await adminClient.auth.admin.deleteUser(userId);
-  if (error) {
-    throw new Error(error.message);
-  }
+  await assertAdminTransitionAllowed(null, actingUserId, userId, "operator", false);
+  revokeSessionsByUserId(userId);
+  db.prepare(`DELETE FROM app_user_profiles WHERE id = ?`).run(userId);
 }
 
 export default async function handler(request, response) {
-  if (!hasServiceRoleKey()) {
-    return response.status(503).json({
-      error: "SUPABASE_SERVICE_ROLE_KEY nao configurada na Vercel.",
-    });
-  }
-
   try {
-    const { adminClient, authUser } = await requireAdmin(request);
+    const { authUser } = await requireAdmin(request);
 
     if (request.method === "GET") {
-      const users = await listProfiles(adminClient);
-      return response.status(200).json({ users });
+      return response.status(200).json({ users: listProfiles() });
     }
 
     if (request.method !== "POST") {
@@ -232,25 +222,22 @@ export default async function handler(request, response) {
 
     if (action === "save") {
       if (body.id) {
-        await updateUser(adminClient, authUser.id, body);
+        await updateUser(authUser.id, body);
       } else {
-        await createUser(adminClient, body);
+        createUser(body);
       }
 
-      const users = await listProfiles(adminClient);
-      return response.status(200).json({ users });
+      return response.status(200).json({ users: listProfiles() });
     }
 
     if (action === "toggle_active") {
-      await toggleUserActive(adminClient, authUser.id, String(body.userId || ""));
-      const users = await listProfiles(adminClient);
-      return response.status(200).json({ users });
+      await toggleUserActive(authUser.id, String(body.userId || ""));
+      return response.status(200).json({ users: listProfiles() });
     }
 
     if (action === "delete") {
-      await deleteUser(adminClient, authUser.id, String(body.userId || ""));
-      const users = await listProfiles(adminClient);
-      return response.status(200).json({ users });
+      await deleteUser(authUser.id, String(body.userId || ""));
+      return response.status(200).json({ users: listProfiles() });
     }
 
     return response.status(400).json({ error: "Unknown action" });

@@ -1,5 +1,6 @@
 ﻿import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useNavigate } from "react-router-dom";
+import { useCallback } from "react";
 import { useEffect } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDocumentsDialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -32,6 +34,7 @@ import {
   ChevronUp,
   ChevronsRight,
   CircleAlert,
+  FileText,
   Info,
   Link2,
   Loader2,
@@ -43,9 +46,17 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  generateMLNFe,
+  getMLPrivateSellerCenterComparison,
+  getMLNFeDocument,
+  getMLOrderDocuments,
   mapMLOrdersToProcessingResults,
   type MLDashboardDeposit,
+  type MLNFeResponse,
+  type MLOrderDocumentsResponse,
+  type MLPrivateSellerCenterComparisonResponse,
   type MLOrder,
+  syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
 import {
@@ -63,6 +74,7 @@ import {
   getOperationalCardPresentation,
   getOperationalSummaryLabel,
   getOrderImageFallback,
+  parseDate,
   sortDashboardDepositsForDisplay,
   getSelectedDepositLabel,
   getShipmentPresentation,
@@ -100,6 +112,36 @@ const SHIPMENT_FILTERS: Array<{ key: ShipmentBucket; label: string }> = [
   { key: "finalized", label: "Finalizadas" },
 ];
 
+type QuickSalesStatusFilter =
+  | "all"
+  | "ready"
+  | "invoice_pending"
+  | "under_review"
+  | "collection";
+
+interface QuickSalesFilters {
+  dateFrom: string;
+  dateTo: string;
+  status: QuickSalesStatusFilter;
+}
+
+const DEFAULT_QUICK_SALES_FILTERS: QuickSalesFilters = {
+  dateFrom: "",
+  dateTo: "",
+  status: "all",
+};
+
+const QUICK_SALES_STATUS_OPTIONS: Array<{
+  value: QuickSalesStatusFilter;
+  label: string;
+}> = [
+  { value: "all", label: "Todos" },
+  { value: "ready", label: "Prontas para enviar" },
+  { value: "invoice_pending", label: "NF-e sem emitir" },
+  { value: "under_review", label: "Em revisão" },
+  { value: "collection", label: "Para coleta" },
+];
+
 function formatCurrency(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) {
     return "-";
@@ -109,6 +151,22 @@ function formatCurrency(value: number | null | undefined): string {
     style: "currency",
     currency: "BRL",
   });
+}
+
+function formatCountDelta(value: number): string {
+  if (value === 0) {
+    return "0";
+  }
+
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function getDeltaTone(value: number): string {
+  if (value === 0) {
+    return "text-[#2e7d32]";
+  }
+
+  return value > 0 ? "text-[#c62828]" : "text-[#1565c0]";
 }
 
 function getDisplayOrderItems(order: MLOrder): MLOrder["items"] {
@@ -128,6 +186,28 @@ function getDisplayOrderItems(order: MLOrder): MLOrder["items"] {
   ];
 }
 
+function getDashboardBucketCount(
+  deposit: MLDashboardDeposit,
+  bucket: ShipmentBucket
+): number {
+  return (
+    deposit.internal_operational_counts?.[bucket] ??
+    deposit.counts?.[bucket] ??
+    0
+  );
+}
+
+function getDashboardBucketOrderIds(
+  deposit: MLDashboardDeposit,
+  bucket: ShipmentBucket
+): string[] {
+  return (
+    deposit.internal_operational_order_ids_by_bucket?.[bucket] ||
+    deposit.order_ids_by_bucket?.[bucket] ||
+    []
+  );
+}
+
 function cloneFilters(filters: MercadoLivreFilters): MercadoLivreFilters {
   return {
     sort: filters.sort,
@@ -139,6 +219,73 @@ function cloneFilters(filters: MercadoLivreFilters): MercadoLivreFilters {
 
 function createDefaultFilters(): MercadoLivreFilters {
   return cloneFilters(DEFAULT_ML_FILTERS);
+}
+
+function buildDateInputKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function matchesQuickSalesFilters(order: MLOrder, filters: QuickSalesFilters): boolean {
+  if (filters.dateFrom || filters.dateTo) {
+    const saleDate = parseDate(order.sale_date);
+    if (!saleDate) {
+      return false;
+    }
+
+    const saleDateKey = buildDateInputKey(saleDate);
+    if (filters.dateFrom && saleDateKey < filters.dateFrom) {
+      return false;
+    }
+
+    if (filters.dateTo && saleDateKey > filters.dateTo) {
+      return false;
+    }
+  }
+
+  switch (filters.status) {
+    case "ready":
+      return isOrderReadyToPrintLabel(order);
+    case "invoice_pending":
+      return isOrderInvoicePending(order);
+    case "under_review":
+      return isOrderUnderReview(order);
+    case "collection":
+      return isOrderForCollection(order);
+    default:
+      return true;
+  }
+}
+
+function hasQuickSalesFilters(filters: QuickSalesFilters): boolean {
+  return Boolean(filters.dateFrom || filters.dateTo || filters.status !== "all");
+}
+
+function buildQuickFilterSummary(filters: QuickSalesFilters): string | null {
+  const parts: string[] = [];
+
+  if (filters.dateFrom) {
+    parts.push(`de ${filters.dateFrom}`);
+  }
+
+  if (filters.dateTo) {
+    parts.push(`até ${filters.dateTo}`);
+  }
+
+  if (filters.status !== "all") {
+    const statusLabel =
+      QUICK_SALES_STATUS_OPTIONS.find((option) => option.value === filters.status)?.label ||
+      filters.status;
+    parts.push(statusLabel);
+  }
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return `Filtros rápidos ativos: ${parts.join(" · ")}.`;
 }
 
 function toggleMultiFilter<T extends string>(values: T[], value: T): T[] {
@@ -184,10 +331,10 @@ function buildSummaryText(
   );
 
   if (parts.length === 1) {
-    return `Você está visualizando o bucket ${parts[0]} com filtros nativos da API e classificações operacionais separadas.`;
+    return `Você está visualizando o bucket ${parts[0]} com resumo operacional interno no topo e detalhamento operacional separado nos cards abaixo.`;
   }
 
-  return `Você está visualizando apenas filtros que combinam com ${parts.join(" e ")}, usando o payload real da API com regras operacionais derivadas quando necessário.`;
+  return `Você está visualizando apenas filtros que combinam com ${parts.join(" e ")}, usando o resumo operacional interno no topo e regras operacionais derivadas para a distribuição abaixo.`;
 }
 
 function getActiveFilterCount(filters: MercadoLivreFilters): number {
@@ -362,8 +509,22 @@ export default function MercadoLivrePage() {
   const navigate = useNavigate();
   const { setResults } = useExtraction();
   const { currentUser, canAccessLocation } = useAuth();
-  const { connection, orders, dashboard, loading, error, refresh } = useMercadoLivreData({
+  const {
+    connection,
+    orders,
+    ordersPagination,
+    dashboard,
+    loading,
+    error,
+    refresh,
+    loadMoreOrders,
+  } = useMercadoLivreData({
     autoSync: true,
+    autoSyncIntervalMs: 120000,
+    ordersScope: "operational",
+    ordersLimit: 300,
+    ordersView: "dashboard",
+    autoLoadAllPages: false,
   });
 
   const [connecting, setConnecting] = useState(false);
@@ -373,8 +534,26 @@ export default function MercadoLivrePage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [appliedFilters, setAppliedFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
   const [draftFilters, setDraftFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
+  const [draftQuickFilters, setDraftQuickFilters] = useState<QuickSalesFilters>(
+    DEFAULT_QUICK_SALES_FILTERS
+  );
+  const [appliedQuickFilters, setAppliedQuickFilters] = useState<QuickSalesFilters>(
+    DEFAULT_QUICK_SALES_FILTERS
+  );
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
+  const [privateComparison, setPrivateComparison] =
+    useState<MLPrivateSellerCenterComparisonResponse | null>(null);
+  const [privateComparisonLoading, setPrivateComparisonLoading] = useState(false);
+  const [privateComparisonError, setPrivateComparisonError] = useState<string | null>(null);
+  const [documentsDialogOpen, setDocumentsDialogOpen] = useState(false);
+  const [documentsOrder, setDocumentsOrder] = useState<MLOrder | null>(null);
+  const [orderDocuments, setOrderDocuments] = useState<MLOrderDocumentsResponse | null>(null);
+  const [orderDocumentsLoading, setOrderDocumentsLoading] = useState(false);
+  const [orderDocumentsError, setOrderDocumentsError] = useState<string | null>(null);
+  const [orderNFe, setOrderNFe] = useState<MLNFeResponse | null>(null);
+  const [orderNFeLoading, setOrderNFeLoading] = useState(false);
+  const [orderNFeError, setOrderNFeError] = useState<string | null>(null);
 
   const handleConnect = async () => {
     setConnecting(true);
@@ -399,7 +578,12 @@ export default function MercadoLivrePage() {
     }
   };
 
-  const handleGenerateLabels = (ordersToReview: MLOrder[]) => {
+  const handleApplyQuickStatusFilter = useCallback((status: QuickSalesStatusFilter) => {
+    setDraftQuickFilters((current) => ({ ...current, status }));
+    setAppliedQuickFilters((current) => ({ ...current, status }));
+  }, []);
+
+  const handleGenerateLabels = useCallback((ordersToReview: MLOrder[]) => {
     if (ordersToReview.length === 0) {
       toast.info("Nenhum pedido disponível para gerar etiqueta.");
       return;
@@ -408,7 +592,7 @@ export default function MercadoLivrePage() {
     setResults(mapMLOrdersToProcessingResults(ordersToReview));
     toast.success(`${ordersToReview.length} pedido(s) enviados para conferência.`);
     navigate("/review");
-  };
+  }, [navigate, setResults]);
 
   const handleToggleExpandedOrder = (orderId: string) => {
     setExpandedOrders((current) => ({
@@ -416,6 +600,153 @@ export default function MercadoLivrePage() {
       [orderId]: !(current[orderId] ?? true),
     }));
   };
+
+  const loadOrderDocuments = useCallback(
+    async (order: MLOrder, options: { refresh?: boolean } = {}) => {
+      setOrderDocumentsLoading(true);
+      setOrderDocumentsError(null);
+
+      try {
+        const payload = await getMLOrderDocuments(order.order_id, options);
+        setOrderDocuments(payload);
+      } catch (caughtError) {
+        setOrderDocumentsError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Falha ao carregar os documentos operacionais."
+        );
+      } finally {
+        setOrderDocumentsLoading(false);
+      }
+    },
+    []
+  );
+
+  const loadOrderNFe = useCallback(
+    async (order: MLOrder, options: { refresh?: boolean } = {}) => {
+      setOrderNFeLoading(true);
+      setOrderNFeError(null);
+
+      try {
+        const payload = await getMLNFeDocument(order.order_id, options);
+        setOrderNFe(payload);
+      } catch (caughtError) {
+        setOrderNFeError(
+          caughtError instanceof Error ? caughtError.message : "Falha ao carregar a NF-e."
+        );
+      } finally {
+        setOrderNFeLoading(false);
+      }
+    },
+    []
+  );
+
+  const handleOpenDocumentsDialog = useCallback(
+    (order: MLOrder) => {
+      setDocumentsOrder(order);
+      setOrderDocuments(null);
+      setOrderDocumentsError(null);
+      setOrderNFe(null);
+      setOrderNFeError(null);
+      setDocumentsDialogOpen(true);
+      void loadOrderDocuments(order);
+      void loadOrderNFe(order);
+    },
+    [loadOrderDocuments, loadOrderNFe]
+  );
+
+  const handleRefreshDocuments = useCallback(() => {
+    if (!documentsOrder) return;
+    void loadOrderDocuments(documentsOrder, { refresh: true });
+  }, [documentsOrder, loadOrderDocuments]);
+
+  const handleRefreshOrderNFe = useCallback(() => {
+    if (!documentsOrder) return;
+    void loadOrderNFe(documentsOrder, { refresh: true });
+  }, [documentsOrder, loadOrderNFe]);
+
+  const handleGenerateOrderNFe = useCallback(async () => {
+    if (!documentsOrder) return;
+
+    setOrderNFeLoading(true);
+    setOrderNFeError(null);
+
+    try {
+      const payload = await generateMLNFe(documentsOrder.order_id);
+      setOrderNFe(payload);
+
+      if (payload.action === "generate_failed") {
+        toast.error(payload.nfe.note);
+      } else if (payload.action === "blocked") {
+        toast.info(payload.nfe.note);
+      } else if (payload.action === "noop_existing_invoice") {
+        toast.success("NF-e ja localizada para este pedido.");
+      } else {
+        toast.success(payload.nfe.note);
+      }
+
+      void loadOrderDocuments(documentsOrder, { refresh: true });
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Falha ao solicitar a emissao da NF-e.";
+      setOrderNFeError(message);
+      toast.error(message);
+    } finally {
+      setOrderNFeLoading(false);
+    }
+  }, [documentsOrder, loadOrderDocuments]);
+
+  const handleSyncOrderNFe = useCallback(async () => {
+    if (!documentsOrder) return;
+
+    setOrderNFeLoading(true);
+    setOrderNFeError(null);
+
+    try {
+      const payload = await syncMLNFeWithMercadoLivre(documentsOrder.order_id);
+      setOrderNFe(payload);
+      toast.success(payload.nfe.note);
+      void loadOrderDocuments(documentsOrder, { refresh: true });
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Falha ao sincronizar a NF-e com o Mercado Livre.";
+      setOrderNFeError(message);
+      toast.error(message);
+    } finally {
+      setOrderNFeLoading(false);
+    }
+  }, [documentsOrder, loadOrderDocuments]);
+
+  const handleOpenInternalLabelFlow = useCallback(() => {
+    setDocumentsDialogOpen(false);
+    if (documentsOrder) {
+      handleGenerateLabels([documentsOrder]);
+      return;
+    }
+    navigate("/review");
+  }, [documentsOrder, handleGenerateLabels, navigate]);
+
+  const loadPrivateComparison = useCallback(async () => {
+    setPrivateComparisonLoading(true);
+    setPrivateComparisonError(null);
+
+    try {
+      const comparison = await getMLPrivateSellerCenterComparison();
+      setPrivateComparison(comparison);
+    } catch (caughtError) {
+      setPrivateComparisonError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Falha ao carregar a auditoria técnica do Seller Center."
+      );
+    } finally {
+      setPrivateComparisonLoading(false);
+    }
+  }, []);
 
   const handleDepositToggle = (value: string) => {
     setSelectedDepositFilters((current) =>
@@ -458,8 +789,6 @@ export default function MercadoLivrePage() {
     [permittedOrders]
   );
 
-  const depositOptions = useMemo(() => buildDepositOptions(permittedOrders), [permittedOrders]);
-
   const allowWithoutDeposit =
     canAccessLocation("Vendas sem deposito") || canAccessLocation("Vendas sem depósito");
 
@@ -471,8 +800,28 @@ export default function MercadoLivrePage() {
       (deposit) =>
         canAccessLocation(deposit.label) ||
         (deposit.key === "without-deposit" && allowWithoutDeposit)
-    );
+      );
   }, [allowWithoutDeposit, canAccessLocation, currentUser?.role, dashboard?.deposits]);
+
+  const depositOptions = useMemo(() => {
+    const orderOptions = buildDepositOptions(permittedOrders);
+    if (orderOptions.length > 0) {
+      return orderOptions;
+    }
+
+    return accessibleDashboardDeposits.map((deposit) => ({
+      key: deposit.key,
+      label: deposit.label,
+      displayLabel:
+        deposit.key === "without-deposit"
+          ? "Vendas sem depósito"
+          : deposit.logistic_type === "fulfillment"
+            ? "Full"
+            : deposit.label,
+      isFulfillment: deposit.logistic_type === "fulfillment",
+      kind: deposit.key === "without-deposit" ? ("without-deposit" as const) : ("deposit" as const),
+    }));
+  }, [accessibleDashboardDeposits, permittedOrders]);
 
   useEffect(() => {
     const availableKeys = new Set(accessibleDashboardDeposits.map((deposit) => deposit.key));
@@ -510,7 +859,7 @@ export default function MercadoLivrePage() {
       SHIPMENT_FILTERS.reduce<Record<ShipmentBucket, number>>(
         (accumulator, currentFilter) => {
           accumulator[currentFilter.key] = selectedDashboardDeposits.reduce(
-            (total, deposit) => total + (deposit.counts?.[currentFilter.key] || 0),
+            (total, deposit) => total + getDashboardBucketCount(deposit, currentFilter.key),
             0
           );
           return accumulator;
@@ -523,7 +872,7 @@ export default function MercadoLivrePage() {
   const operationalOrderIds = useMemo(() => {
     const ids = new Set<string>();
     for (const deposit of selectedDashboardDeposits) {
-      const bucketIds = deposit.order_ids_by_bucket?.[shipmentFilter] || [];
+      const bucketIds = getDashboardBucketOrderIds(deposit, shipmentFilter);
       for (const id of bucketIds) ids.add(id);
     }
     return ids;
@@ -556,15 +905,84 @@ export default function MercadoLivrePage() {
     });
   }, [bucketOrders, operationalFocus, shipmentFilter]);
 
+  const quickFilteredOperationalOrders = useMemo(
+    () =>
+      focusedOperationalOrders.filter((order) =>
+        matchesQuickSalesFilters(order, appliedQuickFilters)
+      ),
+    [appliedQuickFilters, focusedOperationalOrders]
+  );
+
   const filteredOperationalOrders = useMemo(
-    () => filterAndSortOrders(focusedOperationalOrders, searchQuery, appliedFilters),
-    [appliedFilters, focusedOperationalOrders, searchQuery]
+    () => filterAndSortOrders(quickFilteredOperationalOrders, searchQuery, appliedFilters),
+    [appliedFilters, quickFilteredOperationalOrders, searchQuery]
   );
 
   const readyOrders = useMemo(
     () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
     [filteredOperationalOrders]
   );
+
+  const isOperationalListIncomplete =
+    ordersPagination.loading_more ||
+    ordersPagination.has_more ||
+    ordersPagination.loaded < ordersPagination.total;
+  const isOperationalListFullyLoaded = ordersPagination.fully_loaded;
+  const shouldShowProgressiveEmptyState =
+    filteredOperationalOrders.length === 0 &&
+    permittedOrders.length > 0 &&
+    isOperationalListIncomplete;
+  const canGenerateBatchLabels = readyOrders.length > 0 && isOperationalListFullyLoaded;
+
+  const hasOperationalSummaryWithoutVisibleOrders = useMemo(
+    () =>
+      permittedOrders.length === 0 &&
+      !isOperationalListIncomplete &&
+      accessibleDashboardDeposits.some((deposit) =>
+        Object.values(deposit.internal_operational_counts || deposit.counts || {}).some(
+          (count) => Number(count || 0) > 0
+        )
+      ),
+    [accessibleDashboardDeposits, isOperationalListIncomplete, permittedOrders.length]
+  );
+  const hasClientSideOperationalFilters =
+    Boolean(searchQuery.trim()) ||
+    hasQuickSalesFilters(appliedQuickFilters) ||
+    getActiveFilterCount(appliedFilters) > 0 ||
+    Boolean(operationalFocus);
+  const selectedBucketTotalCount = operationalOrderIds.size;
+  const visibleBucketOrderCount = bucketOrders.length;
+  const shouldShowPartialBucketProgress =
+    !hasClientSideOperationalFilters &&
+    isOperationalListIncomplete &&
+    selectedBucketTotalCount > 0 &&
+    visibleBucketOrderCount < selectedBucketTotalCount;
+  const headlineOrdersCount =
+    !hasClientSideOperationalFilters && selectedBucketTotalCount > 0
+      ? selectedBucketTotalCount
+      : filteredOperationalOrders.length;
+  const shouldAutoLoadVisibleBucket =
+    !loading &&
+    !hasClientSideOperationalFilters &&
+    selectedBucketTotalCount > 0 &&
+    selectedBucketTotalCount <= 120 &&
+    visibleBucketOrderCount < selectedBucketTotalCount &&
+    ordersPagination.has_more &&
+    !ordersPagination.loading_more;
+
+  useEffect(() => {
+    if (!shouldAutoLoadVisibleBucket) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void loadMoreOrders({ background: true });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loadMoreOrders, shouldAutoLoadVisibleBucket]);
 
   const selectedDepositLabel = useMemo(
     () => getSelectedDepositLabel(selectedDepositFilters, depositOptions),
@@ -576,23 +994,41 @@ export default function MercadoLivrePage() {
       sortDashboardDepositsForDisplay(
         (selectedDepositFilters.length === 0
           ? accessibleDashboardDeposits
-          : selectedDashboardDeposits).map((deposit) => ({
-          ...deposit,
-          displayLabel:
-            deposit.logistic_type === "fulfillment"
-              ? "Full"
-              : deposit.key === "without-deposit"
-                ? "Vendas sem depósito"
-                : deposit.label,
-          isFulfillment: deposit.logistic_type === "fulfillment",
-        }))
+          : selectedDashboardDeposits)
+          .filter((deposit) => getDashboardBucketCount(deposit, shipmentFilter) > 0)
+          .map((deposit) => ({
+            ...deposit,
+            internal_operational_counts: {
+              ...(deposit.internal_operational_counts || deposit.counts),
+              [shipmentFilter]: getDashboardBucketCount(deposit, shipmentFilter),
+            },
+            internal_operational_order_ids_by_bucket: {
+              ...(deposit.internal_operational_order_ids_by_bucket || deposit.order_ids_by_bucket),
+              [shipmentFilter]: getDashboardBucketOrderIds(deposit, shipmentFilter),
+            },
+            counts: {
+              ...deposit.counts,
+              [shipmentFilter]: getDashboardBucketCount(deposit, shipmentFilter),
+            },
+            order_ids_by_bucket: {
+              ...deposit.order_ids_by_bucket,
+              [shipmentFilter]: getDashboardBucketOrderIds(deposit, shipmentFilter),
+            },
+            displayLabel:
+              deposit.logistic_type === "fulfillment"
+                ? "Full"
+                : deposit.key === "without-deposit"
+                  ? "Vendas sem depósito"
+                  : deposit.label,
+            isFulfillment: deposit.logistic_type === "fulfillment",
+          }))
       )
         .slice(0, 4)
         .map((deposit) => ({
           deposit,
           presentation: getOperationalCardPresentation(
             deposit,
-            (deposit.order_ids_by_bucket?.[shipmentFilter] || [])
+            getDashboardBucketOrderIds(deposit, shipmentFilter)
               .map((id) => orderMap.get(id))
               .filter((order): order is MLOrder => Boolean(order)),
             shipmentFilter
@@ -613,6 +1049,82 @@ export default function MercadoLivrePage() {
     : connection?.last_sync_at
       ? formatShortTime(connection.last_sync_at)
       : "--:--";
+  const sellerCenterMirrorStatusLabel =
+    dashboard?.seller_center_mirror?.status === "ready" ? "Completo" : "Parcial";
+  const sellerCenterMirrorNote =
+    dashboard?.seller_center_mirror?.note ||
+    "Espelhamento Seller Center ainda parcial.";
+  const operationalQueues = dashboard?.operational_queues || null;
+  const postSaleOverview = dashboard?.post_sale_overview || null;
+  const privatePostSaleAudit = postSaleOverview?.private_audit || null;
+  const operationalQueueCards = [
+    {
+      key: "ready_to_print",
+      label: operationalQueues?.ready_to_print?.label || "Prontas para imprimir",
+      count: operationalQueues?.ready_to_print?.count || 0,
+      note: operationalQueues?.ready_to_print?.note || "",
+      actionLabel: "Filtrar impressões",
+      apply: () => handleApplyQuickStatusFilter("ready"),
+    },
+    {
+      key: "invoice_pending",
+      label: operationalQueues?.invoice_pending?.label || "NF-e pendente",
+      count: operationalQueues?.invoice_pending?.count || 0,
+      note: operationalQueues?.invoice_pending?.note || "",
+      actionLabel: "Filtrar NF-e",
+      apply: () => handleApplyQuickStatusFilter("invoice_pending"),
+    },
+    {
+      key: "under_review",
+      label: operationalQueues?.under_review?.label || "Em revisão",
+      count: operationalQueues?.under_review?.count || 0,
+      note: operationalQueues?.under_review?.note || "",
+      actionLabel: "Filtrar revisão",
+      apply: () => handleApplyQuickStatusFilter("under_review"),
+    },
+    {
+      key: "collection_ready",
+      label: operationalQueues?.collection_ready?.label || "Para coleta",
+      count: operationalQueues?.collection_ready?.count || 0,
+      note: operationalQueues?.collection_ready?.note || "",
+      actionLabel: "Filtrar coleta",
+      apply: () => handleApplyQuickStatusFilter("collection"),
+    },
+    {
+      key: "nfe_sync_pending",
+      label: operationalQueues?.nfe_sync_pending?.label || "NF-e com sync pendente",
+      count: operationalQueues?.nfe_sync_pending?.count || 0,
+      note: operationalQueues?.nfe_sync_pending?.note || "",
+      actionLabel: null,
+      apply: null,
+    },
+    {
+      key: "nfe_attention",
+      label: operationalQueues?.nfe_attention?.label || "NF-e com bloqueio ou erro",
+      count: operationalQueues?.nfe_attention?.count || 0,
+      note: operationalQueues?.nfe_attention?.note || "",
+      actionLabel: null,
+      apply: null,
+    },
+    {
+      key: "post_sale_ui_attention",
+      label: operationalQueues?.post_sale_ui_attention?.label || "Pós-venda auditado",
+      count: operationalQueues?.post_sale_ui_attention?.count || 0,
+      note: operationalQueues?.post_sale_ui_attention?.note || "",
+      actionLabel: null,
+      apply: null,
+    },
+  ];
+  const privateComparisonViews = [...(privateComparison?.views || [])].sort((left, right) => {
+    const leftKey = `${left.store || ""}::${left.selected_tab || ""}::${left.captured_at || ""}`;
+    const rightKey = `${right.store || ""}::${right.selected_tab || ""}::${right.captured_at || ""}`;
+    return leftKey.localeCompare(rightKey);
+  });
+  const privateSnapshotStatusLabel =
+    privateComparison?.snapshot_status?.status === "available" ? "Capturado" : "Sem captura";
+  const latestPrivateCaptureLabel = privateComparison?.snapshot_status?.last_captured_at
+    ? formatSaleMoment(privateComparison.snapshot_status.last_captured_at)
+    : "Nenhuma captura registrada";
   const activeFilterCount = getActiveFilterCount(appliedFilters);
   const activeFilterChips = buildActiveFilterChips(appliedFilters, setAppliedFilters);
   const contextFilterChips: ContextFilterChip[] = [
@@ -653,6 +1165,7 @@ export default function MercadoLivrePage() {
 
   const hasToolbarFilters =
     searchQuery.trim().length > 0 ||
+    hasQuickSalesFilters(appliedQuickFilters) ||
     activeFilterChips.length > 0 ||
     Boolean(operationalFocus) ||
     selectedDepositFilters.length > 0;
@@ -661,9 +1174,13 @@ export default function MercadoLivrePage() {
     setSearchQuery("");
     setAppliedFilters(createDefaultFilters());
     setDraftFilters(createDefaultFilters());
+    setAppliedQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+    setDraftQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
     setSelectedDepositFilters([]);
     setOperationalFocus(null);
   };
+
+  const quickFiltersSummaryText = buildQuickFilterSummary(appliedQuickFilters);
 
   const isServiceTimeoutState =
     !connection &&
@@ -710,7 +1227,7 @@ export default function MercadoLivrePage() {
                 </h2>
                 <p className="max-w-xl text-sm text-[#666666]">
                   {isServiceTimeoutState
-                    ? "O login continua funcionando, mas os pedidos e o painel operacional dependem do Supabase, que entrou em pausa por restrição de cota e está sem responder."
+                    ? "O login continua funcionando, mas a leitura operacional da conta conectada está demorando para responder."
                     : "Depois da conexão, os pedidos entram automaticamente e a geração de etiquetas respeita os locais liberados para cada usuário."}
                 </p>
               </div>
@@ -740,7 +1257,7 @@ export default function MercadoLivrePage() {
                 <Badge variant="outline" className="rounded-full border-[#dbe5f8] px-4 py-2 text-[#666666]">
                   <CircleAlert className="mr-2 h-4 w-4 text-[#3483fa]" />
                   {isServiceTimeoutState
-                    ? "Aguardando retorno do Supabase"
+                    ? "Aguardando retorno da API"
                     : "Sincronização automática a cada 15s"}
                 </Badge>
               </div>
@@ -796,6 +1313,516 @@ export default function MercadoLivrePage() {
         </div>
 
         <div className="space-y-6 pt-6 lg:pt-20">
+        <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="grid flex-1 gap-3 md:grid-cols-2 xl:grid-cols-[180px_180px_180px_auto_auto]">
+              <Input
+                type="date"
+                value={draftQuickFilters.dateFrom}
+                onChange={(event) =>
+                  setDraftQuickFilters((current) => ({
+                    ...current,
+                    dateFrom: event.target.value,
+                  }))
+                }
+                className="h-12 rounded-full border-[#e5e5e5] bg-white text-[15px] text-[#333333] focus-visible:ring-[#3483fa]"
+              />
+
+              <Input
+                type="date"
+                value={draftQuickFilters.dateTo}
+                onChange={(event) =>
+                  setDraftQuickFilters((current) => ({
+                    ...current,
+                    dateTo: event.target.value,
+                  }))
+                }
+                className="h-12 rounded-full border-[#e5e5e5] bg-white text-[15px] text-[#333333] focus-visible:ring-[#3483fa]"
+              />
+
+              <Select
+                value={draftQuickFilters.status}
+                onValueChange={(value) =>
+                  setDraftQuickFilters((current) => ({
+                    ...current,
+                    status: value as QuickSalesStatusFilter,
+                  }))
+                }
+              >
+                <SelectTrigger className="h-12 rounded-full border-[#e5e5e5] text-[15px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {QUICK_SALES_STATUS_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Button
+                type="button"
+                className="h-12 rounded-full bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
+                onClick={() => setAppliedQuickFilters({ ...draftQuickFilters })}
+              >
+                Buscar
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="h-12 rounded-full border-[#e5e5e5] px-5 text-sm font-semibold"
+                onClick={() => {
+                  setDraftQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+                  setAppliedQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+                }}
+              >
+                Limpar
+              </Button>
+            </div>
+          </div>
+
+          {quickFiltersSummaryText && (
+            <div className="mt-3 text-sm text-[#666666]">{quickFiltersSummaryText}</div>
+          )}
+        </div>
+
+        <div className="rounded-[22px] border border-[#dfe7f6] bg-[#f8fbff] px-5 py-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="rounded-full border-[#bfd5ff] bg-white px-3 py-1 text-[#2d5fb7]">
+                  Resumo operacional interno
+                </Badge>
+                <Badge variant="outline" className="rounded-full border-[#e7d8a2] bg-[#fff9e8] px-3 py-1 text-[#8b6b00]">
+                  Seller Center: {sellerCenterMirrorStatusLabel}
+                </Badge>
+              </div>
+              <p className="text-sm leading-6 text-[#52637f]">
+                Os chips e cards abaixo usam a camada operacional interna já estabilizada. O
+                Seller Center mirror continua {sellerCenterMirrorStatusLabel.toLowerCase()} e
+                agora funciona como aproximação pública ancorada na operação interna. O pós-venda
+                segue separado entre API pública e auditoria privada da UI.
+              </p>
+            </div>
+            <div className="inline-flex items-start gap-2 rounded-[16px] border border-[#e6edf9] bg-white px-4 py-3 text-sm text-[#5d6c85]">
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#3483fa]" />
+              <span>{sellerCenterMirrorNote}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[22px] border border-[#e7ecf3] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="rounded-full border-[#dfe7f6] bg-[#f8fbff] px-3 py-1 text-[#2d5fb7]">
+                    Filas operacionais
+                  </Badge>
+                  <Badge variant="outline" className="rounded-full border-[#e5e7eb] bg-white px-3 py-1 text-[#52637f]">
+                    Pós-venda persistido: {postSaleOverview?.total_open || 0}
+                  </Badge>
+                </div>
+                <p className="text-sm leading-6 text-[#5d6c85]">
+                  Esta camada organiza o trabalho operacional do dia a dia sem trocar a origem dos
+                  chips. Ela usa o resumo interno, a base fiscal local e o pós-venda persistido.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-3">
+              {operationalQueueCards.map((queue) => (
+                <div
+                  key={queue.key}
+                  className="rounded-[18px] border border-[#edf1f6] bg-[#fbfcfe] px-4 py-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-[#22304a]">{queue.label}</div>
+                      <div className="mt-1 text-xs text-[#6b7a90]">{queue.note || "Sem detalhe adicional."}</div>
+                    </div>
+                    <div className="rounded-full bg-[#3483fa] px-3 py-1 text-sm font-semibold text-white">
+                      {queue.count}
+                    </div>
+                  </div>
+
+                  {queue.apply && queue.actionLabel && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-4 rounded-full border-[#d9e4f6] bg-white text-[#2d5fb7] hover:bg-[#f4f8ff]"
+                      onClick={queue.apply}
+                    >
+                      {queue.actionLabel}
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {postSaleOverview && (
+              <div className="rounded-[18px] border border-[#efe7cf] bg-[#fffdf7] px-4 py-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-[#7a5a00]">Pós-venda operacional</div>
+                    <div className="mt-1 text-sm text-[#6f6239]">
+                      Claims, returns e packs persistidos via API pública para acompanhamento do time.
+                    </div>
+                  </div>
+                  <div className="rounded-full bg-white px-3 py-1 text-sm font-medium text-[#7a5a00]">
+                    API pública: {postSaleOverview.total_open}
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                  {(["claims", "returns", "packs"] as const).map((entityKey) => {
+                    const entity = postSaleOverview.entities[entityKey];
+                    return (
+                      <div
+                        key={entityKey}
+                        className="rounded-[16px] border border-[#f0e5bf] bg-white px-4 py-4"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-semibold text-[#5f5124]">{entity.label}</span>
+                          <span className="text-sm font-semibold text-[#7a5a00]">{entity.count}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-[#8b7c4d]">
+                          Sync: {entity.implementation_status} • última atualização{" "}
+                          {entity.last_synced_at ? formatSaleMoment(entity.last_synced_at) : "não sincronizada"}
+                        </div>
+                        {entity.status_breakdown && entity.status_breakdown.length > 0 && (
+                          <div className="mt-3 space-y-2 text-sm text-[#5f5124]">
+                            {entity.status_breakdown.slice(0, 4).map((item) => (
+                              <div
+                                key={`${entityKey}-${item.raw_status}`}
+                                className="flex items-center justify-between gap-3"
+                              >
+                                <span>{item.raw_status}</span>
+                                <span className="font-medium">{item.count}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {privatePostSaleAudit?.status === "available" && (
+                  <div className="mt-4 rounded-[16px] border border-[#f0e5bf] bg-white px-4 py-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-[#5f5124]">
+                          Auditoria privada de pós-venda
+                        </div>
+                        <div className="mt-1 text-sm text-[#7d6d3d]">
+                          Usa cards e subtarefas da UI privada do Seller Center para mostrar
+                          devoluções e itens que exigem ação. Não substitui claims e returns da
+                          API pública.
+                        </div>
+                      </div>
+                      <div className="rounded-full bg-[#fff7de] px-3 py-1 text-sm font-medium text-[#8b6b00]">
+                        Ação requerida: {privatePostSaleAudit.totals.action_required}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 lg:grid-cols-4">
+                      {[
+                        {
+                          key: "returns_in_progress",
+                          label: "Devoluções em andamento",
+                          count: privatePostSaleAudit.totals.returns_in_progress,
+                        },
+                        {
+                          key: "in_review",
+                          label: "Em revisão",
+                          count: privatePostSaleAudit.totals.in_review,
+                        },
+                        {
+                          key: "completed",
+                          label: "Concluídas",
+                          count: privatePostSaleAudit.totals.completed,
+                        },
+                        {
+                          key: "not_completed",
+                          label: "Não concluídas",
+                          count: privatePostSaleAudit.totals.not_completed,
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.key}
+                          className="rounded-[14px] border border-[#f0e5bf] bg-[#fffdf7] px-4 py-3"
+                        >
+                          <div className="text-xs uppercase tracking-[0.04em] text-[#8b7c4d]">
+                            {item.label}
+                          </div>
+                          <div className="mt-2 text-[20px] font-semibold text-[#5f5124]">
+                            {item.count}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                      {privatePostSaleAudit.views.slice(0, 6).map((view) => (
+                        <div
+                          key={`${view.store}-${view.selected_tab}-${view.captured_at}`}
+                          className="rounded-[14px] border border-[#f3ead1] bg-[#fffef9] px-4 py-3"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-semibold text-[#5f5124]">
+                              {view.view_label}
+                            </span>
+                            <span className="text-sm font-semibold text-[#8b6b00]">
+                              {view.operational_count}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-[#8b7c4d]">
+                            {view.selected_tab_label} • fonte {view.source === "cards_tasks" ? "cards" : view.source === "button" ? "botão" : "n/d"}
+                          </div>
+                          <div className="mt-3 space-y-2 text-sm text-[#5f5124]">
+                            <div className="flex items-center justify-between gap-3">
+                              <span>Em revisão</span>
+                              <span className="font-medium">{view.in_review}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <span>Não concluídas</span>
+                              <span className="font-medium">{view.not_completed}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <span>Botão bruto</span>
+                              <span className="font-medium">{view.raw_button_count}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[22px] border border-[#eadfbe] bg-[#fffdf7] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className="rounded-full border-[#ecd9a2] bg-white px-3 py-1 text-[#8b6b00]"
+                  >
+                    Auditoria Seller Center
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="rounded-full border-[#dfe3ea] bg-white px-3 py-1 text-[#52637f]"
+                  >
+                    Snapshot privado: {privateSnapshotStatusLabel}
+                  </Badge>
+                </div>
+                <p className="text-sm leading-6 text-[#5d6c85]">
+                  Esta seção compara a captura privada autenticada do Seller Center com a camada
+                  operacional interna e com o espelhamento local atual. Ela não substitui a
+                  integração pública do Mercado Livre.
+                </p>
+              </div>
+
+              <div className="flex flex-col items-start gap-3 lg:items-end">
+                <div className="inline-flex items-start gap-2 rounded-[16px] border border-[#efe7cf] bg-white px-4 py-3 text-sm text-[#6b5b1a]">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#b18500]" />
+                  <span>Última captura: {latestPrivateCaptureLabel}</span>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-full border-[#e5d6a0] bg-white text-[#6b5b1a] hover:bg-[#fff7de]"
+                  onClick={() => void loadPrivateComparison()}
+                  disabled={privateComparisonLoading}
+                >
+                  {privateComparisonLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Atualizando auditoria
+                    </>
+                  ) : (
+                    "Atualizar auditoria"
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {privateComparisonError && (
+              <div className="rounded-[16px] border border-[#f3d4d4] bg-[#fff7f7] px-4 py-3 text-sm text-[#9b3b3b]">
+                {privateComparisonError}
+              </div>
+            )}
+
+            {!privateComparisonLoading && privateComparisonViews.length === 0 && !privateComparisonError && (
+              <div className="rounded-[18px] border border-dashed border-[#e5d6a0] bg-white px-5 py-5 text-sm text-[#6f6f6f]">
+                Nenhum snapshot privado do Seller Center foi persistido ainda. A captura técnica
+                pode ser enviada depois via Playwright para comparar a UI autenticada com o banco
+                local por visão.
+              </div>
+            )}
+
+            {privateComparisonViews.length > 0 && (
+              <div className="space-y-4">
+                {privateComparisonViews.map((view) => (
+                  <div
+                    key={`${view.store}-${view.selected_tab || "tab"}-${view.captured_at}`}
+                    className="rounded-[18px] border border-[#efe7cf] bg-white px-4 py-4"
+                  >
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[16px] font-semibold text-[#333333]">
+                            {view.view_label || view.store}
+                          </span>
+                          <Badge variant="outline" className="rounded-full border-[#e6e6e6] bg-white px-3 py-1 text-[#666666]">
+                            {view.selected_tab_label || view.selected_tab || "Sem tab"}
+                          </Badge>
+                        </div>
+                        <div className="text-sm text-[#6f6f6f]">
+                          Capturado em {formatSaleMoment(view.captured_at)}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Pedidos locais: {view.persisted_entities.orders}
+                        </Badge>
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Packs: {view.persisted_entities.packs}
+                        </Badge>
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Claims: {view.persisted_entities.claims}
+                        </Badge>
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Returns: {view.persisted_entities.returns}
+                        </Badge>
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Pós-venda auditado: {view.private_snapshot.post_sale_count}
+                        </Badge>
+                        <Badge variant="outline" className="rounded-full border-[#dfe3ea] bg-[#f8fafc] text-[#52637f]">
+                          Botão bruto: {view.private_snapshot.post_sale_button_count_raw || 0}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                      <div className="rounded-[16px] border border-[#ececec] bg-[#fbfbfb] px-4 py-4">
+                        <div className="text-sm font-semibold text-[#333333]">UI privada</div>
+                        <div className="mt-3 space-y-2 text-sm text-[#555555]">
+                          {SHIPMENT_FILTERS.map((filterOption) => (
+                            <div key={`private-${view.store}-${filterOption.key}`} className="flex items-center justify-between gap-3">
+                              <span>{filterOption.label}</span>
+                              <span className="font-semibold text-[#333333]">
+                                {view.private_snapshot.counts[filterOption.key]}
+                              </span>
+                            </div>
+                          ))}
+                          <div className="border-t border-[#ececec] pt-2 text-xs text-[#6f6f6f]">
+                            Pós-venda por {view.private_snapshot.post_sale_source === "cards_tasks" ? "cards e subtarefas" : view.private_snapshot.post_sale_source === "button" ? "botão" : "sem sinal confiável"}.
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-[16px] border border-[#dfe7f6] bg-[#f8fbff] px-4 py-4">
+                        <div className="text-sm font-semibold text-[#2d5fb7]">
+                          Resumo operacional interno
+                        </div>
+                        <div className="mt-3 space-y-2 text-sm text-[#4f6488]">
+                          {SHIPMENT_FILTERS.map((filterOption) => (
+                            <div key={`internal-${view.store}-${filterOption.key}`} className="flex items-center justify-between gap-3">
+                              <span>{filterOption.label}</span>
+                              <div className="text-right">
+                                <div className="font-semibold text-[#2d5fb7]">
+                                  {view.internal_operational.counts[filterOption.key]}
+                                </div>
+                                <div className={`text-xs ${getDeltaTone(view.differences.internal_minus_private[filterOption.key])}`}>
+                                  Δ {formatCountDelta(view.differences.internal_minus_private[filterOption.key])}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="rounded-[16px] border border-[#efe2b4] bg-[#fff9e8] px-4 py-4">
+                        <div className="text-sm font-semibold text-[#8b6b00]">
+                          Seller Center mirror local
+                        </div>
+                        <div className="mt-3 space-y-2 text-sm text-[#6f5a19]">
+                          {SHIPMENT_FILTERS.map((filterOption) => (
+                            <div key={`mirror-${view.store}-${filterOption.key}`} className="flex items-center justify-between gap-3">
+                              <span>{filterOption.label}</span>
+                              <div className="text-right">
+                                <div className="font-semibold text-[#8b6b00]">
+                                  {view.seller_center_mirror.counts[filterOption.key]}
+                                </div>
+                                <div className={`text-xs ${getDeltaTone(view.differences.mirror_minus_private[filterOption.key])}`}>
+                                  Δ {formatCountDelta(view.differences.mirror_minus_private[filterOption.key])}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {view.private_snapshot.cards.length > 0 && (
+                      <div className="mt-4 rounded-[16px] border border-[#efefef] bg-[#fafafa] px-4 py-4">
+                        <div className="mb-3 text-sm font-semibold text-[#333333]">
+                          Cards observados na UI privada
+                        </div>
+                        <div className="grid gap-3 xl:grid-cols-3">
+                          {view.private_snapshot.cards.slice(0, 6).map((card) => (
+                            <div
+                              key={`${view.store}-${card.key}`}
+                              className="rounded-[14px] border border-[#ececec] bg-white px-4 py-3"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-sm font-semibold text-[#333333]">
+                                  {card.label}
+                                </span>
+                                <span className="text-sm font-semibold text-[#333333]">
+                                  {card.count}
+                                </span>
+                              </div>
+                              {card.tag && (
+                                <div className="mt-1 text-xs uppercase tracking-[0.04em] text-[#8a8a8a]">
+                                  {card.tag}
+                                </div>
+                              )}
+                              {card.tasks.length > 0 && (
+                                <div className="mt-3 space-y-2 text-sm text-[#666666]">
+                                  {card.tasks.slice(0, 4).map((task) => (
+                                    <div
+                                      key={`${card.key}-${task.key}`}
+                                      className="flex items-center justify-between gap-3"
+                                    >
+                                      <span>{task.label}</span>
+                                      <span className="font-medium text-[#333333]">{task.count}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="rounded-[22px] border border-[#e6e6e6] bg-[#f3f3f3] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap gap-2">
@@ -933,7 +1960,13 @@ export default function MercadoLivrePage() {
             </div>
 
             <div className="text-[15px] font-semibold text-[#666666]">
-              {filteredOperationalOrders.length} venda{filteredOperationalOrders.length === 1 ? "" : "s"}
+              {headlineOrdersCount} venda{headlineOrdersCount === 1 ? "" : "s"}
+              {shouldShowPartialBucketProgress && (
+                <span className="ml-2 text-xs font-medium text-[#8a6d1f]">
+                  {visibleBucketOrderCount} já carregada
+                  {visibleBucketOrderCount === 1 ? "" : "s"} na lista
+                </span>
+              )}
             </div>
           </div>
 
@@ -968,10 +2001,36 @@ export default function MercadoLivrePage() {
           </div>
 
           <div className="mt-3 text-sm text-[#666666]">
-            {searchQuery.trim()
-              ? `A listagem foi atualizada com busca por "${searchQuery.trim()}" e filtros aplicados em tempo real sobre o dataset operacional.`
-              : filtersSummaryText}
+            {shouldShowPartialBucketProgress
+              ? `O resumo operacional deste bucket mostra ${selectedBucketTotalCount} pedido(s). ${visibleBucketOrderCount} já foram carregados na lista; o restante entra progressivamente para preservar a performance.`
+              : searchQuery.trim()
+                ? `A listagem foi atualizada com busca por "${searchQuery.trim()}" e filtros aplicados em tempo real sobre o dataset operacional.`
+                : quickFiltersSummaryText || filtersSummaryText}
           </div>
+
+          {isOperationalListIncomplete && (
+            <div className="mt-3 flex flex-wrap items-center gap-3 rounded-2xl border border-[#d9e7ff] bg-[#f4f8ff] px-4 py-3 text-sm text-[#4f658e]">
+              <Loader2 className="h-4 w-4 animate-spin text-[#3483fa]" />
+              <span>
+                Carregando o restante da base operacional em páginas leves para manter o grid
+                responsivo.{" "}
+                {shouldShowPartialBucketProgress
+                  ? `${visibleBucketOrderCount} de ${selectedBucketTotalCount} pedido(s) do bucket atual já foram carregados.`
+                  : `${ordersPagination.loaded} de ${ordersPagination.total} pedido(s) operacional(is) já foram carregados.`}
+              </span>
+              {ordersPagination.has_more && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 rounded-full border-[#c8dafc] bg-white text-[#2968c8] hover:bg-[#eef4ff]"
+                  onClick={() => void loadMoreOrders()}
+                  disabled={ordersPagination.loading_more}
+                >
+                  Carregar mais agora
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="rounded-[18px] border border-[#e6e6e6] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
@@ -988,22 +2047,63 @@ export default function MercadoLivrePage() {
 
             <Button
               className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
-              disabled={readyOrders.length === 0}
+              disabled={!canGenerateBatchLabels}
               onClick={() => handleGenerateLabels(readyOrders)}
             >
-              Gerar Etiquetas ({readyOrders.length})
+              {isOperationalListFullyLoaded
+                ? `Gerar Etiquetas (${readyOrders.length})`
+                : `Carregando base completa (${readyOrders.length})`}
             </Button>
           </div>
+
+          {!isOperationalListFullyLoaded && (
+            <div className="mt-3 rounded-xl border border-[#f0e1b2] bg-[#fff9e6] px-4 py-3 text-sm text-[#7a5c12]">
+              A geração em lote fica liberada assim que a listagem operacional terminar de carregar,
+              evitando imprimir etiquetas com base parcial.
+            </div>
+          )}
         </div>
 
-        {permittedOrders.length === 0 ? (
+        {permittedOrders.length === 0 && isOperationalListIncomplete ? (
+          <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-[#3483fa]" />
+            <p className="text-[16px] font-semibold text-[#333333]">
+              Carregando a base operacional completa deste usuário.
+            </p>
+            <p className="mt-1 text-[15px] text-[#666666]">
+              As próximas páginas continuam chegando em segundo plano para evitar travamento da
+              tela.
+            </p>
+          </div>
+        ) : permittedOrders.length === 0 ? (
           <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
             <CircleAlert className="mx-auto mb-3 h-8 w-8 text-[#bdbdbd]" />
             <p className="text-[16px] font-semibold text-[#333333]">
-              Nenhum pedido visível para os locais liberados neste usuário.
+              {hasOperationalSummaryWithoutVisibleOrders
+                ? "O resumo operacional carregou, mas a listagem detalhada não retornou pedidos."
+                : "Nenhum pedido visível para os locais liberados neste usuário."}
             </p>
             <p className="mt-1 text-[15px] text-[#666666]">
-              Revise as permissões de local na tela de usuários para liberar outros pedidos.
+              {hasOperationalSummaryWithoutVisibleOrders
+                ? "Isso normalmente acontece quando a consulta detalhada demora mais que o resumo ou ainda está estabilizando a sessão. Recarregue a listagem para tentar novamente."
+                : "Revise as permissões de local na tela de usuários para liberar outros pedidos."}
+            </p>
+            {hasOperationalSummaryWithoutVisibleOrders && (
+              <div className="mt-5 flex justify-center">
+                <Button variant="outline" onClick={handleRetryLoad}>
+                  Recarregar listagem
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : shouldShowProgressiveEmptyState ? (
+          <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-[#3483fa]" />
+            <p className="text-[16px] font-semibold text-[#333333]">
+              Carregando mais pedidos para completar este bucket operacional.
+            </p>
+            <p className="mt-1 text-[15px] text-[#666666]">
+              O grid já abriu rápido e continua recebendo as próximas páginas em segundo plano.
             </p>
           </div>
         ) : filteredOperationalOrders.length === 0 ? (
@@ -1099,7 +2199,15 @@ export default function MercadoLivrePage() {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-lg border-[#d9e7ff] text-[#2968c8] hover:bg-[#eef4ff]"
+                          onClick={() => handleOpenDocumentsDialog(order)}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          Documentos
+                        </Button>
                         <Button
                           variant={eligibleForLabel ? "default" : "outline"}
                           className={`h-10 rounded-lg px-5 ${
@@ -1194,6 +2302,30 @@ export default function MercadoLivrePage() {
                 </article>
               );
             })}
+
+            {ordersPagination.has_more && (
+              <div className="flex justify-center pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-full border-[#d9e7ff] px-5 text-[#2968c8] hover:bg-[#eef4ff]"
+                  onClick={() => void loadMoreOrders()}
+                  disabled={ordersPagination.loading_more}
+                >
+                  {ordersPagination.loading_more ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Carregando mais pedidos
+                    </>
+                  ) : (
+                    `Carregar mais pedidos (${Math.max(
+                      0,
+                      ordersPagination.total - ordersPagination.loaded
+                    )} restantes)`
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         )}
         </div>
@@ -1349,6 +2481,22 @@ export default function MercadoLivrePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <OrderOperationalDocumentsDialog
+        open={documentsDialogOpen}
+        onOpenChange={setDocumentsDialogOpen}
+        order={documentsOrder}
+        documents={orderDocuments}
+        loading={orderDocumentsLoading}
+        error={orderDocumentsError}
+        onRefresh={handleRefreshDocuments}
+        onOpenInternalLabel={handleOpenInternalLabelFlow}
+        nfeResponse={orderNFe}
+        nfeLoading={orderNFeLoading}
+        nfeError={orderNFeError}
+        onRefreshNFe={handleRefreshOrderNFe}
+        onGenerateNFe={handleGenerateOrderNFe}
+        onSyncNFe={handleSyncOrderNFe}
+      />
     </AppLayout>
   );
 }

@@ -154,9 +154,6 @@ export default function ReviewPage() {
               </div>
               <div className="flex flex-wrap justify-center gap-3">
                 <Button onClick={() => navigate("/mercado-livre")}>Ir para EcoFerro</Button>
-                <Button variant="outline" onClick={() => navigate("/upload")}>
-                  Processar arquivo manual
-                </Button>
               </div>
             </div>
           </>
@@ -172,7 +169,8 @@ export default function ReviewPage() {
                   </Badge>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Revise os dados finais e visualize a etiqueta em tamanho real antes de imprimir.
+                  Revise os dados finais e visualize a etiqueta em tamanho real antes de
+                  imprimir.
                 </p>
               </div>
 
@@ -240,12 +238,15 @@ export default function ReviewPage() {
                 <div className="glass-card p-5">
                   <div className="mb-5 flex items-center justify-between gap-3">
                     <div>
-                      <h2 className="text-sm font-semibold text-foreground">Dados da etiqueta</h2>
+                      <h2 className="text-sm font-semibold text-foreground">
+                        Dados da etiqueta
+                      </h2>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Revise os dados finais e preencha a observação que precisa sair na etiqueta.
+                        Revise os dados finais e preencha a observacao que precisa sair na
+                        etiqueta.
                       </p>
                     </div>
-                    <Badge variant="outline">Observação editável</Badge>
+                    <Badge variant="outline">Observacao editavel</Badge>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -268,15 +269,15 @@ export default function ReviewPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                          Observação da etiqueta
+                          Observacao da etiqueta
                         </p>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          Use este campo para lembretes operacionais, como brinde, conferência extra
-                          ou orientação de embalagem.
+                          Use este campo para lembretes operacionais, como brinde,
+                          conferencia extra ou orientacao de embalagem.
                         </p>
                       </div>
                       <Badge variant="secondary" className="shrink-0 text-[10px]">
-                        até 180 caracteres
+                        ate 180 caracteres
                       </Badge>
                     </div>
                     <Textarea
@@ -301,7 +302,9 @@ export default function ReviewPage() {
 
                 <div className="space-y-4">
                   <div>
-                    <h2 className="text-sm font-semibold text-foreground">Preview da etiqueta</h2>
+                    <h2 className="text-sm font-semibold text-foreground">
+                      Preview da etiqueta
+                    </h2>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Use a visualizacao em tamanho real antes de imprimir.
                     </p>

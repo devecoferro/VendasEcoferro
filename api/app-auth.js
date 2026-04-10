@@ -1,9 +1,9 @@
 import {
-  buildLoginEmail,
+  authenticateUser,
+  clearSessionCookie,
   getAuthenticatedProfile,
-  hasServiceRoleKey,
-  normalizeUsername,
   parseRequestBody,
+  revokeSessionByToken,
   serializeProfile,
 } from "./_lib/auth-server.js";
 
@@ -14,29 +14,27 @@ export default async function handler(request, response) {
 
   try {
     const body = parseRequestBody(request);
-    const action = body.action || "prepare_login";
+    const action = body.action || "session";
 
-    if (action === "prepare_login") {
-      const username = normalizeUsername(body.username);
+    if (action === "login") {
+      const user = await authenticateUser(body.username, body.password, response);
+      return response.status(200).json({ user });
+    }
 
-      if (!username) {
-        return response.status(400).json({ error: "Informe um usuario valido." });
+    if (action === "logout") {
+      const { sessionToken } = await getAuthenticatedProfile(request);
+      if (sessionToken) {
+        revokeSessionByToken(sessionToken);
       }
 
-      return response.status(200).json({
-        loginEmail: buildLoginEmail(username),
-      });
+      clearSessionCookie(response);
+      return response.status(200).json({ success: true });
     }
 
     if (action === "session") {
-      if (!hasServiceRoleKey()) {
-        return response.status(503).json({
-          error: "Backend de autenticacao ainda nao configurado no servidor.",
-        });
-      }
-
       const { profile } = await getAuthenticatedProfile(request);
       if (!profile) {
+        clearSessionCookie(response);
         return response.status(401).json({ error: "Sessao invalida." });
       }
 
@@ -52,3 +50,4 @@ export default async function handler(request, response) {
     });
   }
 }
+

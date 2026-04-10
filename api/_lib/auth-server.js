@@ -1,25 +1,171 @@
-import { createClient } from "@supabase/supabase-js";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  scryptSync,
+  timingSafeEqual,
+} from "node:crypto";
 
-const SUPABASE_URL =
-  (process.env.SUPABASE_URL || "https://gyaddryvtuzllcggorjc.supabase.co").trim();
-
-const SUPABASE_PUBLISHABLE_KEY =
-  (
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    "sb_publishable_USdCDZTlvuXFTOBlAvYSpQ_ne5ka8Ee"
-  ).trim();
-
-const SUPABASE_SERVICE_ROLE_KEY =
-  (
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    ""
-  ).trim();
+import {
+  APP_BASE_URL,
+  APP_DEFAULT_ADMIN_PASSWORD,
+  APP_DEFAULT_ADMIN_USERNAME,
+  APP_SESSION_COOKIE_NAME,
+  APP_SESSION_TTL_DAYS,
+} from "./app-config.js";
+import { db } from "./db.js";
 
 export const ALL_LOCATIONS_ACCESS = "__all_locations__";
-export const DEFAULT_ADMIN_USERNAME = "admin.ecoferro";
-export const DEFAULT_ADMIN_PASSWORD = "Ecoferro@2024";
+export const DEFAULT_ADMIN_USERNAME = APP_DEFAULT_ADMIN_USERNAME;
+export const DEFAULT_ADMIN_PASSWORD = APP_DEFAULT_ADMIN_PASSWORD;
+
+const SESSION_TTL_MS = APP_SESSION_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function parseJsonSafely(value, fallback) {
+  if (!value) return fallback;
+
+  if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function parseBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(normalized)) return true;
+    if (["0", "false", "no"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function mapProfileRow(row) {
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    username: row.username,
+    login_email: row.login_email,
+    password_hash: row.password_hash,
+    role: row.role,
+    allowed_locations: parseJsonSafely(row.allowed_locations, []),
+    active: parseBoolean(row.active, true),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function getProfileRowById(userId) {
+  return mapProfileRow(
+    db
+      .prepare(
+        `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+         FROM app_user_profiles
+         WHERE id = ?
+         LIMIT 1`
+      )
+      .get(userId)
+  );
+}
+
+function getProfileRowByUsername(username) {
+  return mapProfileRow(
+    db
+      .prepare(
+        `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+         FROM app_user_profiles
+         WHERE username = ?
+         LIMIT 1`
+      )
+      .get(normalizeUsername(username))
+  );
+}
+
+function getProfileRowBySessionHash(tokenHash) {
+  return mapProfileRow(
+    db
+      .prepare(
+        `SELECT p.id, p.username, p.login_email, p.password_hash, p.role, p.allowed_locations, p.active, p.created_at, p.updated_at
+         FROM app_sessions s
+         INNER JOIN app_user_profiles p ON p.id = s.user_id
+         WHERE s.token_hash = ?
+           AND datetime(s.expires_at) > datetime('now')
+         LIMIT 1`
+      )
+      .get(tokenHash)
+  );
+}
+
+function removeExpiredSessions() {
+  db.prepare(`DELETE FROM app_sessions WHERE datetime(expires_at) <= datetime('now')`).run();
+}
+
+function isSecureCookie() {
+  return APP_BASE_URL.startsWith("https://");
+}
+
+function appendSetCookie(response, value) {
+  const existing = response.getHeader("Set-Cookie");
+
+  if (!existing) {
+    response.setHeader("Set-Cookie", value);
+    return;
+  }
+
+  if (Array.isArray(existing)) {
+    response.setHeader("Set-Cookie", [...existing, value]);
+    return;
+  }
+
+  response.setHeader("Set-Cookie", [existing, value]);
+}
+
+function buildSessionCookie(token) {
+  const cookieParts = [
+    `${APP_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+  ];
+
+  if (isSecureCookie()) {
+    cookieParts.push("Secure");
+  }
+
+  return cookieParts.join("; ");
+}
+
+function buildExpiredSessionCookie() {
+  const cookieParts = [
+    `${APP_SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ];
+
+  if (isSecureCookie()) {
+    cookieParts.push("Secure");
+  }
+
+  return cookieParts.join("; ");
+}
+
+function hashSessionToken(token) {
+  return createHash("sha256").update(String(token || "")).digest("hex");
+}
 
 export function normalizeUsername(username) {
   return String(username || "").trim().toLowerCase();
@@ -43,57 +189,6 @@ export function sanitizeAllowedLocations(locations = []) {
   return Array.from(uniqueLocations.values());
 }
 
-export function hasServiceRoleKey() {
-  return Boolean(SUPABASE_SERVICE_ROLE_KEY);
-}
-
-export function createAdminClient() {
-  if (!SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY not configured.");
-  }
-
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-}
-
-export function createPublicClient() {
-  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-}
-
-export function parseRequestBody(request) {
-  if (!request.body) return {};
-  if (typeof request.body === "string") {
-    try {
-      return JSON.parse(request.body);
-    } catch {
-      return {};
-    }
-  }
-
-  return request.body;
-}
-
-export function getBearerToken(request) {
-  const authorization = request.headers.authorization || request.headers.Authorization;
-  if (!authorization || typeof authorization !== "string") return null;
-
-  const [scheme, token] = authorization.split(" ");
-  if (scheme?.toLowerCase() !== "bearer" || !token) {
-    return null;
-  }
-
-  return token;
-}
-
 export function serializeProfile(profile) {
   if (!profile) return null;
 
@@ -110,123 +205,247 @@ export function serializeProfile(profile) {
   };
 }
 
-export async function getProfileById(adminClient, userId) {
-  const { data, error } = await adminClient
-    .from("app_user_profiles")
-    .select("id, username, login_email, role, allowed_locations, active, created_at, updated_at")
-    .eq("id", userId)
-    .maybeSingle();
+export function parseRequestBody(request) {
+  if (!request.body) return {};
 
-  if (error) {
-    throw new Error(error.message);
+  if (typeof request.body === "string") {
+    try {
+      return JSON.parse(request.body);
+    } catch {
+      return {};
+    }
   }
 
-  return data;
+  return request.body;
 }
 
-export async function getProfileByUsername(adminClient, username) {
-  const { data, error } = await adminClient
-    .from("app_user_profiles")
-    .select("id, username, login_email, role, allowed_locations, active, created_at, updated_at")
-    .eq("username", normalizeUsername(username))
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
+function parseCookies(request) {
+  const rawCookieHeader = request.headers.cookie || request.headers.Cookie;
+  if (!rawCookieHeader || typeof rawCookieHeader !== "string") {
+    return {};
   }
 
-  return data;
+  return rawCookieHeader.split(";").reduce((cookies, part) => {
+    const [rawKey, ...rawValueParts] = part.split("=");
+    const key = String(rawKey || "").trim();
+    if (!key) return cookies;
+
+    cookies[key] = decodeURIComponent(rawValueParts.join("=").trim());
+    return cookies;
+  }, {});
 }
 
-async function findAuthUserByEmail(adminClient, email) {
-  const { data, error } = await adminClient.auth.admin.listUsers({
-    page: 1,
-    perPage: 200,
+export function getBearerToken(request) {
+  const authorization = request.headers.authorization || request.headers.Authorization;
+  if (!authorization || typeof authorization !== "string") return null;
+
+  const [scheme, token] = authorization.split(" ");
+  if (scheme?.toLowerCase() !== "bearer" || !token) {
+    return null;
+  }
+
+  return token;
+}
+
+function getSessionToken(request) {
+  const bearerToken = getBearerToken(request);
+  if (bearerToken) return bearerToken;
+
+  const cookies = parseCookies(request);
+  return cookies[APP_SESSION_COOKIE_NAME] || null;
+}
+
+export function createPasswordHash(password, salt = randomBytes(16).toString("hex")) {
+  const derivedKey = scryptSync(String(password), salt, 64).toString("hex");
+  return `scrypt:${salt}:${derivedKey}`;
+}
+
+export function verifyPassword(password, storedHash) {
+  if (!storedHash || typeof storedHash !== "string") return false;
+
+  const [algorithm, salt, existingHash] = storedHash.split(":");
+  if (algorithm !== "scrypt" || !salt || !existingHash) {
+    return false;
+  }
+
+  const expected = Buffer.from(existingHash, "hex");
+  const received = Buffer.from(
+    scryptSync(String(password), salt, expected.length).toString("hex"),
+    "hex"
+  );
+
+  if (expected.length !== received.length) {
+    return false;
+  }
+
+  return timingSafeEqual(expected, received);
+}
+
+function createSession(userId) {
+  removeExpiredSessions();
+
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = hashSessionToken(token);
+  const createdAt = nowIso();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+
+  db.prepare(
+    `
+      INSERT INTO app_sessions (
+        id,
+        user_id,
+        token_hash,
+        last_seen_at,
+        expires_at,
+        created_at,
+        updated_at
+      ) VALUES (
+        @id,
+        @user_id,
+        @token_hash,
+        @last_seen_at,
+        @expires_at,
+        @created_at,
+        @updated_at
+      )
+    `
+  ).run({
+    id: randomUUID(),
+    user_id: userId,
+    token_hash: tokenHash,
+    last_seen_at: createdAt,
+    expires_at: expiresAt,
+    created_at: createdAt,
+    updated_at: createdAt,
   });
 
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data?.users?.find((user) => user.email === email) ?? null;
+  return token;
 }
 
-export async function ensureDefaultAdmin(adminClient) {
-  const existingAdminProfile = await getProfileByUsername(adminClient, DEFAULT_ADMIN_USERNAME);
-  if (existingAdminProfile) {
-    return existingAdminProfile;
+export function revokeSessionByToken(token) {
+  if (!token) return;
+  db.prepare(`DELETE FROM app_sessions WHERE token_hash = ?`).run(hashSessionToken(token));
+}
+
+export function revokeSessionsByUserId(userId) {
+  db.prepare(`DELETE FROM app_sessions WHERE user_id = ?`).run(userId);
+}
+
+export function applySessionCookie(response, token) {
+  appendSetCookie(response, buildSessionCookie(token));
+}
+
+export function clearSessionCookie(response) {
+  appendSetCookie(response, buildExpiredSessionCookie());
+}
+
+export async function ensureDefaultAdmin() {
+  const existingProfile = getProfileRowByUsername(DEFAULT_ADMIN_USERNAME);
+  if (existingProfile) {
+    return existingProfile;
   }
 
-  const loginEmail = buildLoginEmail(DEFAULT_ADMIN_USERNAME);
-  let userId = null;
+  const timestamp = nowIso();
+  const id = randomUUID();
 
-  const existingAuthUser = await findAuthUserByEmail(adminClient, loginEmail);
-  if (existingAuthUser) {
-    userId = existingAuthUser.id;
-  } else {
-    const { data, error } = await adminClient.auth.admin.createUser({
-      email: loginEmail,
-      password: DEFAULT_ADMIN_PASSWORD,
-      email_confirm: true,
-      user_metadata: {
-        username: DEFAULT_ADMIN_USERNAME,
-      },
-    });
+  db.prepare(
+    `
+      INSERT INTO app_user_profiles (
+        id,
+        username,
+        login_email,
+        password_hash,
+        role,
+        allowed_locations,
+        active,
+        created_at,
+        updated_at
+      ) VALUES (
+        @id,
+        @username,
+        @login_email,
+        @password_hash,
+        @role,
+        @allowed_locations,
+        @active,
+        @created_at,
+        @updated_at
+      )
+    `
+  ).run({
+    id,
+    username: DEFAULT_ADMIN_USERNAME,
+    login_email: buildLoginEmail(DEFAULT_ADMIN_USERNAME),
+    password_hash: createPasswordHash(DEFAULT_ADMIN_PASSWORD),
+    role: "admin",
+    allowed_locations: JSON.stringify([ALL_LOCATIONS_ACCESS]),
+    active: 1,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
 
-    if (error) {
-      throw new Error(error.message);
-    }
+  return getProfileRowById(id);
+}
 
-    userId = data.user?.id ?? null;
+export function getProfileById(_dbInstance, userId) {
+  return getProfileRowById(userId);
+}
+
+export function getProfileByUsername(_dbInstance, username) {
+  return getProfileRowByUsername(username);
+}
+
+export async function authenticateUser(username, password, response) {
+  await ensureDefaultAdmin();
+
+  const profile = getProfileRowByUsername(username);
+  if (!profile || !profile.active) {
+    const error = new Error("Usuario ou senha invalidos.");
+    error.statusCode = 401;
+    throw error;
   }
 
-  if (!userId) {
-    throw new Error("Unable to create default admin user.");
+  if (!verifyPassword(password, profile.password_hash)) {
+    const error = new Error("Usuario ou senha invalidos.");
+    error.statusCode = 401;
+    throw error;
   }
 
-  const { error: upsertError } = await adminClient
-    .from("app_user_profiles")
-    .upsert(
-      {
-        id: userId,
-        username: DEFAULT_ADMIN_USERNAME,
-        login_email: loginEmail,
-        role: "admin",
-        allowed_locations: [ALL_LOCATIONS_ACCESS],
-        active: true,
-      },
-      { onConflict: "id" }
-    );
-
-  if (upsertError) {
-    throw new Error(upsertError.message);
-  }
-
-  return getProfileById(adminClient, userId);
+  const sessionToken = createSession(profile.id);
+  applySessionCookie(response, sessionToken);
+  return serializeProfile(profile);
 }
 
 export async function getAuthenticatedProfile(request) {
-  const token = getBearerToken(request);
-  if (!token) {
-    return { adminClient: null, authUser: null, profile: null };
+  await ensureDefaultAdmin();
+  removeExpiredSessions();
+
+  const sessionToken = getSessionToken(request);
+  if (!sessionToken) {
+    return { authUser: null, profile: null, sessionToken: null };
   }
 
-  const adminClient = createAdminClient();
-  const {
-    data: { user },
-    error,
-  } = await adminClient.auth.getUser(token);
-
-  if (error || !user) {
-    return { adminClient, authUser: null, profile: null };
+  const profile = getProfileRowBySessionHash(hashSessionToken(sessionToken));
+  if (!profile || !profile.active) {
+    return { authUser: null, profile: null, sessionToken: null };
   }
 
-  const profile = await getProfileById(adminClient, user.id);
-  return { adminClient, authUser: user, profile };
+  db.prepare(
+    `UPDATE app_sessions SET last_seen_at = ?, updated_at = ? WHERE token_hash = ?`
+  ).run(nowIso(), nowIso(), hashSessionToken(sessionToken));
+
+  return {
+    authUser: {
+      id: profile.id,
+      username: profile.username,
+    },
+    profile,
+    sessionToken,
+  };
 }
 
 export async function requireAdmin(request) {
-  const { adminClient, authUser, profile } = await getAuthenticatedProfile(request);
+  const { authUser, profile, sessionToken } = await getAuthenticatedProfile(request);
 
   if (!authUser || !profile || !profile.active || profile.role !== "admin") {
     const error = new Error("Acesso negado.");
@@ -234,31 +453,39 @@ export async function requireAdmin(request) {
     throw error;
   }
 
-  return { adminClient, authUser, profile };
+  return { authUser, profile, sessionToken };
 }
 
-export async function countActiveAdmins(adminClient) {
-  const { count, error } = await adminClient
-    .from("app_user_profiles")
-    .select("id", { count: "exact", head: true })
-    .eq("role", "admin")
-    .eq("active", true);
+export async function requireAuthenticatedProfile(request) {
+  const { authUser, profile, sessionToken } = await getAuthenticatedProfile(request);
 
-  if (error) {
-    throw new Error(error.message);
+  if (!authUser || !profile || !profile.active) {
+    const error = new Error("Sessao invalida.");
+    error.statusCode = 401;
+    throw error;
   }
 
-  return count || 0;
+  return { authUser, profile, sessionToken };
+}
+
+export function countActiveAdmins() {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM app_user_profiles WHERE role = 'admin' AND active = 1`
+    )
+    .get();
+
+  return Number(row?.total || 0);
 }
 
 export async function assertAdminTransitionAllowed(
-  adminClient,
+  _dbInstance,
   actingUserId,
   targetUserId,
   nextRole,
   nextActive
 ) {
-  const currentProfile = await getProfileById(adminClient, targetUserId);
+  const currentProfile = getProfileRowById(targetUserId);
   if (!currentProfile) {
     throw new Error("Usuario nao encontrado.");
   }
@@ -276,9 +503,10 @@ export async function assertAdminTransitionAllowed(
     currentProfile.active &&
     (!activeAfterChange || roleAfterChange !== "admin")
   ) {
-    const activeAdmins = await countActiveAdmins(adminClient);
+    const activeAdmins = countActiveAdmins();
     if (activeAdmins <= 1) {
       throw new Error("E necessario manter pelo menos um administrador ativo.");
     }
   }
 }
+

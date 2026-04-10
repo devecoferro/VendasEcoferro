@@ -3,61 +3,171 @@ import {
   type AuthUser,
   type SaveUserInput,
 } from "@/types/auth";
-import {
-  deleteLocalUser,
-  getLocalSessionUser,
-  listLocalUsers,
-  loginLocalUser,
-  logoutLocalUser,
-  saveLocalUser,
-  toggleLocalUserActive,
-} from "@/services/localAuthFallback";
 
-export async function prepareRemoteLogin(username: string): Promise<string> {
-  const normalizedUsername = String(username || "").trim().toLowerCase();
-  if (!normalizedUsername) {
-    throw new Error("Informe um usuario valido.");
+interface AppAuthResponse {
+  error?: string;
+}
+
+interface SessionResponse extends AppAuthResponse {
+  user?: AuthUser;
+}
+
+interface UsersResponse extends AppAuthResponse {
+  users?: AuthUser[];
+}
+
+const REMOTE_AUTH_TIMEOUT_MS = 8000;
+
+function normalizeUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
+async function parseJsonResponse<T>(response: Response): Promise<T> {
+  return (await response.json().catch(() => ({}))) as T;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+}
+
+async function authenticatedFetch<T>(
+  url: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+
+  const data = await parseJsonResponse<T & AppAuthResponse>(response);
+  if (!response.ok) {
+    throw new Error(data.error || "Falha na requisicao.");
   }
 
-  return `local-${normalizedUsername}@auth.ecoferro.local`;
+  return data;
 }
 
 export async function signInWithUsername(
   username: string,
   password: string
 ): Promise<void> {
-  await loginLocalUser(username, password);
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) {
+    throw new Error("Informe um usuario valido.");
+  }
+
+  const response = await withTimeout(
+    fetch("/api/app-auth", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "login",
+        username: normalizedUsername,
+        password,
+      }),
+    }),
+    REMOTE_AUTH_TIMEOUT_MS,
+    "Timeout ao autenticar no painel."
+  );
+
+  const data = await parseJsonResponse<SessionResponse>(response);
+  if (!response.ok) {
+    throw new Error(data.error || "Falha ao autenticar.");
+  }
 }
 
 export async function signOutRemote(): Promise<void> {
-  await logoutLocalUser();
+  await authenticatedFetch("/api/app-auth", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "logout",
+    }),
+  });
 }
 
 export async function getCurrentRemoteUser(): Promise<AuthUser | null> {
-  return await getLocalSessionUser();
+  const response = await fetch("/api/app-auth", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      action: "session",
+    }),
+  });
+
+  const data = await parseJsonResponse<SessionResponse>(response);
+  if (response.status === 401) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error || "Falha ao carregar a sessao.");
+  }
+
+  return data.user || null;
 }
 
 export async function listRemoteUsers(): Promise<AuthUser[]> {
-  return await listLocalUsers();
+  const data = await authenticatedFetch<UsersResponse>("/api/app-users");
+  return Array.isArray(data.users) ? data.users : [];
 }
 
 export async function saveRemoteUser(input: SaveUserInput): Promise<AuthUser[]> {
+  const normalizedUsername = normalizeUsername(input.username);
   const payload: SaveUserInput = {
     ...input,
-    username: String(input.username || "").trim().toLowerCase(),
+    username: normalizedUsername,
     allowedLocations:
       input.role === "admin"
         ? [ALL_LOCATIONS_ACCESS]
         : input.allowedLocations,
   };
 
-  return await saveLocalUser(payload);
+  const data = await authenticatedFetch<UsersResponse>("/api/app-users", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "save",
+      ...payload,
+    }),
+  });
+
+  return Array.isArray(data.users) ? data.users : [];
 }
 
 export async function toggleRemoteUserActive(userId: string): Promise<AuthUser[]> {
-  return await toggleLocalUserActive(userId);
+  const data = await authenticatedFetch<UsersResponse>("/api/app-users", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "toggle_active",
+      userId,
+    }),
+  });
+
+  return Array.isArray(data.users) ? data.users : [];
 }
 
 export async function deleteRemoteUser(userId: string): Promise<AuthUser[]> {
-  return await deleteLocalUser(userId);
+  const data = await authenticatedFetch<UsersResponse>("/api/app-users", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "delete",
+      userId,
+    }),
+  });
+
+  return Array.isArray(data.users) ? data.users : [];
 }

@@ -652,11 +652,17 @@ export function getOperationalCardTitle(deposit: MLDashboardDeposit): string {
 }
 
 export function getOperationalTotalCount(deposit: MLDashboardDeposit): number {
+  if (typeof deposit.internal_operational_total_count === "number") {
+    return deposit.internal_operational_total_count;
+  }
+
   if (typeof deposit.total_count === "number") {
     return deposit.total_count;
   }
 
-  return Object.values(deposit.counts || {}).reduce((total, count) => total + (count || 0), 0);
+  return Object.values(
+    deposit.internal_operational_counts || deposit.counts || {}
+  ).reduce((total, count) => total + (count || 0), 0);
 }
 
 function buildCrossDockingSummaryRows(orders: MLOrder[], referenceDate = new Date()): MLDashboardSummaryRow[] {
@@ -754,8 +760,13 @@ export function getOperationalSummaryRows(
   orders: MLOrder[],
   activeBucket: ShipmentBucket
 ): MLDashboardSummaryRow[] {
-  const summaryRowsByBucket = deposit.summary_rows_by_bucket?.[activeBucket];
-  if (Array.isArray(summaryRowsByBucket) && summaryRowsByBucket.length > 0) {
+  const summaryRowsByBucket =
+    deposit.internal_operational_summary_rows_by_bucket?.[activeBucket] ||
+    deposit.summary_rows_by_bucket?.[activeBucket];
+  const hasMeaningfulBucketSummary =
+    Array.isArray(summaryRowsByBucket) && summaryRowsByBucket.some((row) => row.count > 0);
+
+  if (hasMeaningfulBucketSummary) {
     return summaryRowsByBucket;
   }
 
@@ -780,7 +791,8 @@ export function getOperationalCardPresentation(
   activeBucket: ShipmentBucket
 ): OperationalCardPresentation {
   const summaryRows = getOperationalSummaryRows(deposit, orders, activeBucket);
-  const bucketTotal = deposit.counts?.[activeBucket];
+  const bucketTotal =
+    deposit.internal_operational_counts?.[activeBucket] ?? deposit.counts?.[activeBucket];
   const totalCount =
     typeof bucketTotal === "number"
       ? bucketTotal

@@ -7,7 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import {
   ALL_LOCATIONS_ACCESS,
   type AuthUser,
@@ -22,15 +21,6 @@ import {
   signOutRemote,
   toggleRemoteUserActive,
 } from "@/services/appAuthService";
-import {
-  deleteLocalUser,
-  getLocalSessionUser,
-  listLocalUsers,
-  loginLocalUser,
-  logoutLocalUser,
-  saveLocalUser,
-  toggleLocalUserActive,
-} from "@/services/localAuthFallback";
 
 const DEFAULT_LOCATION_OPTIONS = [
   "Ourinhos Rua Dario Alonso",
@@ -52,20 +42,17 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-type AuthMode = "remote" | "local";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [ready, setReady] = useState(false);
-  const [authMode, setAuthMode] = useState<AuthMode>("remote");
 
   const hydrateAuthState = useCallback(async () => {
     try {
       try {
         const authenticatedUser = await getCurrentRemoteUser();
         if (authenticatedUser) {
-          setAuthMode("remote");
           setCurrentUser(authenticatedUser);
 
           if (authenticatedUser.role === "admin") {
@@ -80,20 +67,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         console.error("Failed to hydrate auth state:", error);
       }
-
-      try {
-        const localUser = await getLocalSessionUser();
-        if (localUser) {
-          setAuthMode("local");
-          setCurrentUser(localUser);
-          setUsers(localUser.role === "admin" ? await listLocalUsers() : [localUser]);
-          return;
-        }
-      } catch (error) {
-        console.error("Failed to hydrate local auth state:", error);
-      }
-
-      setAuthMode("remote");
       setCurrentUser(null);
       setUsers([]);
     } finally {
@@ -102,25 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    const runHydration = async () => {
-      await hydrateAuthState();
-      if (cancelled) return;
-    };
-
-    void runHydration();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
-      void hydrateAuthState();
-    });
-
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
+    void hydrateAuthState();
   }, [hydrateAuthState]);
 
   const login = async (username: string, password: string) => {
@@ -128,31 +83,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       await signInWithUsername(username, password);
-      setAuthMode("remote");
       await hydrateAuthState();
-      return;
-    } catch (remoteError) {
-      console.error("Remote login failed, using local fallback:", remoteError);
+    } catch (error) {
+      setCurrentUser(null);
+      setUsers([]);
+      setReady(true);
+      throw error;
     }
-
-    const localUser = await loginLocalUser(username, password);
-    setAuthMode("local");
-    setCurrentUser(localUser);
-    setUsers(localUser.role === "admin" ? await listLocalUsers() : [localUser]);
-    setReady(true);
   };
 
   const logout = async () => {
     setReady(false);
 
     try {
-      if (authMode === "remote") {
-        await signOutRemote();
-      }
+      await signOutRemote();
     } catch (error) {
       console.error("Remote logout failed:", error);
     } finally {
-      await logoutLocalUser();
       setCurrentUser(null);
       setUsers([]);
       setReady(true);
@@ -160,11 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const saveUser = async (input: SaveUserInput) => {
-    const updatedUsers =
-      authMode === "remote"
-        ? await saveRemoteUser(input)
-        : await saveLocalUser(input);
-
+    const updatedUsers = await saveRemoteUser(input);
     setUsers(updatedUsers);
 
     if (currentUser && updatedUsers.some((user) => user.id === currentUser.id)) {
@@ -174,22 +117,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const toggleUserActive = async (userId: string) => {
-    const updatedUsers =
-      authMode === "remote"
-        ? await toggleRemoteUserActive(userId)
-        : await toggleLocalUserActive(userId);
-
+    const updatedUsers = await toggleRemoteUserActive(userId);
     setUsers(updatedUsers);
 
     if (currentUser?.id === userId) {
       const updatedCurrentUser = updatedUsers.find((user) => user.id === userId) || null;
       if (!updatedCurrentUser?.active) {
-        if (authMode === "remote") {
-          await signOutRemote();
-        } else {
-          await logoutLocalUser();
-        }
-
+        await signOutRemote();
         setCurrentUser(null);
         setUsers([]);
         setReady(true);
@@ -201,20 +135,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const deleteUser = async (userId: string) => {
     try {
-      const updatedUsers =
-        authMode === "remote"
-          ? await deleteRemoteUser(userId)
-          : await deleteLocalUser(userId);
-
+      const updatedUsers = await deleteRemoteUser(userId);
       setUsers(updatedUsers);
 
       if (currentUser?.id === userId) {
-        if (authMode === "remote") {
-          await signOutRemote();
-        } else {
-          await logoutLocalUser();
-        }
-
+        await signOutRemote();
         setCurrentUser(null);
         setUsers([]);
       }

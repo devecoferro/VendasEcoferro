@@ -27,3 +27,8 @@ supabase/functions/.env
 supabase/functions/.env.local
 supabase/.temp/
 data/
+*.db
+*.db-shm
+*.db-wal
+backup/
+backups/
