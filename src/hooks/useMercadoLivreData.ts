@@ -559,6 +559,8 @@ export function useMercadoLivreData(
     shouldPaginateOrders,
   ]);
 
+  // SSE: escuta eventos de sync_complete do backend para atualizar em tempo real.
+  // Muito mais leve que polling — só recarrega quando há dados novos.
   useEffect(() => {
     if (!autoSync || !connection?.id) {
       bootstrappedConnectionRef.current = null;
@@ -581,18 +583,57 @@ export function useMercadoLivreData(
       }
     }
 
-    const intervalId = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.hidden) {
-        return;
-      }
+    // Tenta usar SSE para atualizações em tempo real
+    let eventSource: EventSource | null = null;
+    let sseConnected = false;
+    let fallbackIntervalId: ReturnType<typeof setInterval> | null = null;
 
-      void syncNow({ silent: true });
-    }, autoSyncIntervalMs);
+    try {
+      eventSource = new EventSource("/api/ml/sync-events");
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "sync_complete") {
+            sseConnected = true;
+            // Sync terminou no backend — recarrega dados silenciosamente
+            if (typeof document === "undefined" || !document.hidden) {
+              void refresh({ silent: true });
+            }
+          } else if (data.type === "connected") {
+            sseConnected = true;
+          }
+        } catch {
+          // Ignora erros de parse
+        }
+      };
+
+      eventSource.onerror = () => {
+        // SSE falhou — ativa fallback de polling
+        if (!sseConnected && !fallbackIntervalId) {
+          fallbackIntervalId = setInterval(() => {
+            if (typeof document === "undefined" || document.hidden) return;
+            void syncNow({ silent: true });
+          }, autoSyncIntervalMs);
+        }
+      };
+    } catch {
+      // SSE não disponível — usa polling como fallback
+      fallbackIntervalId = setInterval(() => {
+        if (typeof document === "undefined" || document.hidden) return;
+        void syncNow({ silent: true });
+      }, autoSyncIntervalMs);
+    }
 
     return () => {
-      window.clearInterval(intervalId);
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (fallbackIntervalId) {
+        clearInterval(fallbackIntervalId);
+      }
     };
-  }, [autoSync, autoSyncIntervalMs, connection?.id, dashboard?.deposits?.length, orders.length, syncNow]);
+  }, [autoSync, autoSyncIntervalMs, connection?.id, dashboard?.deposits?.length, orders.length, syncNow, refresh]);
 
   return {
     connection,

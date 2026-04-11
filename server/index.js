@@ -15,6 +15,7 @@ import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlOrdersHandler from "../api/ml/orders.js";
 import mlStoresHandler from "../api/ml/stores.js";
 import mlSyncHandler, { runMercadoLivreSync } from "../api/ml/sync.js";
+import mlSyncEventsHandler from "../api/ml/sync-events.js";
 import mlNotificationsHandler from "../api/ml/notifications.js";
 import mlReturnsHandler from "../api/ml/returns.js";
 import mlClaimsHandler from "../api/ml/claims.js";
@@ -107,6 +108,7 @@ app.all("/api/ml/dashboard", (req, res) => mlDashboardHandler(req, res));
 app.all("/api/ml/orders", (req, res) => mlOrdersHandler(req, res));
 app.all("/api/ml/stores", (req, res) => mlStoresHandler(req, res));
 app.all("/api/ml/sync", (req, res) => mlSyncHandler(req, res));
+app.get("/api/ml/sync-events", (req, res) => mlSyncEventsHandler(req, res));
 app.all("/api/ml/notifications", (req, res) => mlNotificationsHandler(req, res));
 app.all("/api/ml/returns", (req, res) => mlReturnsHandler(req, res));
 app.all("/api/ml/claims", (req, res) => mlClaimsHandler(req, res));
@@ -164,8 +166,10 @@ app.use((req, res) => {
 
 // ─── Auto-sync com Mercado Livre ────────────────────────────────────
 // Sincroniza pedidos operacionais automaticamente a cada 30 segundos.
-// O sync interno já tem cooldown de 2 minutos (INCREMENTAL_SYNC_COOLDOWN_MS),
-// então chamadas frequentes são ignoradas automaticamente sem custo.
+// O sync interno tem cooldown de 45s (INCREMENTAL_SYNC_COOLDOWN_MS),
+// então chamadas antes do cooldown são ignoradas sem custo.
+// Após cada sync, um evento SSE é enviado aos clientes conectados
+// para que atualizem em tempo real (sem polling pesado no frontend).
 // Usa updated_from para fazer sync incremental (apenas pedidos alterados).
 const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
 let autoSyncRunning = false;

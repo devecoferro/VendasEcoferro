@@ -64,7 +64,7 @@ const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
 ]);
 const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
-const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const DASHBOARD_CACHE_TTL_MS = 60 * 1000; // 1 minuto
 const SELLER_CENTER_MIRROR_SOURCE =
   "internal_operational_baseline+public_entities_tracked_separately";
 const SELLER_CENTER_FINALIZED_STATUS_KEYWORDS = [

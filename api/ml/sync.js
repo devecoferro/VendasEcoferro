@@ -13,6 +13,7 @@ import { getMirrorEntityStats } from "./_lib/mirror-storage.js";
 import { invalidateDashboardCache } from "./dashboard.js";
 import { invalidateOrdersCache } from "./orders.js";
 import { invalidatePrivateSellerCenterComparisonCache } from "./private-seller-center-comparison.js";
+import { broadcastSyncComplete } from "./sync-events.js";
 
 // Promise deduplication — prevents duplicate HTTP calls when running in parallel.
 // If two concurrent tasks call cachedFetch with the same key, only one HTTP request fires;
@@ -41,7 +42,7 @@ const ML_PAGE_LIMIT = 50;
 const DEFAULT_INCREMENTAL_MAX_PAGES = 20;
 const DEFAULT_FULL_MAX_PAGES = 200;
 const ABSOLUTE_MAX_PAGES = 500;
-const INCREMENTAL_SYNC_COOLDOWN_MS = 120000;
+const INCREMENTAL_SYNC_COOLDOWN_MS = 45000;
 const MIRROR_SYNC_COOLDOWN_MS = 15 * 60 * 1000;
 const syncRequestsInFlight = new Map();
 
@@ -667,6 +668,13 @@ export async function runMercadoLivreSync({
   invalidateDashboardCache();
   invalidateOrdersCache();
   invalidatePrivateSellerCenterComparisonCache();
+
+  // Notifica todos os clientes SSE conectados que o sync terminou
+  broadcastSyncComplete({
+    synced: totalSynced,
+    fetched: totalFetched,
+    pages: pageCount,
+  });
 
   return {
     success: true,
