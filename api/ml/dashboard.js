@@ -435,11 +435,11 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   // Fulfillment: apenas ready_to_ship e handling são operacionais.
   // paid/pending/confirmed → ML está processando, vendedor não tem ação.
   if (status === "ready_to_ship" || status === "handling") {
+    // Só "in_warehouse" e "ready_to_pack" são "Envios de hoje" no fulfillment.
+    // Para o vendedor, estes são os pedidos que ML vai despachar hoje.
+    // A data de operação NÃO é usada para "today" no fulfillment porque
+    // o ML controla quando despacha — o vendedor não tem ação a tomar.
     if (["in_warehouse", "ready_to_pack"].includes(substatus)) {
-      return "today";
-    }
-
-    if (isSameCalendarDay(operationDateKey, todayKey)) {
       return "today";
     }
 
@@ -1098,12 +1098,12 @@ export async function buildDashboardPayload(options = {}) {
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
-      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes (últimos 7 dias).
+      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes (últimos 3 dias).
       // ML Seller Center mostra pouquíssimas finalizadas — apenas as mais recentes.
       if (bucket === "finalized") {
         const saleDate = order.sale_date ? new Date(order.sale_date) : null;
         const ageDays = saleDate ? (today.getTime() - saleDate.getTime()) / (24 * 60 * 60 * 1000) : 999;
-        if (ageDays > 7) {
+        if (ageDays > 3) {
           continue;
         }
       }
