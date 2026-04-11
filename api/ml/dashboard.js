@@ -209,6 +209,17 @@ function getDepositInfo(order) {
   const logisticType = String(
     depositSnapshot.logistic_type || snapshot.logistic_type || "unknown"
   ).toLowerCase();
+
+  // Fulfillment: TODOS os warehouses (BRDF01, BRSP04, etc.) devem ser
+  // agrupados em um único depósito "Full", exatamente como o ML Seller Center faz.
+  if (logisticType === "fulfillment") {
+    return {
+      key: "fulfillment",
+      label: "Full",
+      logisticType: "fulfillment",
+    };
+  }
+
   const label =
     typeof depositSnapshot.label === "string" && depositSnapshot.label.trim()
       ? depositSnapshot.label.trim()
@@ -234,11 +245,11 @@ function getHeadlineForDeposit(depositInfo) {
     return "Operacao sem deposito";
   }
 
-  return depositInfo.logisticType === "fulfillment"
-    ? depositInfo.label === "Vendas sem deposito"
-      ? "Full"
-      : depositInfo.label
-    : `Coleta | ${depositInfo.label}`;
+  if (depositInfo.logisticType === "fulfillment") {
+    return "Full";
+  }
+
+  return `Coleta | ${depositInfo.label}`;
 }
 
 function fetchStoredOrders(limit = null) {
@@ -1020,7 +1031,19 @@ export async function buildDashboardPayload(options = {}) {
 
   const today = new Date();
   const todayKey = getCalendarKey(today);
-  const orders = fetchStoredOrders();
+  const allOrders = fetchStoredOrders();
+
+  // Filtro temporal: apenas pedidos dos últimos 60 dias, alinhado com o
+  // padrão do ML Seller Center que mostra "Últimos 2 meses".
+  // Pedidos muito antigos presos em status operacional (ex: shipped há 3 meses)
+  // inflam os números e não aparecem no Seller Center.
+  const cutoffMs = 60 * 24 * 60 * 60 * 1000; // 60 dias em ms
+  const cutoffDate = new Date(today.getTime() - cutoffMs);
+  const orders = allOrders.filter((order) => {
+    const saleDate = order.sale_date ? new Date(order.sale_date) : null;
+    return saleDate && saleDate >= cutoffDate;
+  });
+
   const depositsMap = new Map();
   const countedPacks = new Set();
 
@@ -1042,7 +1065,9 @@ export async function buildDashboardPayload(options = {}) {
         // Keep walking. Native ML buckets are computed separately.
       } else {
         const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
-        const packDedupeKey = packId ? `${depositInfo.key}:${bucket}:${packId}` : null;
+        // Dedup global por pack+bucket (não por depósito) — o mesmo pack
+        // não pode ser contado 2x mesmo que apareça em depósitos diferentes
+        const packDedupeKey = packId ? `${bucket}:${packId}` : null;
         const isPackAlreadyCounted = packDedupeKey && countedPacks.has(packDedupeKey);
 
         // Always track order IDs (for grid display)
