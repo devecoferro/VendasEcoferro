@@ -209,10 +209,21 @@ function getDepositInfo(order) {
   const logisticType = String(
     depositSnapshot.logistic_type || snapshot.logistic_type || "unknown"
   ).toLowerCase();
+  const depositKey = String(depositSnapshot.key || "without-deposit");
 
-  // Fulfillment: TODOS os warehouses (BRDF01, BRSP04, etc.) devem ser
-  // agrupados em um único depósito "Full", exatamente como o ML Seller Center faz.
-  if (logisticType === "fulfillment") {
+  // Fulfillment: TODOS os warehouses do ML devem ser agrupados em "Full".
+  // Isso inclui:
+  //   1. logistic_type === "fulfillment" (explicito)
+  //   2. deposit key "node:*" — warehouses ML (BRDF01, BRSP04, etc.)
+  //      que podem ter logistic_type "unknown" ou até "cross_docking"
+  //   3. deposit key "logistic:fulfillment"
+  // No ML Seller Center, TUDO que não é o depósito do vendedor aparece como "Full".
+  const isFulfillment =
+    logisticType === "fulfillment" ||
+    depositKey.startsWith("node:") ||
+    depositKey === "logistic:fulfillment";
+
+  if (isFulfillment) {
     return {
       key: "fulfillment",
       label: "Full",
@@ -226,7 +237,7 @@ function getDepositInfo(order) {
       : "Vendas sem deposito";
 
   return {
-    key: String(depositSnapshot.key || "without-deposit"),
+    key: depositKey,
     label,
     logisticType,
   };
@@ -1033,15 +1044,41 @@ export async function buildDashboardPayload(options = {}) {
   const todayKey = getCalendarKey(today);
   const allOrders = fetchStoredOrders();
 
-  // Filtro temporal: apenas pedidos dos últimos 60 dias, alinhado com o
-  // padrão do ML Seller Center que mostra "Últimos 2 meses".
-  // Pedidos muito antigos presos em status operacional (ex: shipped há 3 meses)
-  // inflam os números e não aparecem no Seller Center.
-  const cutoffMs = 60 * 24 * 60 * 60 * 1000; // 60 dias em ms
-  const cutoffDate = new Date(today.getTime() - cutoffMs);
+  // Filtro de freshness: remove pedidos com status operacional provavelmente
+  // desatualizado ("stale"). Quando o sync não re-busca pedidos antigos,
+  // eles ficam presos em status transitórios (paid, shipped) mesmo que já
+  // tenham sido entregues/cancelados. O ML Seller Center os remove automaticamente.
+  //
+  // Regras de freshness (baseadas no ciclo de vida típico do ML):
+  //   - "paid"/"pending"/"confirmed": stale depois de 14 dias
+  //   - "ready_to_ship": stale depois de 30 dias
+  //   - "shipped"/"in_transit": stale depois de 45 dias
+  //   - "delivered"/"cancelled"/"not_delivered"/"returned": sem limite (status final)
+  const STALE_THRESHOLDS_DAYS = {
+    paid: 14,
+    pending: 14,
+    confirmed: 14,
+    handling: 14,
+    ready_to_ship: 30,
+    shipped: 45,
+    in_transit: 45,
+  };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
-    return saleDate && saleDate >= cutoffDate;
+    if (!saleDate) return false;
+
+    const shipmentStatus = normalizeState(
+      getShipmentSnapshot(order).status || order.order_status || "",
+      ""
+    );
+    const thresholdDays = STALE_THRESHOLDS_DAYS[shipmentStatus];
+
+    // Status finais (delivered, cancelled, etc.) ou desconhecidos: sem filtro de freshness
+    if (thresholdDays == null) return true;
+
+    const ageMs = today.getTime() - saleDate.getTime();
+    const ageDays = ageMs / (24 * 60 * 60 * 1000);
+    return ageDays <= thresholdDays;
   });
 
   const depositsMap = new Map();
