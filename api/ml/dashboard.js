@@ -62,7 +62,7 @@ const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
   // "Próximos dias", não "Em trânsito". O pacote está no hub esperando
   // ser processado pelo transportador, não está efetivamente em trânsito.
 ]);
-const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "packed", "in_hub"]);
+const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
 const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const SELLER_CENTER_MIRROR_SOURCE =
@@ -401,6 +401,17 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
+    // Empacotado: pronto para envio. Usa SLA para decidir hoje/próximos.
+    // No ML Seller Center, "packed" aparece em "Envios de hoje".
+    if (substatus === "packed") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
+      return "today";
+    }
+
     // Outros substatuses: verificar SLA
     if (dates.operationalDueDateKey) {
       return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
@@ -456,6 +467,18 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   if (status === "ready_to_ship" || status === "handling") {
     // "ready_to_pack" = ML está ativamente preparando o pedido → sempre "hoje"
     if (substatus === "ready_to_pack") {
+      return "today";
+    }
+
+    // "packed" = ML já empacotou o pedido, pronto para envio.
+    // Usa SLA para decidir hoje/próximos. Se sem SLA, assume "hoje"
+    // porque o pedido já está empacotado.
+    if (substatus === "packed") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
       return "today";
     }
 
