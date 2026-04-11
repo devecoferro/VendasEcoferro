@@ -155,6 +155,15 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
+// Retorna quantos dias se passaram entre dateKey e todayKey.
+// Resultado positivo = dateKey está no passado. 0 = mesmo dia. Negativo = futuro.
+function daysDifference(dateKey, todayKey) {
+  if (!dateKey || !todayKey) return Infinity;
+  const d1 = new Date(todayKey + "T00:00:00");
+  const d2 = new Date(dateKey + "T00:00:00");
+  return Math.round((d1 - d2) / 86400000);
+}
+
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
@@ -421,13 +430,34 @@ function classifyCrossDockingOrder(order, todayKey) {
   }
 
   // "shipped" com substatuses de tracking ativo = em trânsito
-  // "shipped" sem substatus = transportador tem o pacote mas sem tracking → excluir
-  // (não é acionável pelo vendedor, ML Seller Center não mostra esses)
+  // "shipped/none", "shipped/waiting_for_withdrawal", "shipped/claimed_me":
+  // Transportador tem o pacote mas sem tracking detalhado.
+  // No ML Seller Center, esses aparecem em "Próximos dias" enquanto o SLA
+  // ainda é recente. Pedidos com SLA antigo (>3 dias passados) são excluídos
+  // pois provavelmente já foram entregues sem atualização de status.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
-    return null; // shipped sem tracking → não operacional
+    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
+      // Só inclui se o SLA é recente (hoje ou até 3 dias no passado)
+      if (dates.operationalDueDateKey) {
+        const slaDiff = daysDifference(dates.operationalDueDateKey, todayKey);
+        if (slaDiff <= 3) {
+          return "upcoming";
+        }
+        return null; // SLA muito antigo — provavelmente já entregue
+      }
+      // Sem SLA: usa data da venda — se vendido nos últimos 5 dias, inclui
+      if (dates.saleDateKey) {
+        const saleDiff = daysDifference(dates.saleDateKey, todayKey);
+        if (saleDiff <= 5) {
+          return "upcoming";
+        }
+      }
+      return null;
+    }
+    return null;
   }
 
   // "in_transit" como status direto = definitivamente em trânsito
@@ -498,10 +528,27 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   // Fulfillment: "shipped" com substatuses de trânsito real = in_transit
-  // "shipped" sem substatus = ML processando → não operacional
+  // "shipped/none", "shipped/waiting_for_withdrawal", "shipped/claimed_me":
+  // ML despachou mas sem tracking detalhado. Inclui apenas se SLA recente.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
+    }
+    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
+      if (dates.operationalDueDateKey) {
+        const slaDiff = daysDifference(dates.operationalDueDateKey, todayKey);
+        if (slaDiff <= 3) {
+          return "upcoming";
+        }
+        return null;
+      }
+      if (dates.saleDateKey) {
+        const saleDiff = daysDifference(dates.saleDateKey, todayKey);
+        if (saleDiff <= 5) {
+          return "upcoming";
+        }
+      }
+      return null;
     }
     return null;
   }
