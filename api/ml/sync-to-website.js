@@ -1,7 +1,7 @@
 // Sincroniza produtos do ML (SQLite local) → Supabase (ecoferro.com.br)
 import { createClient } from "@supabase/supabase-js";
-import { getDb } from "../_lib/db.js";
-import { createLogger } from "../_lib/logger.js";
+import { db } from "../_lib/db.js";
+import createLogger from "../_lib/logger.js";
 
 const log = createLogger("sync-to-website");
 
@@ -105,7 +105,6 @@ export async function handleSyncToWebsite(req, res) {
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  const db = getDb();
 
   try {
     // 1. Ler todos os itens ativos do ML stock local
