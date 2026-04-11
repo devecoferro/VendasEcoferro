@@ -48,9 +48,11 @@ const SHIPPED_IN_TRANSIT_SUBSTATUSES = new Set([
 const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
   "picked_up",
   "authorized_by_carrier",
-  "in_hub",
+  // "in_hub" removido — no ML Seller Center, pedidos "in_hub" estão em
+  // "Próximos dias", não "Em trânsito". O pacote está no hub esperando
+  // ser processado pelo transportador, não está efetivamente em trânsito.
 ]);
-const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "packed"]);
+const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "packed", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
 const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 const SELLER_CENTER_MIRROR_SOURCE =
@@ -369,22 +371,27 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
-  if (OPEN_STATUSES.has(status)) {
-    // Mercado Livre documents "picked_up", "authorized_by_carrier" and "in_hub"
-    // as "En camino", so they should not inflate the "Envios de hoje" bucket.
-    if (status === "ready_to_ship" && CROSS_DOCKING_TRANSIT_SUBSTATUSES.has(substatus)) {
+  // O ML Seller Center só mostra pedidos acionáveis pelo vendedor.
+  // Pedidos paid/pending/confirmed NÃO aparecem no painel operacional
+  // porque o ML ainda não atribuiu logística. Apenas "ready_to_ship"
+  // e "handling" são operacionais para o vendedor.
+  if (status === "ready_to_ship" || status === "handling") {
+    // Pedido retirado pelo transportador — em trânsito
+    if (CROSS_DOCKING_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
 
-    // These orders are still in preparation, even when the stored SLA is overdue.
-    if (status === "ready_to_ship" && CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
+    // Em preparação ou no hub — próximos dias
+    if (CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
       return "upcoming";
     }
 
-    if (status === "ready_to_ship" && substatus === "ready_for_pickup") {
+    // Pronto para coleta — envios de hoje
+    if (substatus === "ready_for_pickup") {
       return "today";
     }
 
+    // Outros substatuses: verificar SLA
     if (dates.operationalDueDateKey) {
       return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
     }
@@ -392,14 +399,14 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "upcoming";
   }
 
-  // "shipped" com substatuses específicos = realmente em trânsito
-  // "shipped" sem substatus ou com substatus genérico = ainda aguardando coleta → upcoming
-  // Isso replica a lógica do Seller Center onde "shipped" sem movimento não é "Em trânsito"
+  // "shipped" com substatuses de tracking ativo = em trânsito
+  // "shipped" sem substatus = transportador tem o pacote mas sem tracking → excluir
+  // (não é acionável pelo vendedor, ML Seller Center não mostra esses)
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
-    return "upcoming";
+    return null; // shipped sem tracking → não operacional
   }
 
   // "in_transit" como status direto = definitivamente em trânsito
@@ -407,17 +414,12 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "in_transit";
   }
 
-  // Finalizadas: cancelled, not_delivered, returned — alinhado com o Seller Center
+  // Finalizadas: cancelled, not_delivered, returned
   if (FINAL_EXCEPTION_STATUSES.has(status)) {
     return "finalized";
   }
 
-  // "delivered" não aparece no painel operacional do Seller Center — pedidos entregues somem
-  // Retornar null para não contá-los em nenhum bucket operacional
-  if (status === "delivered") {
-    return null;
-  }
-
+  // paid, pending, confirmed, delivered e outros → não operacional
   return null;
 }
 
@@ -430,7 +432,9 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.handlingDateKey ||
     dates.saleDateKey;
 
-  if (OPEN_STATUSES.has(status)) {
+  // Fulfillment: apenas ready_to_ship e handling são operacionais.
+  // paid/pending/confirmed → ML está processando, vendedor não tem ação.
+  if (status === "ready_to_ship" || status === "handling") {
     if (["in_warehouse", "ready_to_pack"].includes(substatus)) {
       return "today";
     }
@@ -443,12 +447,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   // Fulfillment: "shipped" com substatuses de trânsito real = in_transit
-  // "shipped" sem substatus = still in ML warehouse/processing → upcoming
+  // "shipped" sem substatus = ML processando → não operacional
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
-    return "upcoming";
+    return null;
   }
 
   if (status === "in_transit") {
@@ -459,11 +463,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "finalized";
   }
 
-  // "delivered" no fulfillment também não aparece no operacional do Seller Center
-  if (status === "delivered") {
-    return null;
-  }
-
+  // paid, pending, confirmed, delivered e outros → não operacional
   return null;
 }
 
@@ -1097,6 +1097,16 @@ export async function buildDashboardPayload(options = {}) {
         depositInfo.logisticType === "fulfillment"
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
+
+      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes (últimos 7 dias).
+      // ML Seller Center mostra pouquíssimas finalizadas — apenas as mais recentes.
+      if (bucket === "finalized") {
+        const saleDate = order.sale_date ? new Date(order.sale_date) : null;
+        const ageDays = saleDate ? (today.getTime() - saleDate.getTime()) / (24 * 60 * 60 * 1000) : 999;
+        if (ageDays > 7) {
+          continue;
+        }
+      }
 
       if (!bucket || !OPERATIONAL_BUCKETS.includes(bucket)) {
         // Keep walking. Native ML buckets are computed separately.
