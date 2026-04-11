@@ -10,8 +10,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getMLConnectionStatus, getMLStock, syncMLStock, type MLStockItem } from "@/services/mercadoLivreService";
-import { AlertCircle, ChevronDown, Filter, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
+import { getMLConnectionStatus, getMLStock, syncMLStock, syncStockToWebsite, type MLStockItem } from "@/services/mercadoLivreService";
+import { AlertCircle, ChevronDown, ExternalLink, Filter, Globe, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
 
 type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
 type SortDir = "asc" | "desc";
@@ -23,6 +23,8 @@ export default function StockPage() {
   const [stale, setStale] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [publishingToSite, setPublishingToSite] = useState(false);
+  const [publishResult, setPublishResult] = useState<{ created: number; updated: number; errors: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [brandFilter, setBrandFilter] = useState<string>("all");
@@ -76,6 +78,20 @@ export default function StockPage() {
       setSyncing(false);
     }
   }, [connectionId, loadStock]);
+
+  const handlePublishToSite = useCallback(async () => {
+    setPublishingToSite(true);
+    setError(null);
+    setPublishResult(null);
+    try {
+      const result = await syncStockToWebsite();
+      setPublishResult({ created: result.created, updated: result.updated, errors: result.errors });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao publicar no site.");
+    } finally {
+      setPublishingToSite(false);
+    }
+  }, []);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -230,12 +246,46 @@ export default function StockPage() {
               )}
               Sincronizar
             </Button>
+            <Button
+              size="sm"
+              variant="default"
+              onClick={handlePublishToSite}
+              disabled={publishingToSite || !items.length}
+              className="gap-1.5 bg-green-600 hover:bg-green-700"
+            >
+              {publishingToSite ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Globe className="h-4 w-4" />
+              )}
+              Publicar no Site
+            </Button>
           </div>
           <p className="text-sm text-muted-foreground">
             {hasActiveFilters || search
               ? `${filtered.length} de ${items.length} produto(s)`
               : `${items.length} produto(s) sincronizados do Mercado Livre`}
           </p>
+          {publishResult && (
+            <div className="rounded-md bg-green-50 border border-green-200 px-4 py-2.5 text-sm text-green-800 flex items-center gap-2">
+              <Globe className="h-4 w-4 flex-shrink-0" />
+              <span>
+                <strong>{publishResult.created}</strong> novos produtos criados,{" "}
+                <strong>{publishResult.updated}</strong> atualizados no site.
+                {publishResult.errors > 0 && (
+                  <span className="text-orange-600"> ({publishResult.errors} erros)</span>
+                )}
+              </span>
+              <a
+                href="https://www.ecoferro.com.br/produtos"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto text-green-700 hover:text-green-900 flex items-center gap-1 font-medium"
+              >
+                Ver no site <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          )}
         </div>
 
         {/* Cards de resumo */}

@@ -32,6 +32,7 @@ import nfeDocumentHandler from "../api/nfe/document.js";
 import nfeFileHandler from "../api/nfe/file.js";
 import nfeSyncMercadoLivreHandler from "../api/nfe/sync-mercadolivre.js";
 import mlStockHandler from "../api/ml/stock.js";
+import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { APP_HOST, APP_PORT } from "../api/_lib/app-config.js";
 
 const log = createLogger("server");
@@ -164,6 +165,7 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
   nfeSyncMercadoLivreHandler(req, res)
 );
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
+app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 
 // ─── Error handler ──────────────────────────────────────────────────
 app.use((error, req, res, next) => {

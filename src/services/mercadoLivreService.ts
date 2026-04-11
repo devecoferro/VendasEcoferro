@@ -956,6 +956,38 @@ export async function syncMLStock(connectionId: string): Promise<{ total_synced:
   return { total_synced: Number(data?.total_synced || 0) };
 }
 
+export async function syncStockToWebsite(): Promise<{
+  created: number;
+  updated: number;
+  errors: number;
+  total: number;
+}> {
+  const { response, data } = await fetchJsonWithTimeout<{
+    success: boolean;
+    created: number;
+    updated: number;
+    errors: number;
+    total: number;
+    error?: string;
+  }>(
+    "/api/ml/sync-to-website",
+    { method: "POST" },
+    "Timeout ao sincronizar com o site.",
+    120000,
+  );
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "Falha ao sincronizar com o site.");
+  }
+
+  return {
+    created: data.created || 0,
+    updated: data.updated || 0,
+    errors: data.errors || 0,
+    total: data.total || 0,
+  };
+}
+
 export async function getMLOrderDocuments(
   orderId: string,
   options: { refresh?: boolean } = {}
