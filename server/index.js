@@ -14,7 +14,7 @@ import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlOrdersHandler from "../api/ml/orders.js";
 import mlStoresHandler from "../api/ml/stores.js";
-import mlSyncHandler from "../api/ml/sync.js";
+import mlSyncHandler, { runMercadoLivreSync } from "../api/ml/sync.js";
 import mlNotificationsHandler from "../api/ml/notifications.js";
 import mlReturnsHandler from "../api/ml/returns.js";
 import mlClaimsHandler from "../api/ml/claims.js";
@@ -162,6 +162,48 @@ app.use((req, res) => {
   return res.sendFile(path.join(distPath, "index.html"));
 });
 
+// ─── Auto-sync com Mercado Livre ────────────────────────────────────
+// Sincroniza pedidos operacionais automaticamente a cada 30 segundos.
+// O sync interno já tem cooldown de 2 minutos (INCREMENTAL_SYNC_COOLDOWN_MS),
+// então chamadas frequentes são ignoradas automaticamente sem custo.
+// Usa updated_from para fazer sync incremental (apenas pedidos alterados).
+const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
+let autoSyncRunning = false;
+
+async function autoSyncOrders() {
+  if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda está rodando
+
+  try {
+    const connection = getLatestConnection();
+    if (!connection?.id) return; // Sem conexão ML configurada
+
+    autoSyncRunning = true;
+    const updatedFrom = connection.last_sync_at || undefined;
+
+    await runMercadoLivreSync({
+      connectionId: connection.id,
+      updatedFrom,
+      pageLimit: 20,
+    });
+  } catch (error) {
+    // Silencioso — não deve derrubar o servidor
+    console.error(
+      "[auto-sync]",
+      error instanceof Error ? error.message : "Sync failed"
+    );
+  } finally {
+    autoSyncRunning = false;
+  }
+}
+
 app.listen(APP_PORT, APP_HOST, () => {
   console.log(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
+
+  // Inicia auto-sync 10s após o boot para dar tempo do servidor estabilizar
+  setTimeout(() => {
+    console.log(`[auto-sync] Iniciando sync automático a cada ${AUTO_SYNC_INTERVAL_MS / 1000}s`);
+    setInterval(autoSyncOrders, AUTO_SYNC_INTERVAL_MS);
+    // Primeira execução imediata
+    autoSyncOrders();
+  }, 10_000);
 });

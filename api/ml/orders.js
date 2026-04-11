@@ -214,13 +214,13 @@ function shapeOrderForView(order, view = "full") {
     buyer_nickname: sanitizedOrder.buyer_nickname,
     item_title: sanitizedOrder.item_title,
     item_id: sanitizedOrder.item_id,
-    product_image_url: null,
+    product_image_url: sanitizedOrder.product_image_url,
     sku: sanitizedOrder.sku,
     quantity: sanitizedOrder.quantity,
     amount: sanitizedOrder.amount,
     order_status: sanitizedOrder.order_status,
     raw_data: pickDashboardRawData(sanitizedOrder.raw_data),
-    items: [],
+    items: sanitizedOrder.items || [],
   };
 }
 
