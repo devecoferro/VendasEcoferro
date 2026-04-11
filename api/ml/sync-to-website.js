@@ -5,7 +5,7 @@ import createLogger from "../_lib/logger.js";
 
 const log = createLogger("sync-to-website");
 
-const SUPABASE_URL = "https://patlhzysljihbqemsjzn.supabase.co";
+const SUPABASE_URL = "https://kxknhqywhobkrpnlutel.supabase.co";
 // Service role key é necessária para escrita server-side (bypassa RLS)
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
