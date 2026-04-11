@@ -72,7 +72,9 @@ export function startAutoBackup() {
   // Primeiro backup 1 minuto apos o boot
   setTimeout(async () => {
     await runBackup();
-    backupTimer = setInterval(() => runBackup(), BACKUP_INTERVAL_MS);
+    backupTimer = setInterval(async () => {
+      await runBackup();
+    }, BACKUP_INTERVAL_MS);
   }, 60_000);
 }
 

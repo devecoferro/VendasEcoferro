@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getMLConnectionStatus, getMLStock, syncMLStock, syncStockToWebsite, type MLStockItem } from "@/services/mercadoLivreService";
-import { AlertCircle, ChevronDown, ExternalLink, Filter, Globe, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
+import { AlertCircle, ExternalLink, Filter, Globe, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
 
 type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
 type SortDir = "asc" | "desc";
@@ -98,7 +98,7 @@ export default function StockPage() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      setSortDir(key === "title" ? "asc" : "asc");
+      setSortDir(key === "title" ? "asc" : "desc");
     }
   };
 

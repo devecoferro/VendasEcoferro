@@ -275,7 +275,7 @@ async function gracefulShutdown(signal) {
   // Backup final antes de fechar
   try {
     log.info("Backup final antes do shutdown");
-    runBackup();
+    await runBackup();
   } catch (error) {
     log.error("Falha no backup final", error);
   }

@@ -155,15 +155,6 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
-// Retorna quantos dias se passaram entre dateKey e todayKey.
-// Resultado positivo = dateKey está no passado. 0 = mesmo dia. Negativo = futuro.
-function daysDifference(dateKey, todayKey) {
-  if (!dateKey || !todayKey) return Infinity;
-  const d1 = new Date(todayKey + "T00:00:00");
-  const d2 = new Date(dateKey + "T00:00:00");
-  return Math.round((d1 - d2) / 86400000);
-}
-
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
