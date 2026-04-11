@@ -32,41 +32,39 @@ export default defineConfig(({ mode }) => ({
         // Separa as bibliotecas pesadas em chunks próprios para que o browser
         // possa cacheá-las independentemente do código da aplicação
         manualChunks(id) {
+          // Normaliza separadores de path para funcionar em Windows e Linux
+          const normalizedId = id.replace(/\\/g, "/");
           // Recharts — biblioteca de gráficos, usada só no Dashboard
           // Nota: d3-* NÃO vai aqui — vai para vendor-misc para evitar referência circular
-          if (id.includes("node_modules/recharts")) {
+          if (normalizedId.includes("node_modules/recharts")) {
             return "vendor-recharts";
           }
           // jsPDF + QRCode — usados só em Review/Export
           if (
-            id.includes("node_modules/jspdf") ||
-            id.includes("node_modules/qrcode")
+            normalizedId.includes("node_modules/jspdf") ||
+            normalizedId.includes("node_modules/qrcode")
           ) {
             return "vendor-pdf-export";
           }
           // pdfjs-dist — usado só no upload/extração de PDF
-          if (id.includes("node_modules/pdfjs-dist")) {
+          if (normalizedId.includes("node_modules/pdfjs-dist")) {
             return "vendor-pdfjs";
           }
           // Tesseract — usado só no OCR de imagens
-          if (id.includes("node_modules/tesseract.js")) {
+          if (normalizedId.includes("node_modules/tesseract.js")) {
             return "vendor-tesseract";
           }
           // Radix UI + Shadcn components — UI estável, raramente muda
-          if (id.includes("node_modules/@radix-ui")) {
+          if (normalizedId.includes("node_modules/@radix-ui")) {
             return "vendor-radix";
           }
-          // React core + React DOM + React Router
-          if (
-            id.includes("node_modules/react/") ||
-            id.includes("node_modules/react-dom/") ||
-            id.includes("node_modules/react-router-dom/") ||
-            id.includes("node_modules/react-router/")
-          ) {
-            return "vendor-react";
-          }
+          // React, React DOM, scheduler, react-router — todos vão para vendor-misc.
+          // Separar React em chunk próprio causava dependência circular
+          // (vendor-react ↔ vendor-misc) porque react-dom depende de bibliotecas
+          // que por sua vez dependem de React, gerando:
+          // "Cannot read properties of undefined (reading 'createContext')"
           // Outras dependências de node_modules vão para um chunk vendor geral
-          if (id.includes("node_modules/")) {
+          if (normalizedId.includes("node_modules/")) {
             return "vendor-misc";
           }
         },
