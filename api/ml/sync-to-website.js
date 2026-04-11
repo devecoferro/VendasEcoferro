@@ -16,6 +16,49 @@ const KNOWN_BRANDS = [
   "Kasinski", "Haojue", "Bajaj", "CF Moto", "Benelli", "Husqvarna",
   "Aprilia",
 ];
+const OWN_BRANDS = ["Ecoferro", "Fantom"];
+const BRAND_ALIASES = {
+  harley: "Harley-Davidson", hd: "Harley-Davidson",
+  kawazaki: "Kawasaki", kavasaki: "Kawasaki",
+  "cf-moto": "CF Moto", cfmoto: "CF Moto",
+  "royal enfield": "Royal Enfield", royalenfield: "Royal Enfield",
+};
+
+/**
+ * Normaliza a marca bruta do ML para um nome limpo.
+ * Prioridade: título do anúncio > campo brand dos atributos.
+ * Retorna null se não conseguir identificar.
+ */
+function normalizeBrand(rawBrand, title) {
+  const titleLower = (title || "").toLowerCase();
+
+  // 1. Procurar marcas conhecidas no título
+  for (const brand of KNOWN_BRANDS) {
+    if (titleLower.includes(brand.toLowerCase())) return brand;
+  }
+  for (const brand of OWN_BRANDS) {
+    if (titleLower.includes(brand.toLowerCase())) return brand;
+  }
+
+  // 2. Tentar o campo brand dos atributos ML
+  if (rawBrand) {
+    const raw = rawBrand.trim();
+    const lower = raw.toLowerCase();
+    if (BRAND_ALIASES[lower]) return BRAND_ALIASES[lower];
+    for (const brand of KNOWN_BRANDS) {
+      if (lower === brand.toLowerCase()) return brand;
+    }
+    for (const brand of OWN_BRANDS) {
+      if (lower === brand.toLowerCase()) return brand;
+    }
+    // Só aceita se for curto e limpo (sem descrição de produto)
+    if (raw.length > 1 && raw.length < 25 && !/\d{5,}/.test(raw) && !raw.includes(" ")) {
+      return raw.charAt(0).toUpperCase() + raw.slice(1);
+    }
+  }
+
+  return null;
+}
 
 function slugify(text) {
   return text
@@ -145,8 +188,9 @@ export async function handleSyncToWebsite(req, res) {
 
     for (const item of mlItems) {
       try {
-        // Resolver marca
-        const brandId = await getOrCreateBrand(supabase, item.brand);
+        // Resolver marca (normaliza para evitar lixo no catálogo)
+        const cleanBrand = normalizeBrand(item.brand, item.title);
+        const brandId = await getOrCreateBrand(supabase, cleanBrand);
 
         // Dados do produto
         const productData = {
