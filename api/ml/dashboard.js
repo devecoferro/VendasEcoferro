@@ -37,13 +37,23 @@ const CROSS_DOCKING_NATIVE_IN_TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "receiver_absent",
   "not_visited",
 ]);
-// Substatuses for "shipped" that mean truly in transit (not just waiting for carrier)
+// Substatuses for "shipped" that mean truly in transit (not just waiting for carrier).
+// "waiting_for_withdrawal" removido — significa que o pacote está num ponto de retirada
+// aguardando o comprador. Do ponto de vista do vendedor, o envio foi concluído.
+// No ML Seller Center, esses pedidos NÃO aparecem em "Em trânsito".
 const SHIPPED_IN_TRANSIT_SUBSTATUSES = new Set([
   "out_for_delivery",
   "receiver_absent",
   "not_visited",
   "at_customs",
-  "waiting_for_withdrawal",
+]);
+// Substatuses de "not_delivered" que indicam logística ainda ativa (pacote em movimento).
+// No ML Seller Center, esses pedidos aparecem em "Em trânsito", não "Finalizadas".
+const NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES = new Set([
+  "returning_to_sender",
+  "returning_to_hub",
+  "delayed",
+  "return_failed",
 ]);
 const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
   "picked_up",
@@ -414,8 +424,17 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "in_transit";
   }
 
-  // Finalizadas: cancelled, not_delivered, returned
-  if (FINAL_EXCEPTION_STATUSES.has(status)) {
+  // not_delivered: verificar substatus — alguns são logística ativa (em trânsito),
+  // outros são finalizados (devolvido, perdido).
+  if (status === "not_delivered") {
+    if (NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    return "finalized";
+  }
+
+  // Finalizadas: cancelled, returned
+  if (status === "cancelled" || status === "returned") {
     return "finalized";
   }
 
@@ -459,7 +478,15 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "in_transit";
   }
 
-  if (FINAL_EXCEPTION_STATUSES.has(status)) {
+  // not_delivered: verificar substatus
+  if (status === "not_delivered") {
+    if (NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    return "finalized";
+  }
+
+  if (status === "cancelled" || status === "returned") {
     return "finalized";
   }
 
@@ -1098,12 +1125,22 @@ export async function buildDashboardPayload(options = {}) {
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
-      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes (últimos 3 dias).
-      // ML Seller Center mostra pouquíssimas finalizadas — apenas as mais recentes.
+      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes.
+      // Usa a DATA DA EXCEÇÃO (date_cancelled, date_not_delivered, date_returned),
+      // não a data de venda, para alinhar com o ML Seller Center que mostra
+      // apenas as finalizações dos últimos ~2 dias.
       if (bucket === "finalized") {
-        const saleDate = order.sale_date ? new Date(order.sale_date) : null;
-        const ageDays = saleDate ? (today.getTime() - saleDate.getTime()) / (24 * 60 * 60 * 1000) : 999;
-        if (ageDays > 3) {
+        const snapshot = getShipmentSnapshot(order);
+        const statusHistory = snapshot.status_history || {};
+        const exceptionDate =
+          parseDate(statusHistory.date_cancelled) ||
+          parseDate(statusHistory.date_not_delivered) ||
+          parseDate(statusHistory.date_returned) ||
+          (order.sale_date ? new Date(order.sale_date) : null);
+        const ageDays = exceptionDate
+          ? (today.getTime() - exceptionDate.getTime()) / (24 * 60 * 60 * 1000)
+          : 999;
+        if (ageDays > 2) {
           continue;
         }
       }
