@@ -431,18 +431,27 @@ function classifyCrossDockingOrder(order, todayKey) {
 
   // "shipped" com substatuses de tracking ativo = em trânsito
   // "shipped/none": transportador pegou mas sem tracking ativo. No ML Seller
-  // Center, pedidos recém-enviados (date_shipped = hoje) aparecem em "Próximos
-  // dias" pois o transportador ainda não escaneou o pacote. Após 1+ dia, o
-  // tracking normalmente já ativou — se ainda está "none", provavelmente é
-  // problema de dados e o pedido já foi entregue.
+  // Center, pedidos recém-enviados aparecem no painel operacional enquanto
+  // o transportador não escaneou. Usa date_shipped + SLA para classificar:
+  // - Enviado hoje: "hoje" se SLA ≤ hoje, senão "upcoming"
+  // - Enviado ontem com SLA ≤ hoje: "today" (SLA vencendo, tracking atrasado)
+  // - Mais antigo: excluir (provavelmente já entregue sem atualização)
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      // Inclui se enviado hoje (transportador ainda não escaneou)
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+      const shippedAge = dates.shippedDateKey ? daysDifference(dates.shippedDateKey, todayKey) : Infinity;
+      if (shippedAge <= 0) {
+        // Enviado hoje: usa SLA para decidir hoje/upcoming
+        if (dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
+          return "today";
+        }
         return "upcoming";
+      }
+      if (shippedAge === 1 && dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
+        // Enviado ontem com SLA hoje ou passado: tracking atrasado
+        return "today";
       }
       return null;
     }
@@ -517,15 +526,22 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   // Fulfillment: "shipped" com substatuses de trânsito real = in_transit
-  // "shipped/none": ML despachou do armazém mas sem tracking. Inclui se
-  // enviado hoje (análogo ao cross-docking).
+  // "shipped/none": ML despachou do armazém mas sem tracking. Mesma lógica
+  // de recência que cross-docking.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+      const shippedAge = dates.shippedDateKey ? daysDifference(dates.shippedDateKey, todayKey) : Infinity;
+      if (shippedAge <= 0) {
+        if (dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
+          return "today";
+        }
         return "upcoming";
+      }
+      if (shippedAge === 1 && dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
+        return "today";
       }
       return null;
     }
