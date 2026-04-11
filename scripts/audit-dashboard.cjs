@@ -18,6 +18,7 @@ const allOrders = db.prepare(`
     json_extract(raw_data, '$.shipment_snapshot.status_history.date_cancelled') as date_cancelled,
     json_extract(raw_data, '$.shipment_snapshot.status_history.date_not_delivered') as date_not_delivered,
     json_extract(raw_data, '$.shipment_snapshot.status_history.date_returned') as date_returned,
+    json_extract(raw_data, '$.shipment_snapshot.status_history.date_shipped') as date_shipped,
     order_id, order_status, sale_date
   FROM ml_orders
   ORDER BY sale_date DESC
@@ -76,17 +77,8 @@ function classify(o, todayKey) {
   if (status === "shipped") {
     if (SHIPPED_TRANSIT.has(sub)) return "in_transit";
     if (sub === "none" || sub === "waiting_for_withdrawal" || sub === "claimed_me") {
-      // Só inclui se SLA recente (≤3 dias passados) ou venda recente (≤5 dias)
-      if (sla) {
-        const slaDiff = Math.round((new Date(todayKey + "T00:00:00") - new Date(sla + "T00:00:00")) / 86400000);
-        if (slaDiff <= 3) return "upcoming";
-        return null;
-      }
-      if (o.sale_date) {
-        const saleKey = o.sale_date.substring(0, 10);
-        const saleDiff = Math.round((new Date(todayKey + "T00:00:00") - new Date(saleKey + "T00:00:00")) / 86400000);
-        if (saleDiff <= 5) return "upcoming";
-      }
+      // Só inclui se enviado hoje (date_shipped = today)
+      if (o.date_shipped && o.date_shipped.substring(0, 10) >= todayKey) return "upcoming";
       return null;
     }
     return null;
