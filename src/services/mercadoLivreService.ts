@@ -909,6 +909,9 @@ export interface MLStockItem {
   listing_type: string | null;
   price: number | null;
   thumbnail: string | null;
+  brand: string | null;
+  model: string | null;
+  vehicle_year: string | null;
   synced_at: string;
 }
 

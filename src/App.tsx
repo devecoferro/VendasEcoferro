@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ExtractionProvider } from "@/contexts/ExtractionContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const queryClient = new QueryClient();
 
@@ -33,15 +34,16 @@ function RouteFallback() {
 }
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <AuthProvider>
-        <BrowserRouter>
-          <Suspense fallback={<RouteFallback />}>
-            <ExtractionProvider>
-              <Routes>
+  <ErrorBoundary>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <AuthProvider>
+          <BrowserRouter>
+            <Suspense fallback={<RouteFallback />}>
+              <ExtractionProvider>
+                <Routes>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/ml-callback" element={<MLCallbackPage />} />
 
@@ -59,14 +61,15 @@ const App = () => (
                   <Route path="/users" element={<UsersPage />} />
                 </Route>
 
-                <Route path="*" element={<NotFound />} />
-              </Routes>
-            </ExtractionProvider>
-          </Suspense>
-        </BrowserRouter>
-      </AuthProvider>
-    </TooltipProvider>
-  </QueryClientProvider>
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </ExtractionProvider>
+            </Suspense>
+          </BrowserRouter>
+        </AuthProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ErrorBoundary>
 );
 
 export default App;

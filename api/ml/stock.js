@@ -19,11 +19,13 @@ function upsertStockItems(items) {
       id, connection_id, seller_id, item_id, sku, title,
       available_quantity, sold_quantity, total_quantity,
       status, condition, listing_type, price, thumbnail,
+      brand, model, vehicle_year,
       synced_at, created_at, updated_at
     ) VALUES (
       @id, @connection_id, @seller_id, @item_id, @sku, @title,
       @available_quantity, @sold_quantity, @total_quantity,
       @status, @condition, @listing_type, @price, @thumbnail,
+      @brand, @model, @vehicle_year,
       @synced_at, @created_at, @updated_at
     )
     ON CONFLICT(connection_id, item_id) DO UPDATE SET
@@ -37,6 +39,9 @@ function upsertStockItems(items) {
       listing_type = excluded.listing_type,
       price = excluded.price,
       thumbnail = excluded.thumbnail,
+      brand = excluded.brand,
+      model = excluded.model,
+      vehicle_year = excluded.vehicle_year,
       synced_at = excluded.synced_at,
       updated_at = excluded.updated_at
   `);
@@ -68,6 +73,22 @@ async function fetchItemsPage(accessToken, sellerId, offset) {
   return response.json();
 }
 
+// IDs de atributos do ML para marca, modelo e ano do veiculo.
+// Esses sao os IDs padrao usados em categorias automotivas do ML Brasil.
+const BRAND_ATTRIBUTE_IDS = new Set(["BRAND", "MARCA", "VEHICLE_BRAND"]);
+const MODEL_ATTRIBUTE_IDS = new Set(["MODEL", "MODELO", "VEHICLE_MODEL", "PART_NUMBER"]);
+const YEAR_ATTRIBUTE_IDS = new Set(["VEHICLE_YEAR", "YEAR", "ANO", "VEHICLE_YEARS"]);
+
+function extractAttribute(attributes, idSet) {
+  if (!Array.isArray(attributes)) return null;
+  for (const attr of attributes) {
+    if (attr?.id && idSet.has(attr.id.toUpperCase())) {
+      return attr.value_name || attr.value_struct?.value || null;
+    }
+  }
+  return null;
+}
+
 async function fetchItemsDetails(accessToken, itemIds) {
   if (!itemIds.length) return [];
 
@@ -79,7 +100,7 @@ async function fetchItemsDetails(accessToken, itemIds) {
     const batch = itemIds.slice(i, i + BATCH);
     const ids = batch.join(",");
     const response = await fetch(
-      `https://api.mercadolibre.com/items?ids=${ids}&attributes=id,seller_sku,title,available_quantity,sold_quantity,initial_quantity,status,condition,listing_type_id,price,thumbnail`,
+      `https://api.mercadolibre.com/items?ids=${ids}&attributes=id,seller_sku,title,available_quantity,sold_quantity,initial_quantity,status,condition,listing_type_id,price,thumbnail,attributes`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
@@ -126,6 +147,9 @@ async function syncStock(connection) {
       listing_type: item.listing_type_id || null,
       price: item.price != null ? Number(item.price) : null,
       thumbnail: item.thumbnail || null,
+      brand: extractAttribute(item.attributes, BRAND_ATTRIBUTE_IDS),
+      model: extractAttribute(item.attributes, MODEL_ATTRIBUTE_IDS),
+      vehicle_year: extractAttribute(item.attributes, YEAR_ATTRIBUTE_IDS),
       synced_at: now,
       created_at: now,
       updated_at: now,
@@ -147,7 +171,8 @@ function getStockFromDb(connectionId) {
   return db
     .prepare(
       `SELECT item_id, sku, title, available_quantity, sold_quantity,
-              total_quantity, status, condition, listing_type, price, thumbnail, synced_at
+              total_quantity, status, condition, listing_type, price, thumbnail,
+              brand, model, vehicle_year, synced_at
        FROM ml_stock
        WHERE connection_id = ?
        ORDER BY available_quantity DESC`

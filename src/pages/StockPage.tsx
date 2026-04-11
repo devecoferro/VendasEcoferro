@@ -3,8 +3,15 @@ import { AppLayout } from "@/components/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { getMLConnectionStatus, getMLStock, syncMLStock, type MLStockItem } from "@/services/mercadoLivreService";
-import { Loader2, Package, RefreshCw, Search, TrendingDown } from "lucide-react";
+import { Filter, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
 
 type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
 type SortDir = "asc" | "desc";
@@ -17,6 +24,9 @@ export default function StockPage() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [brandFilter, setBrandFilter] = useState<string>("all");
+  const [modelFilter, setModelFilter] = useState<string>("all");
+  const [yearFilter, setYearFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("available_quantity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -73,16 +83,59 @@ export default function StockPage() {
     }
   };
 
+  // Extrair opcoes unicas de marca, modelo e ano para os filtros
+  const filterOptions = useMemo(() => {
+    const brands = new Set<string>();
+    const models = new Set<string>();
+    const years = new Set<string>();
+
+    for (const item of items) {
+      if (item.brand) brands.add(item.brand);
+      if (item.model) models.add(item.model);
+      if (item.vehicle_year) years.add(item.vehicle_year);
+    }
+
+    return {
+      brands: [...brands].sort((a, b) => a.localeCompare(b, "pt-BR")),
+      models: [...models].sort((a, b) => a.localeCompare(b, "pt-BR")),
+      years: [...years].sort((a, b) => b.localeCompare(a)), // Ano mais recente primeiro
+    };
+  }, [items]);
+
+  const hasActiveFilters = brandFilter !== "all" || modelFilter !== "all" || yearFilter !== "all";
+
+  const clearFilters = () => {
+    setBrandFilter("all");
+    setModelFilter("all");
+    setYearFilter("all");
+  };
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    const result = q
-      ? items.filter(
-          (item) =>
-            item.title?.toLowerCase().includes(q) ||
-            item.sku?.toLowerCase().includes(q) ||
-            item.item_id.toLowerCase().includes(q)
-        )
-      : items;
+    let result = items;
+
+    // Filtro de texto
+    if (q) {
+      result = result.filter(
+        (item) =>
+          item.title?.toLowerCase().includes(q) ||
+          item.sku?.toLowerCase().includes(q) ||
+          item.item_id.toLowerCase().includes(q) ||
+          item.brand?.toLowerCase().includes(q) ||
+          item.model?.toLowerCase().includes(q)
+      );
+    }
+
+    // Filtros de marca/modelo/ano
+    if (brandFilter !== "all") {
+      result = result.filter((item) => item.brand === brandFilter);
+    }
+    if (modelFilter !== "all") {
+      result = result.filter((item) => item.model === modelFilter);
+    }
+    if (yearFilter !== "all") {
+      result = result.filter((item) => item.vehicle_year === yearFilter);
+    }
 
     return [...result].sort((a, b) => {
       let va: string | number | null = a[sortKey] ?? null;
@@ -96,7 +149,7 @@ export default function StockPage() {
         ? (va as number) - (vb as number)
         : (vb as number) - (va as number);
     });
-  }, [items, search, sortKey, sortDir]);
+  }, [items, search, brandFilter, modelFilter, yearFilter, sortKey, sortDir]);
 
   const lowStockCount = useMemo(
     () => items.filter((i) => i.available_quantity <= 3 && i.status === "active").length,
@@ -145,7 +198,9 @@ export default function StockPage() {
             </Button>
           </div>
           <p className="text-sm text-muted-foreground">
-            {items.length} produto(s) sincronizados do Mercado Livre
+            {hasActiveFilters || search
+              ? `${filtered.length} de ${items.length} produto(s)`
+              : `${items.length} produto(s) sincronizados do Mercado Livre`}
             {lowStockCount > 0 && (
               <span className="ml-2 text-orange-500 font-medium">
                 · {lowStockCount} com estoque baixo (≤ 3)
@@ -160,14 +215,82 @@ export default function StockPage() {
           </div>
         )}
 
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            placeholder="Buscar por título, SKU ou ID..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        <div className="flex flex-col gap-3">
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Buscar por titulo, SKU, marca ou modelo..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          {(filterOptions.brands.length > 0 || filterOptions.models.length > 0 || filterOptions.years.length > 0) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+
+              {filterOptions.brands.length > 0 && (
+                <Select value={brandFilter} onValueChange={setBrandFilter}>
+                  <SelectTrigger className="w-[180px] h-9 text-sm">
+                    <SelectValue placeholder="Marca" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas as marcas</SelectItem>
+                    {filterOptions.brands.map((brand) => (
+                      <SelectItem key={brand} value={brand}>
+                        {brand}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {filterOptions.models.length > 0 && (
+                <Select value={modelFilter} onValueChange={setModelFilter}>
+                  <SelectTrigger className="w-[180px] h-9 text-sm">
+                    <SelectValue placeholder="Modelo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os modelos</SelectItem>
+                    {filterOptions.models.map((model) => (
+                      <SelectItem key={model} value={model}>
+                        {model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {filterOptions.years.length > 0 && (
+                <Select value={yearFilter} onValueChange={setYearFilter}>
+                  <SelectTrigger className="w-[140px] h-9 text-sm">
+                    <SelectValue placeholder="Ano" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos os anos</SelectItem>
+                    {filterOptions.years.map((year) => (
+                      <SelectItem key={year} value={year}>
+                        {year}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {hasActiveFilters && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearFilters}
+                  className="h-9 px-2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4 mr-1" />
+                  Limpar filtros
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         {loading ? (

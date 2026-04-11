@@ -2,12 +2,15 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import compression from "compression";
+import rateLimit from "express-rate-limit";
 
 import "../api/_lib/db.js";
 import { DB_PATH } from "../api/_lib/app-config.js";
 import { db } from "../api/_lib/db.js";
 import { getLatestConnection } from "../api/ml/_lib/storage.js";
 import { isTokenExpiringSoon } from "../api/ml/_lib/mercado-livre.js";
+import createLogger from "../api/_lib/logger.js";
+import { startAutoBackup, stopAutoBackup, runBackup } from "../api/_lib/backup.js";
 import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
 import mlAuthHandler from "../api/ml/auth.js";
@@ -31,6 +34,7 @@ import nfeSyncMercadoLivreHandler from "../api/nfe/sync-mercadolivre.js";
 import mlStockHandler from "../api/ml/stock.js";
 import { APP_HOST, APP_PORT } from "../api/_lib/app-config.js";
 
+const log = createLogger("server");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
@@ -81,17 +85,44 @@ function safeDependencyHealth() {
 
 const app = express();
 
+// ─── Rate Limiting ──────────────────────────────────────────────────
+// Protege rotas sensiveis contra brute force e abuso.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 20, // 20 tentativas por janela
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Muitas tentativas. Tente novamente em 15 minutos." },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 120, // 120 requests/min por IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Rate limit excedido. Aguarde um momento." },
+});
+
+const syncLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 10, // 10 syncs manuais por minuto
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Sync muito frequente. Aguarde." },
+});
+
 // Gzip compression — reduz o tamanho dos assets JS/CSS em ~70%, acelerando o carregamento
 app.use(compression({
-  // Não comprime respostas de API pequenas (< 1KB) para não adicionar latência
+  // Nao comprime respostas de API pequenas (< 1KB) para nao adicionar latencia
   threshold: 1024,
-  // Nível 6 é o padrão: bom equilíbrio entre velocidade de compressão e tamanho final
+  // Nivel 6 e o padrao: bom equilibrio entre velocidade de compressao e tamanho final
   level: 6,
 }));
 
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true, limit: "8mb" }));
 
+// ─── Health ─────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
@@ -101,34 +132,40 @@ app.get("/api/health/dependencies", (_req, res) => {
   res.status(payload.ok ? 200 : 500).json(payload);
 });
 
-app.all("/api/app-auth", (req, res) => appAuthHandler(req, res));
-app.all("/api/app-users", (req, res) => appUsersHandler(req, res));
-app.all("/api/ml/auth", (req, res) => mlAuthHandler(req, res));
-app.all("/api/ml/dashboard", (req, res) => mlDashboardHandler(req, res));
-app.all("/api/ml/orders", (req, res) => mlOrdersHandler(req, res));
-app.all("/api/ml/stores", (req, res) => mlStoresHandler(req, res));
-app.all("/api/ml/sync", (req, res) => mlSyncHandler(req, res));
+// ─── Auth (rate limited) ────────────────────────────────────────────
+app.all("/api/app-auth", authLimiter, (req, res) => appAuthHandler(req, res));
+app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
+
+// ─── ML API (rate limited) ──────────────────────────────────────────
+app.all("/api/ml/auth", authLimiter, (req, res) => mlAuthHandler(req, res));
+app.all("/api/ml/dashboard", apiLimiter, (req, res) => mlDashboardHandler(req, res));
+app.all("/api/ml/orders", apiLimiter, (req, res) => mlOrdersHandler(req, res));
+app.all("/api/ml/stores", apiLimiter, (req, res) => mlStoresHandler(req, res));
+app.all("/api/ml/sync", syncLimiter, (req, res) => mlSyncHandler(req, res));
 app.get("/api/ml/sync-events", (req, res) => mlSyncEventsHandler(req, res));
 app.all("/api/ml/notifications", (req, res) => mlNotificationsHandler(req, res));
-app.all("/api/ml/returns", (req, res) => mlReturnsHandler(req, res));
-app.all("/api/ml/claims", (req, res) => mlClaimsHandler(req, res));
-app.all("/api/ml/packs", (req, res) => mlPacksHandler(req, res));
-app.all("/api/ml/order-documents", (req, res) => mlOrderDocumentsHandler(req, res));
-app.all("/api/ml/order-documents/file", (req, res) => mlOrderDocumentsFileHandler(req, res));
-app.all("/api/ml/private-seller-center-snapshots", (req, res) =>
+app.all("/api/ml/returns", apiLimiter, (req, res) => mlReturnsHandler(req, res));
+app.all("/api/ml/claims", apiLimiter, (req, res) => mlClaimsHandler(req, res));
+app.all("/api/ml/packs", apiLimiter, (req, res) => mlPacksHandler(req, res));
+app.all("/api/ml/order-documents", apiLimiter, (req, res) => mlOrderDocumentsHandler(req, res));
+app.all("/api/ml/order-documents/file", apiLimiter, (req, res) => mlOrderDocumentsFileHandler(req, res));
+app.all("/api/ml/private-seller-center-snapshots", apiLimiter, (req, res) =>
   mlPrivateSellerCenterSnapshotsHandler(req, res)
 );
-app.all("/api/ml/private-seller-center-comparison", (req, res) =>
+app.all("/api/ml/private-seller-center-comparison", apiLimiter, (req, res) =>
   mlPrivateSellerCenterComparisonHandler(req, res)
 );
-app.all("/api/nfe/generate", (req, res) => nfeGenerateHandler(req, res));
-app.all("/api/nfe/document", (req, res) => nfeDocumentHandler(req, res));
-app.all("/api/nfe/file", (req, res) => nfeFileHandler(req, res));
-app.all("/api/nfe/sync-mercadolivre", (req, res) =>
+
+// ─── NFe API (rate limited) ─────────────────────────────────────────
+app.all("/api/nfe/generate", syncLimiter, (req, res) => nfeGenerateHandler(req, res));
+app.all("/api/nfe/document", apiLimiter, (req, res) => nfeDocumentHandler(req, res));
+app.all("/api/nfe/file", apiLimiter, (req, res) => nfeFileHandler(req, res));
+app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
   nfeSyncMercadoLivreHandler(req, res)
 );
-app.all("/api/ml/stock", (req, res) => mlStockHandler(req, res));
+app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
 
+// ─── Error handler ──────────────────────────────────────────────────
 app.use((error, req, res, next) => {
   if (error?.type === "entity.parse.failed") {
     if (req.path?.startsWith("/api/")) {
@@ -141,16 +178,24 @@ app.use((error, req, res, next) => {
     return res.status(400).send("Payload JSON invalido.");
   }
 
+  // Log de erros nao tratados
+  log.error("Erro nao tratado", {
+    path: req.path,
+    method: req.method,
+    error: error instanceof Error ? error.message : "Unknown",
+  });
+
   return next(error);
 });
 
+// ─── Static files ───────────────────────────────────────────────────
 // Assets com hash no nome (ex: DashboardPage-C1Uj8RxJ.js) nunca mudam — cache de 1 ano
 app.use("/assets", express.static(path.join(distPath, "assets"), {
   maxAge: "1y",
   immutable: true,
 }));
 
-// index.html e arquivos raiz sem hash — sem cache para garantir atualização imediata
+// index.html e arquivos raiz sem hash — sem cache para garantir atualizacao imediata
 app.use(express.static(distPath, {
   maxAge: 0,
   etag: true,
@@ -167,19 +212,20 @@ app.use((req, res) => {
 // ─── Auto-sync com Mercado Livre ────────────────────────────────────
 // Sincroniza pedidos operacionais automaticamente a cada 30 segundos.
 // O sync interno tem cooldown de 45s (INCREMENTAL_SYNC_COOLDOWN_MS),
-// então chamadas antes do cooldown são ignoradas sem custo.
-// Após cada sync, um evento SSE é enviado aos clientes conectados
+// entao chamadas antes do cooldown sao ignoradas sem custo.
+// Apos cada sync, um evento SSE e enviado aos clientes conectados
 // para que atualizem em tempo real (sem polling pesado no frontend).
 // Usa updated_from para fazer sync incremental (apenas pedidos alterados).
 const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
 let autoSyncRunning = false;
+let autoSyncIntervalId = null;
 
 async function autoSyncOrders() {
-  if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda está rodando
+  if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
 
   try {
     const connection = getLatestConnection();
-    if (!connection?.id) return; // Sem conexão ML configurada
+    if (!connection?.id) return; // Sem conexao ML configurada
 
     autoSyncRunning = true;
     const updatedFrom = connection.last_sync_at || undefined;
@@ -190,24 +236,85 @@ async function autoSyncOrders() {
       pageLimit: 20,
     });
   } catch (error) {
-    // Silencioso — não deve derrubar o servidor
-    console.error(
-      "[auto-sync]",
-      error instanceof Error ? error.message : "Sync failed"
-    );
+    log.error("Auto-sync falhou", error);
   } finally {
     autoSyncRunning = false;
   }
 }
 
-app.listen(APP_PORT, APP_HOST, () => {
-  console.log(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
+// ─── Graceful Shutdown ──────────────────────────────────────────────
+// Quando o container Docker recebe SIGTERM (restart/stop), o servidor:
+// 1. Para de aceitar novas conexoes
+// 2. Aguarda o sync atual terminar (se houver)
+// 3. Faz backup final do banco
+// 4. Fecha o banco de dados corretamente
+// 5. Encerra o processo
+let isShuttingDown = false;
 
-  // Inicia auto-sync 10s após o boot para dar tempo do servidor estabilizar
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  log.info(`Shutdown iniciado (${signal})`);
+
+  // Para auto-sync e auto-backup
+  if (autoSyncIntervalId) {
+    clearInterval(autoSyncIntervalId);
+    autoSyncIntervalId = null;
+  }
+  stopAutoBackup();
+
+  // Aguarda sync atual terminar (max 15s)
+  const shutdownStart = Date.now();
+  while (autoSyncRunning && Date.now() - shutdownStart < 15000) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  // Backup final antes de fechar
+  try {
+    log.info("Backup final antes do shutdown");
+    runBackup();
+  } catch (error) {
+    log.error("Falha no backup final", error);
+  }
+
+  // Fecha o banco de dados
+  try {
+    db.close();
+    log.info("Banco de dados fechado");
+  } catch (error) {
+    log.error("Erro ao fechar banco", error);
+  }
+
+  log.info("Shutdown concluido");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Captura erros nao tratados para nao derrubar silenciosamente
+process.on("uncaughtException", (error) => {
+  log.error("Uncaught exception", error);
+  // Nao faz process.exit — deixa o container reiniciar via healthcheck
+});
+
+process.on("unhandledRejection", (reason) => {
+  log.error("Unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
+});
+
+// ─── Start ──────────────────────────────────────────────────────────
+app.listen(APP_PORT, APP_HOST, () => {
+  log.info(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
+
+  // Inicia auto-sync 10s apos o boot para dar tempo do servidor estabilizar
   setTimeout(() => {
-    console.log(`[auto-sync] Iniciando sync automático a cada ${AUTO_SYNC_INTERVAL_MS / 1000}s`);
-    setInterval(autoSyncOrders, AUTO_SYNC_INTERVAL_MS);
-    // Primeira execução imediata
+    log.info(`Auto-sync iniciado (intervalo: ${AUTO_SYNC_INTERVAL_MS / 1000}s)`);
+    autoSyncIntervalId = setInterval(autoSyncOrders, AUTO_SYNC_INTERVAL_MS);
+    // Primeira execucao imediata
     autoSyncOrders();
   }, 10_000);
+
+  // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
+  startAutoBackup();
 });

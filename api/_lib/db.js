@@ -146,4 +146,27 @@ if (fs.existsSync(mlStockMigrationPath)) {
   db.exec(fs.readFileSync(mlStockMigrationPath, "utf8"));
 }
 
+// Migration: adiciona brand/model/vehicle_year ao ml_stock
+const mlStockAttributesMigrationPath = path.join(
+  __dirname,
+  "migrations",
+  "20260411_add_ml_stock_attributes.sql"
+);
+if (fs.existsSync(mlStockAttributesMigrationPath)) {
+  try {
+    // Usa ALTER TABLE — ignora se colunas ja existem
+    const migrationSql = fs.readFileSync(mlStockAttributesMigrationPath, "utf8");
+    for (const statement of migrationSql.split(";").filter((s) => s.trim())) {
+      try {
+        db.exec(statement);
+      } catch (e) {
+        // "duplicate column name" e esperado se ja rodou
+        if (!String(e.message).includes("duplicate column")) throw e;
+      }
+    }
+  } catch {
+    // Silencioso — migration ja aplicada
+  }
+}
+
 export { db };
