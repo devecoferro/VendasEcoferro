@@ -11,10 +11,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getMLConnectionStatus, getMLStock, syncMLStock, type MLStockItem } from "@/services/mercadoLivreService";
-import { Filter, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
+import { AlertCircle, ChevronDown, Filter, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
 
 type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
 type SortDir = "asc" | "desc";
+type StatusFilter = "all" | "active" | "paused" | "closed";
 
 export default function StockPage() {
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -27,6 +28,8 @@ export default function StockPage() {
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [modelFilter, setModelFilter] = useState<string>("all");
   const [yearFilter, setYearFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [showFilters, setShowFilters] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("available_quantity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -102,12 +105,14 @@ export default function StockPage() {
     };
   }, [items]);
 
-  const hasActiveFilters = brandFilter !== "all" || modelFilter !== "all" || yearFilter !== "all";
+  const hasActiveFilters = brandFilter !== "all" || modelFilter !== "all" || yearFilter !== "all" || statusFilter !== "all";
+  const activeFilterCount = [brandFilter, modelFilter, yearFilter, statusFilter].filter(f => f !== "all").length;
 
   const clearFilters = () => {
     setBrandFilter("all");
     setModelFilter("all");
     setYearFilter("all");
+    setStatusFilter("all");
   };
 
   const filtered = useMemo(() => {
@@ -136,6 +141,9 @@ export default function StockPage() {
     if (yearFilter !== "all") {
       result = result.filter((item) => item.vehicle_year === yearFilter);
     }
+    if (statusFilter !== "all") {
+      result = result.filter((item) => item.status === statusFilter);
+    }
 
     return [...result].sort((a, b) => {
       let va: string | number | null = a[sortKey] ?? null;
@@ -149,12 +157,18 @@ export default function StockPage() {
         ? (va as number) - (vb as number)
         : (vb as number) - (va as number);
     });
-  }, [items, search, brandFilter, modelFilter, yearFilter, sortKey, sortDir]);
+  }, [items, search, brandFilter, modelFilter, yearFilter, statusFilter, sortKey, sortDir]);
 
-  const lowStockCount = useMemo(
-    () => items.filter((i) => i.available_quantity <= 3 && i.status === "active").length,
-    [items]
-  );
+  const stockStats = useMemo(() => {
+    const active = items.filter((i) => i.status === "active").length;
+    const paused = items.filter((i) => i.status === "paused").length;
+    const closed = items.filter((i) => i.status === "closed" || i.status === "under_review").length;
+    const lowStock = items.filter((i) => i.available_quantity <= 3 && i.status === "active").length;
+    const outOfStock = items.filter((i) => i.available_quantity === 0 && i.status === "active").length;
+    return { active, paused, closed, lowStock, outOfStock };
+  }, [items]);
+
+  const lowStockCount = stockStats.lowStock;
 
   const SortBtn = ({ label, col }: { label: string; col: SortKey }) => (
     <button
@@ -201,93 +215,204 @@ export default function StockPage() {
             {hasActiveFilters || search
               ? `${filtered.length} de ${items.length} produto(s)`
               : `${items.length} produto(s) sincronizados do Mercado Livre`}
-            {lowStockCount > 0 && (
-              <span className="ml-2 text-orange-500 font-medium">
-                · {lowStockCount} com estoque baixo (≤ 3)
-              </span>
-            )}
           </p>
         </div>
 
+        {/* Cards de resumo */}
+        {items.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <button
+              type="button"
+              onClick={() => { setStatusFilter(statusFilter === "active" ? "all" : "active"); setShowFilters(true); }}
+              className={`rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 ${statusFilter === "active" ? "border-primary bg-primary/5" : ""}`}
+            >
+              <p className="text-xs font-medium text-muted-foreground">Ativos</p>
+              <p className="text-2xl font-bold text-green-600">{stockStats.active}</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setStatusFilter(statusFilter === "paused" ? "all" : "paused"); setShowFilters(true); }}
+              className={`rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 ${statusFilter === "paused" ? "border-primary bg-primary/5" : ""}`}
+            >
+              <p className="text-xs font-medium text-muted-foreground">Pausados</p>
+              <p className="text-2xl font-bold text-yellow-600">{stockStats.paused}</p>
+            </button>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs font-medium text-muted-foreground">Estoque baixo</p>
+              <p className={`text-2xl font-bold ${stockStats.lowStock > 0 ? "text-orange-500" : "text-foreground"}`}>
+                {stockStats.lowStock}
+              </p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs font-medium text-muted-foreground">Sem estoque</p>
+              <p className={`text-2xl font-bold ${stockStats.outOfStock > 0 ? "text-destructive" : "text-foreground"}`}>
+                {stockStats.outOfStock}
+              </p>
+            </div>
+          </div>
+        )}
+
         {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
             {error}
           </div>
         )}
 
+        {/* Busca + Filtros */}
         <div className="flex flex-col gap-3">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Buscar por titulo, SKU, marca ou modelo..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                className="pl-9 h-10"
+                placeholder="Buscar por titulo, SKU, marca ou modelo..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            <Button
+              variant={showFilters ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowFilters(!showFilters)}
+              className="h-10 px-3 gap-1.5"
+            >
+              <Filter className="h-4 w-4" />
+              <span className="hidden sm:inline">Filtros</span>
+              {activeFilterCount > 0 && (
+                <Badge variant="secondary" className="h-5 min-w-[20px] px-1.5 text-xs rounded-full">
+                  {activeFilterCount}
+                </Badge>
+              )}
+            </Button>
+
+            {hasActiveFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearFilters}
+                className="h-10 px-3 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4 mr-1" />
+                <span className="hidden sm:inline">Limpar</span>
+              </Button>
+            )}
           </div>
 
-          {(filterOptions.brands.length > 0 || filterOptions.models.length > 0 || filterOptions.years.length > 0) && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Filter className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          {/* Painel de filtros colapsavel */}
+          {showFilters && (
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {filterOptions.brands.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Marca</label>
+                    <Select value={brandFilter} onValueChange={setBrandFilter}>
+                      <SelectTrigger className="h-10 bg-background">
+                        <SelectValue placeholder="Todas as marcas" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas as marcas</SelectItem>
+                        {filterOptions.brands.map((brand) => (
+                          <SelectItem key={brand} value={brand}>
+                            {brand}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
-              {filterOptions.brands.length > 0 && (
-                <Select value={brandFilter} onValueChange={setBrandFilter}>
-                  <SelectTrigger className="w-[180px] h-9 text-sm">
-                    <SelectValue placeholder="Marca" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas as marcas</SelectItem>
-                    {filterOptions.brands.map((brand) => (
-                      <SelectItem key={brand} value={brand}>
-                        {brand}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+                {filterOptions.models.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Modelo</label>
+                    <Select value={modelFilter} onValueChange={setModelFilter}>
+                      <SelectTrigger className="h-10 bg-background">
+                        <SelectValue placeholder="Todos os modelos" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos os modelos</SelectItem>
+                        {filterOptions.models.map((model) => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
-              {filterOptions.models.length > 0 && (
-                <Select value={modelFilter} onValueChange={setModelFilter}>
-                  <SelectTrigger className="w-[180px] h-9 text-sm">
-                    <SelectValue placeholder="Modelo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos os modelos</SelectItem>
-                    {filterOptions.models.map((model) => (
-                      <SelectItem key={model} value={model}>
-                        {model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+                {filterOptions.years.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ano</label>
+                    <Select value={yearFilter} onValueChange={setYearFilter}>
+                      <SelectTrigger className="h-10 bg-background">
+                        <SelectValue placeholder="Todos os anos" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos os anos</SelectItem>
+                        {filterOptions.years.map((year) => (
+                          <SelectItem key={year} value={year}>
+                            {year}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
-              {filterOptions.years.length > 0 && (
-                <Select value={yearFilter} onValueChange={setYearFilter}>
-                  <SelectTrigger className="w-[140px] h-9 text-sm">
-                    <SelectValue placeholder="Ano" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos os anos</SelectItem>
-                    {filterOptions.years.map((year) => (
-                      <SelectItem key={year} value={year}>
-                        {year}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Status</label>
+                  <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+                    <SelectTrigger className="h-10 bg-background">
+                      <SelectValue placeholder="Todos os status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos os status</SelectItem>
+                      <SelectItem value="active">Ativo</SelectItem>
+                      <SelectItem value="paused">Pausado</SelectItem>
+                      <SelectItem value="closed">Encerrado</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
 
+              {/* Tags dos filtros ativos */}
               {hasActiveFilters && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearFilters}
-                  className="h-9 px-2 text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4 mr-1" />
-                  Limpar filtros
-                </Button>
+                <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t">
+                  {brandFilter !== "all" && (
+                    <Badge variant="secondary" className="gap-1 pr-1">
+                      {brandFilter}
+                      <button type="button" onClick={() => setBrandFilter("all")} className="ml-0.5 rounded-full hover:bg-muted p-0.5">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  )}
+                  {modelFilter !== "all" && (
+                    <Badge variant="secondary" className="gap-1 pr-1">
+                      {modelFilter}
+                      <button type="button" onClick={() => setModelFilter("all")} className="ml-0.5 rounded-full hover:bg-muted p-0.5">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  )}
+                  {yearFilter !== "all" && (
+                    <Badge variant="secondary" className="gap-1 pr-1">
+                      {yearFilter}
+                      <button type="button" onClick={() => setYearFilter("all")} className="ml-0.5 rounded-full hover:bg-muted p-0.5">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  )}
+                  {statusFilter !== "all" && (
+                    <Badge variant="secondary" className="gap-1 pr-1">
+                      {statusFilter === "active" ? "Ativo" : statusFilter === "paused" ? "Pausado" : "Encerrado"}
+                      <button type="button" onClick={() => setStatusFilter("all")} className="ml-0.5 rounded-full hover:bg-muted p-0.5">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  )}
+                </div>
               )}
             </div>
           )}
