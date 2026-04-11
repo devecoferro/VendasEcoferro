@@ -86,7 +86,8 @@ export default function StockPage() {
     }
   };
 
-  // Extrair opcoes unicas de marca, modelo e ano para os filtros
+  // Extrair opcoes unicas de marca, modelo e ano — CASCATA
+  // Marcas: sempre todas. Modelos: filtrados pela marca. Anos: filtrados pela marca+modelo.
   const filterOptions = useMemo(() => {
     const brands = new Set<string>();
     const models = new Set<string>();
@@ -94,16 +95,35 @@ export default function StockPage() {
 
     for (const item of items) {
       if (item.brand) brands.add(item.brand);
-      if (item.model) models.add(item.model);
-      if (item.vehicle_year) years.add(item.vehicle_year);
+
+      // Modelos: só da marca selecionada (ou todos se nenhuma marca)
+      const matchesBrand = brandFilter === "all" || item.brand === brandFilter;
+      if (matchesBrand && item.model) models.add(item.model);
+
+      // Anos: só da marca+modelo selecionados
+      const matchesModel = modelFilter === "all" || item.model === modelFilter;
+      if (matchesBrand && matchesModel && item.vehicle_year) years.add(item.vehicle_year);
     }
 
     return {
       brands: [...brands].sort((a, b) => a.localeCompare(b, "pt-BR")),
       models: [...models].sort((a, b) => a.localeCompare(b, "pt-BR")),
-      years: [...years].sort((a, b) => b.localeCompare(a)), // Ano mais recente primeiro
+      years: [...years].sort((a, b) => b.localeCompare(a)),
     };
-  }, [items]);
+  }, [items, brandFilter, modelFilter]);
+
+  // Resetar modelo/ano quando a marca muda e o valor nao existe mais
+  useEffect(() => {
+    if (modelFilter !== "all" && !filterOptions.models.includes(modelFilter)) {
+      setModelFilter("all");
+    }
+  }, [filterOptions.models, modelFilter]);
+
+  useEffect(() => {
+    if (yearFilter !== "all" && !filterOptions.years.includes(yearFilter)) {
+      setYearFilter("all");
+    }
+  }, [filterOptions.years, yearFilter]);
 
   const hasActiveFilters = brandFilter !== "all" || modelFilter !== "all" || yearFilter !== "all" || statusFilter !== "all";
   const activeFilterCount = [brandFilter, modelFilter, yearFilter, statusFilter].filter(f => f !== "all").length;
