@@ -118,6 +118,8 @@ function pickDashboardRawData(rawData) {
     payload.status = rawData.status;
   }
 
+  // tags e context.flows: apenas o booleano que o frontend precisa
+  // para detectar buyer type (negócio vs pessoa). Evita enviar arrays inteiros.
   if (Array.isArray(rawData.tags)) {
     payload.tags = rawData.tags;
   }
@@ -126,13 +128,10 @@ function pickDashboardRawData(rawData) {
     payload.billing_info_status = rawData.billing_info_status;
   }
 
-  if (Array.isArray(rawData.payments)) {
-    payload.payments = rawData.payments
-      .map((payment) => ({
-        status: payment?.status ?? null,
-      }))
-      .filter((payment) => payment.status);
-  }
+  // payments: só precisa saber se tem approved — envia flag ao invés de array
+  const hasApprovedPayment = Array.isArray(rawData.payments) &&
+    rawData.payments.some((p) => p?.status === "approved");
+  payload.payments = hasApprovedPayment ? [{ status: "approved" }] : [];
 
   if (rawData.context && typeof rawData.context === "object") {
     payload.context = {
@@ -178,7 +177,6 @@ function pickDashboardRawData(rawData) {
         rawData.shipment_snapshot.shipping_option &&
         typeof rawData.shipment_snapshot.shipping_option === "object"
           ? {
-              name: rawData.shipment_snapshot.shipping_option.name ?? null,
               estimated_delivery_limit:
                 rawData.shipment_snapshot.shipping_option.estimated_delivery_limit ?? null,
               estimated_delivery_final:

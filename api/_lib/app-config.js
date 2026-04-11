@@ -16,10 +16,10 @@ export const ML_CLIENT_ID = String(process.env.ML_CLIENT_ID || "").trim();
 export const ML_CLIENT_SECRET = String(process.env.ML_CLIENT_SECRET || "").trim();
 
 export const APP_DEFAULT_ADMIN_USERNAME = String(
-  process.env.APP_DEFAULT_ADMIN_USERNAME || "admin.ecoferro"
+  process.env.APP_DEFAULT_ADMIN_USERNAME || ""
 ).trim();
 export const APP_DEFAULT_ADMIN_PASSWORD = String(
-  process.env.APP_DEFAULT_ADMIN_PASSWORD || "Ecoferro@2026"
+  process.env.APP_DEFAULT_ADMIN_PASSWORD || ""
 ).trim();
 export const APP_SESSION_COOKIE_NAME = String(
   process.env.APP_SESSION_COOKIE_NAME || "ecoferro_session"

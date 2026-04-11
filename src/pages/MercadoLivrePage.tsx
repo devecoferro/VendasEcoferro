@@ -1,7 +1,8 @@
-﻿import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
+﻿import { useMemo, useState, useRef, type Dispatch, type SetStateAction } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCallback } from "react";
 import { useEffect } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -502,6 +503,249 @@ function DepositFilterMenu({
         )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+// ─── Lista Virtualizada ───────────────────────────────────────────
+// Renderiza apenas os cards visíveis na tela (~5-8 de cada vez) ao invés
+// de todos os 300+. Reduz drasticamente o uso de memória e DOM nodes.
+function VirtualizedOrderList({
+  orders,
+  expandedOrders,
+  onToggleExpand,
+  onOpenDocuments,
+  onGenerateLabels,
+}: {
+  orders: MLOrder[];
+  expandedOrders: Record<string, boolean>;
+  onToggleExpand: (orderId: string) => void;
+  onOpenDocuments: (order: MLOrder) => void;
+  onGenerateLabels: (orders: MLOrder[]) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: orders.length,
+    getScrollElement: () => parentRef.current,
+    // Estimativa de altura: card colapsado ~320px, expandido ~420px
+    estimateSize: (index) => {
+      const order = orders[index];
+      const isExpanded = expandedOrders[order?.id] ?? true;
+      const itemCount = Math.max(1, (order?.items?.length || 1));
+      return isExpanded ? 320 + itemCount * 93 : 320;
+    },
+    overscan: 3,
+  });
+
+  // Recalcular tamanhos quando expandedOrders mudar
+  useEffect(() => {
+    virtualizer.measure();
+  }, [expandedOrders, virtualizer]);
+
+  return (
+    <div
+      ref={parentRef}
+      className="overflow-auto"
+      style={{ height: "calc(100vh - 380px)", minHeight: 400 }}
+    >
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const order = orders[virtualRow.index];
+          const deposit = getDepositInfo(order);
+          const shipment = getShipmentPresentation(order);
+          const buyerName =
+            order.buyer_name || order.buyer_nickname || "Comprador não identificado";
+          const buyerType = getBuyerType(order);
+          const eligibleForLabel = isOrderReadyToPrintLabel(order);
+          const orderItems = getDisplayOrderItems(order);
+          const packageProductsCount = orderItems.length;
+          const totalUnits = orderItems.reduce(
+            (total, item) => total + Math.max(0, item.quantity || 0),
+            0
+          );
+          const packageAmount = orderItems.reduce(
+            (total, item) => total + (item.amount ?? 0),
+            0
+          );
+          const isExpanded = expandedOrders[order.id] ?? true;
+
+          return (
+            <div
+              key={order.id}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <article className="mb-4 overflow-hidden rounded-[18px] border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+                <div className="border-b border-[#ededed] px-5 py-4">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                    <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
+                      <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
+                        ML
+                      </span>
+                      {deposit.hasDeposit && (
+                        <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a]">
+                          {deposit.displayLabel}
+                        </span>
+                      )}
+                      <span className="text-[15px] font-semibold text-[#6a6a6a]">
+                        #{order.sale_number}
+                      </span>
+                      <span>|</span>
+                      <span>{formatSaleMoment(order.sale_date)}</span>
+                    </div>
+                    <div className="flex flex-col gap-1 text-left xl:items-end xl:text-right">
+                      <div className="text-[15px] font-medium text-[#666666]">{buyerName}</div>
+                      {order.buyer_nickname && (
+                        <div className="text-[13px] text-[#8a8a8a]">{order.buyer_nickname}</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-5 py-6">
+                  <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[29px] font-semibold leading-none text-[#ff6d1b]">
+                        {isOrderInvoicePending(order)
+                          ? "Pronta para emitir NF-e de venda"
+                          : shipment.title}
+                      </p>
+                      <p className="mt-3 text-[15px] text-[#666666]">
+                        {isOrderInvoicePending(order)
+                          ? "Logo poderá imprimir a etiqueta de envio"
+                          : shipment.description}
+                      </p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Badge variant="outline">
+                          {buyerType === "business" ? "Negócio" : "Pessoa"}
+                        </Badge>
+                        {isOrderInvoicePending(order) && (
+                          <Badge variant="secondary">NF-e sem emitir</Badge>
+                        )}
+                        {isOrderUnderReview(order) && (
+                          <Badge variant="destructive">Em revisão</Badge>
+                        )}
+                        {isOrderForCollection(order) && (
+                          <Badge variant="outline">Para coleta</Badge>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button
+                        variant="outline"
+                        className="h-10 rounded-lg border-[#d9e7ff] text-[#2968c8] hover:bg-[#eef4ff]"
+                        onClick={() => onOpenDocuments(order)}
+                      >
+                        <FileText className="mr-2 h-4 w-4" />
+                        Documentos
+                      </Button>
+                      <Button
+                        variant={eligibleForLabel ? "default" : "outline"}
+                        className={`h-10 rounded-lg px-5 ${
+                          eligibleForLabel
+                            ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
+                            : "border-[#d8d8d8] text-[#8a8a8a]"
+                        }`}
+                        disabled={!eligibleForLabel}
+                        onClick={() => onGenerateLabels([order])}
+                      >
+                        {eligibleForLabel ? "Gerar etiqueta" : "Não elegível"}
+                        <ChevronsRight className="ml-2 h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-5 pb-5">
+                  <div className="overflow-hidden rounded-[14px] bg-[#f7f7f7]">
+                    <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 px-5 py-5 text-[15px] text-[#666666]">
+                      <button
+                        type="button"
+                        onClick={() => onToggleExpand(order.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[#3483fa] transition hover:bg-white"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="h-5 w-5" />
+                        ) : (
+                          <ChevronDown className="h-5 w-5" />
+                        )}
+                      </button>
+                      <div className="font-medium text-[#666666]">
+                        Pacote de {packageProductsCount} produto
+                        {packageProductsCount > 1 ? "s" : ""}
+                      </div>
+                      <div className="text-right">{formatCurrency(packageAmount)}</div>
+                      <div className="text-right">
+                        {totalUnits} unidade{totalUnits > 1 ? "s" : ""}
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="border-t border-[#ebebeb] bg-[#fafafa]">
+                        {orderItems.map((item, index) => {
+                          const itemImageUrl = item.product_image_url || order.product_image_url;
+                          const itemTitle = item.item_title || "Produto sem título";
+                          return (
+                            <div
+                              key={`${order.id}-${item.item_id || item.sku || index}`}
+                              className={`grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 px-5 py-5 ${
+                                index > 0 ? "border-t border-[#ededed]" : ""
+                              }`}
+                            >
+                              <div className="flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-full border border-[#ededed] bg-white">
+                                {itemImageUrl ? (
+                                  <img
+                                    src={itemImageUrl}
+                                    alt={itemTitle}
+                                    loading="lazy"
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  <span className="px-2 text-center text-[10px] font-semibold text-[#999999]">
+                                    {item.sku || getOrderImageFallback(order)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="truncate text-[16px] text-[#666666]">
+                                  {itemTitle}
+                                </div>
+                              </div>
+                              <div className="text-right text-[16px] text-[#666666]">
+                                {formatCurrency(item.amount)}
+                              </div>
+                              <div className="text-right text-[16px] text-[#666666]">
+                                {item.quantity} unidade{item.quantity > 1 ? "s" : ""}
+                              </div>
+                              <div className="text-right text-[16px] text-[#8a8a8a]">
+                                {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </article>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -2118,190 +2362,13 @@ export default function MercadoLivrePage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {filteredOperationalOrders.map((order) => {
-              const deposit = getDepositInfo(order);
-              const shipment = getShipmentPresentation(order);
-              const buyerName =
-                order.buyer_name || order.buyer_nickname || "Comprador não identificado";
-              const buyerType = getBuyerType(order);
-              const eligibleForLabel = isOrderReadyToPrintLabel(order);
-              const orderItems = getDisplayOrderItems(order);
-              const packageProductsCount = orderItems.length;
-              const totalUnits = orderItems.reduce(
-                (total, item) => total + Math.max(0, item.quantity || 0),
-                0
-              );
-              const packageAmount = orderItems.reduce(
-                (total, item) => total + (item.amount ?? 0),
-                0
-              );
-              const isExpanded = expandedOrders[order.id] ?? true;
-
-              return (
-                <article
-                  key={order.id}
-                  className="overflow-hidden rounded-[18px] border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
-                >
-                  <div className="border-b border-[#ededed] px-5 py-4">
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                      <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
-                        <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
-                          ML
-                        </span>
-                        {deposit.hasDeposit && (
-                          <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a]">
-                            {deposit.displayLabel}
-                          </span>
-                        )}
-                        <span className="text-[15px] font-semibold text-[#6a6a6a]">
-                          #{order.sale_number}
-                        </span>
-                        <span>|</span>
-                        <span>{formatSaleMoment(order.sale_date)}</span>
-                      </div>
-
-                      <div className="flex flex-col gap-1 text-left xl:items-end xl:text-right">
-                        <div className="text-[15px] font-medium text-[#666666]">{buyerName}</div>
-                        {order.buyer_nickname && (
-                          <div className="text-[13px] text-[#8a8a8a]">{order.buyer_nickname}</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="px-5 py-6">
-                    <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[29px] font-semibold leading-none text-[#ff6d1b]">
-                          {isOrderInvoicePending(order)
-                            ? "Pronta para emitir NF-e de venda"
-                            : shipment.title}
-                        </p>
-                        <p className="mt-3 text-[15px] text-[#666666]">
-                          {isOrderInvoicePending(order)
-                            ? "Logo poderá imprimir a etiqueta de envio"
-                            : shipment.description}
-                        </p>
-
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          <Badge variant="outline">
-                            {buyerType === "business" ? "Negócio" : "Pessoa"}
-                          </Badge>
-                          {isOrderInvoicePending(order) && (
-                            <Badge variant="secondary">NF-e sem emitir</Badge>
-                          )}
-                          {isOrderUnderReview(order) && (
-                            <Badge variant="destructive">Em revisão</Badge>
-                          )}
-                          {isOrderForCollection(order) && (
-                            <Badge variant="outline">Para coleta</Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-3">
-                        <Button
-                          variant="outline"
-                          className="h-10 rounded-lg border-[#d9e7ff] text-[#2968c8] hover:bg-[#eef4ff]"
-                          onClick={() => handleOpenDocumentsDialog(order)}
-                        >
-                          <FileText className="mr-2 h-4 w-4" />
-                          Documentos
-                        </Button>
-                        <Button
-                          variant={eligibleForLabel ? "default" : "outline"}
-                          className={`h-10 rounded-lg px-5 ${
-                            eligibleForLabel
-                              ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
-                              : "border-[#d8d8d8] text-[#8a8a8a]"
-                          }`}
-                          disabled={!eligibleForLabel}
-                          onClick={() => handleGenerateLabels([order])}
-                        >
-                          {eligibleForLabel ? "Gerar etiqueta" : "Não elegível"}
-                          <ChevronsRight className="ml-2 h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="px-5 pb-5">
-                    <div className="overflow-hidden rounded-[14px] bg-[#f7f7f7]">
-                      <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 px-5 py-5 text-[15px] text-[#666666]">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleExpandedOrder(order.id)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[#3483fa] transition hover:bg-white"
-                          aria-label={isExpanded ? "Recolher pacote" : "Expandir pacote"}
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="h-5 w-5" />
-                          ) : (
-                            <ChevronDown className="h-5 w-5" />
-                          )}
-                        </button>
-                        <div className="font-medium text-[#666666]">
-                          Pacote de {packageProductsCount} produto
-                          {packageProductsCount > 1 ? "s" : ""}
-                        </div>
-                        <div className="text-right">{formatCurrency(packageAmount)}</div>
-                        <div className="text-right">
-                          {totalUnits} unidade{totalUnits > 1 ? "s" : ""}
-                        </div>
-                      </div>
-
-                      {isExpanded && (
-                        <div className="border-t border-[#ebebeb] bg-[#fafafa]">
-                          {orderItems.map((item, index) => {
-                            const itemImageUrl = item.product_image_url || order.product_image_url;
-                            const itemTitle = item.item_title || "Produto sem título";
-
-                            return (
-                              <div
-                                key={`${order.id}-${item.item_id || item.sku || index}`}
-                                className={`grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 px-5 py-5 ${
-                                  index > 0 ? "border-t border-[#ededed]" : ""
-                                }`}
-                              >
-                                <div className="flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-full border border-[#ededed] bg-white">
-                                  {itemImageUrl ? (
-                                    <img
-                                      src={itemImageUrl}
-                                      alt={itemTitle}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <span className="px-2 text-center text-[10px] font-semibold text-[#999999]">
-                                      {item.sku || getOrderImageFallback(order)}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div className="min-w-0">
-                                  <div className="truncate text-[16px] text-[#666666]">
-                                    {itemTitle}
-                                  </div>
-                                </div>
-
-                                <div className="text-right text-[16px] text-[#666666]">
-                                  {formatCurrency(item.amount)}
-                                </div>
-                                <div className="text-right text-[16px] text-[#666666]">
-                                  {item.quantity} unidade{item.quantity > 1 ? "s" : ""}
-                                </div>
-                                <div className="text-right text-[16px] text-[#8a8a8a]">
-                                  {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
+            <VirtualizedOrderList
+              orders={filteredOperationalOrders}
+              expandedOrders={expandedOrders}
+              onToggleExpand={handleToggleExpandedOrder}
+              onOpenDocuments={handleOpenDocumentsDialog}
+              onGenerateLabels={handleGenerateLabels}
+            />
 
             {ordersPagination.has_more && (
               <div className="flex justify-center pt-2">

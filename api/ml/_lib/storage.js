@@ -1,5 +1,54 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 import { db } from "./db.js";
+
+// ─── Token Encryption ──────────────────────────────────────────────
+// Criptografa access_token e refresh_token antes de salvar no SQLite.
+// Usa AES-256-GCM com chave derivada de ML_CLIENT_SECRET (env var).
+// Se ML_CLIENT_SECRET não estiver configurado, tokens são salvos em texto
+// puro para compatibilidade com ambientes de desenvolvimento.
+const TOKEN_ENCRYPTION_ALGO = "aes-256-gcm";
+
+function getEncryptionKey() {
+  const secret = process.env.ML_CLIENT_SECRET;
+  if (!secret) return null;
+  // Deriva chave de 32 bytes a partir do client_secret
+  return createHash("sha256").update(secret).digest();
+}
+
+function encryptToken(plaintext) {
+  if (!plaintext) return null;
+  const key = getEncryptionKey();
+  if (!key) return plaintext; // Sem chave = sem criptografia (dev mode)
+
+  const iv = randomBytes(12);
+  const cipher = createCipheriv(TOKEN_ENCRYPTION_ALGO, key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  // Formato: "enc:iv_hex:tag_hex:ciphertext_hex"
+  return `enc:${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted.toString("hex")}`;
+}
+
+function decryptToken(stored) {
+  if (!stored) return null;
+  if (!stored.startsWith("enc:")) return stored; // Token antigo em texto puro
+
+  const key = getEncryptionKey();
+  if (!key) return stored; // Sem chave = retorna como está
+
+  try {
+    const [, ivHex, tagHex, ciphertextHex] = stored.split(":");
+    const iv = Buffer.from(ivHex, "hex");
+    const authTag = Buffer.from(tagHex, "hex");
+    const ciphertext = Buffer.from(ciphertextHex, "hex");
+    const decipher = createDecipheriv(TOKEN_ENCRYPTION_ALGO, key, iv);
+    decipher.setAuthTag(authTag);
+    return decipher.update(ciphertext) + decipher.final("utf8");
+  } catch {
+    // Se falhar a descriptografia, retorna o valor original
+    // (pode ser um token antigo não criptografado)
+    return stored;
+  }
+}
 
 const OPERATIONAL_ORDER_STATUSES = [
   "confirmed",
@@ -43,8 +92,8 @@ function mapConnection(row) {
     id: row.id,
     seller_id: row.seller_id,
     seller_nickname: row.seller_nickname,
-    access_token: row.access_token,
-    refresh_token: row.refresh_token,
+    access_token: decryptToken(row.access_token),
+    refresh_token: decryptToken(row.refresh_token),
     token_expires_at: row.token_expires_at,
     last_sync_at: row.last_sync_at,
     created_at: row.created_at,
@@ -250,8 +299,8 @@ export function upsertConnection(connection) {
     id,
     seller_id: String(connection.seller_id),
     seller_nickname: connection.seller_nickname || null,
-    access_token: connection.access_token,
-    refresh_token: connection.refresh_token || null,
+    access_token: encryptToken(connection.access_token),
+    refresh_token: encryptToken(connection.refresh_token) || null,
     token_expires_at: connection.token_expires_at || null,
     last_sync_at: connection.last_sync_at || existing?.last_sync_at || null,
     created_at: createdAt,
@@ -274,8 +323,8 @@ export function updateConnectionTokens(connectionId, tokenData) {
     `
   ).run({
     id: connectionId,
-    access_token: tokenData.access_token,
-    refresh_token: tokenData.refresh_token || null,
+    access_token: encryptToken(tokenData.access_token),
+    refresh_token: encryptToken(tokenData.refresh_token) || null,
     token_expires_at: tokenData.token_expires_at || null,
     updated_at: nowIso(),
   });
