@@ -40,15 +40,15 @@ function cleanOldBackups() {
   }
 }
 
-export function runBackup() {
+export async function runBackup() {
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
     const filename = `ecoferro_${formatTimestamp()}.db`;
     const backupPath = path.join(BACKUP_DIR, filename);
 
-    // Usa a API nativa do better-sqlite3 — seguro mesmo com WAL mode
-    db.backup(backupPath);
+    // better-sqlite3 .backup() retorna uma Promise — aguarda conclusao
+    await db.backup(backupPath);
 
     const stats = fs.statSync(backupPath);
     const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
@@ -70,9 +70,9 @@ export function startAutoBackup() {
   log.info("Auto-backup iniciado", { interval_hours: BACKUP_INTERVAL_MS / 3600000 });
 
   // Primeiro backup 1 minuto apos o boot
-  setTimeout(() => {
-    runBackup();
-    backupTimer = setInterval(runBackup, BACKUP_INTERVAL_MS);
+  setTimeout(async () => {
+    await runBackup();
+    backupTimer = setInterval(() => runBackup(), BACKUP_INTERVAL_MS);
   }, 60_000);
 }
 
