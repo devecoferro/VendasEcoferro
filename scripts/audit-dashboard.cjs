@@ -78,11 +78,7 @@ function classify(o, todayKey) {
     if (SHIPPED_TRANSIT.has(sub)) return "in_transit";
     if (sub === "none" || sub === "waiting_for_withdrawal" || sub === "claimed_me") {
       const shipKey = o.date_shipped ? o.date_shipped.substring(0, 10) : null;
-      const shippedAge = shipKey ? Math.round((new Date(todayKey+"T00:00:00") - new Date(shipKey+"T00:00:00")) / 86400000) : 999;
-      if (shippedAge <= 0) {
-        return (sla && sla <= todayKey) ? "today" : "upcoming";
-      }
-      if (shippedAge === 1 && sla && sla <= todayKey) return "today";
+      if (shipKey && shipKey >= todayKey) return "upcoming";
       return null;
     }
     return null;
