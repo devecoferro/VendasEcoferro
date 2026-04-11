@@ -1,6 +1,8 @@
 // Sincroniza produtos do ML (SQLite local) → Supabase (ecoferro.com.br)
 import { createClient } from "@supabase/supabase-js";
 import { db } from "../_lib/db.js";
+import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
+import { getConnectionById } from "./_lib/storage.js";
 import createLogger from "../_lib/logger.js";
 
 const log = createLogger("sync-to-website");
@@ -109,44 +111,133 @@ async function getOrCreateBrand(supabase, brandName) {
 // Thumbnails do ML usam sufixo -I.jpg (tiny ~70px). Trocamos para
 // -O.jpg (large ~500px) que é a melhor qualidade via URL direta.
 function upgradeImageUrl(url) {
+  if (!url) return url;
   return url
     .replace("http://", "https://")
-    .replace(/-I\.jpg$/i, "-O.jpg")
-    .replace(/-D\.jpg$/i, "-O.jpg")
-    .replace(/-C\.jpg$/i, "-O.jpg");
+    .replace(/-[IDCF]\.jpg$/i, "-O.jpg");
 }
 
-// ── Sincronizar imagens ──────────────────────────────────────────
-async function syncImages(supabase, productId, thumbnailUrl) {
-  if (!thumbnailUrl) return;
+// ── Buscar todas as fotos e vídeo de um item na API do ML ───────
+async function fetchItemMedia(accessToken, itemId) {
+  if (!accessToken || !itemId) return { pictures: [], videoUrl: null };
 
-  const url = upgradeImageUrl(thumbnailUrl);
+  try {
+    const resp = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!resp.ok) return { pictures: [], videoUrl: null };
 
-  // Verificar se já existe
-  const { data: existing } = await supabase
+    const data = await resp.json();
+
+    // Extrair todas as imagens em alta qualidade
+    const pictures = (data.pictures || [])
+      .filter((p) => p?.secure_url || p?.url)
+      .map((p) => upgradeImageUrl(p.secure_url || p.url));
+
+    // Extrair vídeo se existir
+    let videoUrl = null;
+    if (data.video_id) {
+      videoUrl = `https://www.youtube.com/embed/${data.video_id}`;
+    }
+
+    return { pictures, videoUrl };
+  } catch {
+    return { pictures: [], videoUrl: null };
+  }
+}
+
+// ── Sincronizar TODAS as imagens de um produto ──────────────────
+async function syncAllImages(supabase, productId, pictures) {
+  if (!pictures || !pictures.length) return;
+
+  // Buscar imagens existentes do produto
+  const { data: existingImgs } = await supabase
     .from("product_images")
-    .select("id")
-    .eq("product_id", productId)
-    .eq("url", url)
-    .limit(1)
-    .maybeSingle();
+    .select("id, url")
+    .eq("product_id", productId);
 
-  if (existing) return;
+  const existingUrls = new Set((existingImgs || []).map((i) => i.url));
 
-  // Verificar se já tem alguma imagem
-  const { data: anyImage } = await supabase
-    .from("product_images")
-    .select("id")
-    .eq("product_id", productId)
-    .limit(1)
-    .maybeSingle();
+  for (let i = 0; i < pictures.length; i++) {
+    const url = pictures[i];
+    if (existingUrls.has(url)) continue;
 
-  await supabase.from("product_images").insert({
-    product_id: productId,
-    url,
-    is_primary: !anyImage,
-    sort_order: anyImage ? 1 : 0,
-  });
+    await supabase.from("product_images").insert({
+      product_id: productId,
+      url,
+      is_primary: i === 0 && (!existingImgs || existingImgs.length === 0),
+      sort_order: i,
+    });
+  }
+
+  // Se a imagem primária atual não é mais a primeira, corrigir
+  if (existingImgs && existingImgs.length === 0 && pictures.length > 0) {
+    await supabase
+      .from("product_images")
+      .update({ is_primary: true, sort_order: 0 })
+      .eq("product_id", productId)
+      .eq("url", pictures[0]);
+  }
+}
+
+// ── Auto-categorizar produto baseado no título ──────────────────
+const CATEGORY_RULES = [
+  { pattern: /^suport.*placa|^suporte.*placa/i, parentId: "a0000000-0000-0000-0000-000000000002",
+    sub: [
+      { pattern: /articulad|art\./i, id: "b0000000-0000-0000-0000-000000000004" },
+      { pattern: /fixo/i, id: "b0000000-0000-0000-0000-000000000003" },
+    ]},
+  { pattern: /^eliminador|^elimiador/i, parentId: "a0000000-0000-0000-0000-000000000001",
+    sub: [
+      { pattern: /articulad/i, id: "b0000000-0000-0000-0000-000000000002" },
+      { pattern: /fixo/i, id: "b0000000-0000-0000-0000-000000000001" },
+    ]},
+  { pattern: /protetor.*radiador|tela.*protetor.*radiador/i, parentId: "a0000000-0000-0000-0000-000000000003" },
+  { pattern: /^slider|protetor.*carenag/i, parentId: "a0000000-0000-0000-0000-000000000004",
+    sub: [
+      { pattern: /escapamento/i, id: "b0000000-0000-0000-0000-000000000006" },
+      { pattern: /carenag/i, id: "b0000000-0000-0000-0000-000000000005" },
+    ]},
+  { pattern: /protetor.*carter|grade protetora.*carter/i, parentId: "a0000000-0000-0000-0000-000000000005" },
+  { pattern: /^bolha|parabrisa/i, parentId: "a0000000-0000-0000-0000-000000000006" },
+  { pattern: /setas? pisca|piscas? led|^adaptador.*pisca|^adaptador.*seta|^0[24] setas|^suporte.*setas|^suporte.*pisca/i,
+    parentId: "a0000000-0000-0000-0000-000000000007" },
+  { pattern: /^lanterna|lanterna integrada|lente para lanterna/i, parentId: "b0000000-0000-0000-0000-000000000007" },
+  { pattern: /luz de placa|parafuso.*luz.*placa|^par parafuso luz/i, parentId: "b0000000-0000-0000-0000-000000000008" },
+];
+
+function autoCategorizeName(title) {
+  const name = (title || "").trim();
+  for (const rule of CATEGORY_RULES) {
+    if (rule.pattern.test(name)) {
+      // Tentar subcategoria
+      if (rule.sub) {
+        for (const sub of rule.sub) {
+          if (sub.pattern.test(name)) return sub.id;
+        }
+      }
+      return rule.parentId;
+    }
+  }
+  return "a0000000-0000-0000-0000-000000000009"; // Acessórios
+}
+
+// ── Obter token de acesso do ML (para buscar fotos) ─────────────
+async function getMLAccessToken() {
+  try {
+    const connections = db
+      .prepare("SELECT id FROM ml_connections WHERE is_active = 1 LIMIT 1")
+      .all();
+    if (!connections.length) return null;
+
+    const conn = getConnectionById(connections[0].id);
+    if (!conn) return null;
+
+    const validConn = await ensureValidAccessToken(conn);
+    return validConn.access_token || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Handler principal ────────────────────────────────────────────
@@ -161,6 +252,14 @@ export async function handleSyncToWebsite(req, res) {
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   try {
+    // 0. Obter token ML para buscar todas as fotos
+    const accessToken = await getMLAccessToken();
+    if (accessToken) {
+      log.info("Token ML obtido - imagens completas serao sincronizadas");
+    } else {
+      log.warn("Sem token ML - apenas thumbnail sera sincronizado");
+    }
+
     // 1. Ler todos os itens ativos do ML stock local
     const mlItems = db
       .prepare(`
@@ -196,12 +295,19 @@ export async function handleSyncToWebsite(req, res) {
     let created = 0;
     let updated = 0;
     let errors = 0;
+    let imagesAdded = 0;
 
     for (const item of mlItems) {
       try {
         // Resolver marca (normaliza para evitar lixo no catálogo)
         const cleanBrand = normalizeBrand(item.brand, item.title);
         const brandId = await getOrCreateBrand(supabase, cleanBrand);
+
+        // Auto-categorizar produto baseado no título
+        const categoryId = autoCategorizeName(item.title);
+
+        // Buscar todas as fotos via API do ML
+        const { pictures, videoUrl } = await fetchItemMedia(accessToken, item.item_id);
 
         // Dados do produto
         const productData = {
@@ -213,23 +319,32 @@ export async function handleSyncToWebsite(req, res) {
           sku: item.sku || null,
           is_active: true,
           brand_id: brandId,
+          category_id: categoryId,
         };
+
+        if (videoUrl) {
+          productData.video_url = videoUrl;
+        }
 
         const existing = existingByMlId.get(item.item_id);
 
         if (existing) {
-          // UPDATE: preço, estoque, marca
+          // UPDATE: preço, estoque, marca, categoria, vídeo
+          const updateFields = {
+            price: productData.price,
+            stock: productData.stock,
+            ml_id: productData.ml_id,
+            ml_permalink: productData.ml_permalink,
+            sku: productData.sku,
+            brand_id: productData.brand_id,
+            category_id: productData.category_id,
+            is_active: true,
+          };
+          if (videoUrl) updateFields.video_url = videoUrl;
+
           const { error: updateErr } = await supabase
             .from("products")
-            .update({
-              price: productData.price,
-              stock: productData.stock,
-              ml_id: productData.ml_id,
-              ml_permalink: productData.ml_permalink,
-              sku: productData.sku,
-              brand_id: productData.brand_id,
-              is_active: true,
-            })
+            .update(updateFields)
             .eq("id", existing.id);
 
           if (updateErr) {
@@ -238,7 +353,14 @@ export async function handleSyncToWebsite(req, res) {
             continue;
           }
 
-          await syncImages(supabase, existing.id, item.thumbnail);
+          // Sincronizar TODAS as imagens
+          if (pictures.length > 0) {
+            await syncAllImages(supabase, existing.id, pictures);
+            imagesAdded += pictures.length;
+          } else if (item.thumbnail) {
+            await syncAllImages(supabase, existing.id, [upgradeImageUrl(item.thumbnail)]);
+          }
+
           updated++;
         } else {
           // INSERT: novo produto
@@ -265,7 +387,13 @@ export async function handleSyncToWebsite(req, res) {
           }
 
           if (createdProduct) {
-            await syncImages(supabase, createdProduct.id, item.thumbnail);
+            // Sincronizar TODAS as imagens
+            if (pictures.length > 0) {
+              await syncAllImages(supabase, createdProduct.id, pictures);
+              imagesAdded += pictures.length;
+            } else if (item.thumbnail) {
+              await syncAllImages(supabase, createdProduct.id, [upgradeImageUrl(item.thumbnail)]);
+            }
 
             // Mapeamento externo
             await supabase.from("product_external_mappings").upsert(
@@ -290,7 +418,7 @@ export async function handleSyncToWebsite(req, res) {
       }
     }
 
-    const summary = { created, updated, errors, total: mlItems.length };
+    const summary = { created, updated, errors, imagesAdded, total: mlItems.length };
     log.info(`Sync concluido: ${JSON.stringify(summary)}`);
 
     return res.json({ success: true, ...summary });
