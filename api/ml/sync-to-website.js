@@ -105,11 +105,22 @@ async function getOrCreateBrand(supabase, brandName) {
   return null;
 }
 
+// ── Melhorar URL da imagem ML ────────────────────────────────────
+// Thumbnails do ML usam sufixo -I.jpg (tiny ~70px). Trocamos para
+// -O.jpg (large ~500px) que é a melhor qualidade via URL direta.
+function upgradeImageUrl(url) {
+  return url
+    .replace("http://", "https://")
+    .replace(/-I\.jpg$/i, "-O.jpg")
+    .replace(/-D\.jpg$/i, "-O.jpg")
+    .replace(/-C\.jpg$/i, "-O.jpg");
+}
+
 // ── Sincronizar imagens ──────────────────────────────────────────
 async function syncImages(supabase, productId, thumbnailUrl) {
   if (!thumbnailUrl) return;
 
-  const url = thumbnailUrl.replace("http://", "https://");
+  const url = upgradeImageUrl(thumbnailUrl);
 
   // Verificar se já existe
   const { data: existing } = await supabase
