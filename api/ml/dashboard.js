@@ -454,12 +454,21 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   // Fulfillment: apenas ready_to_ship e handling são operacionais.
   // paid/pending/confirmed → ML está processando, vendedor não tem ação.
   if (status === "ready_to_ship" || status === "handling") {
-    // Só "in_warehouse" e "ready_to_pack" são "Envios de hoje" no fulfillment.
-    // Para o vendedor, estes são os pedidos que ML vai despachar hoje.
-    // A data de operação NÃO é usada para "today" no fulfillment porque
-    // o ML controla quando despacha — o vendedor não tem ação a tomar.
-    if (["in_warehouse", "ready_to_pack"].includes(substatus)) {
+    // "ready_to_pack" = ML está ativamente preparando o pedido → sempre "hoje"
+    if (substatus === "ready_to_pack") {
       return "today";
+    }
+
+    // "in_warehouse" = pedido está no armazém ML aguardando processamento.
+    // No ML Seller Center, só aparece em "Envios de hoje" se o SLA é hoje
+    // ou já passou. Caso contrário, vai para "Próximos dias".
+    if (substatus === "in_warehouse") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
+      return "upcoming";
     }
 
     return "upcoming";
