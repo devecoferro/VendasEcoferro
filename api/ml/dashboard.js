@@ -401,16 +401,24 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Empacotado: pronto para envio. Operacionalmente é HOJE — o vendedor
-    // pode/deve enviar agora, independente do SLA ser amanhã.
+    // Empacotado: pronto para envio. Usa SLA para decidir hoje/próximos.
+    // ML Seller Center coloca "packed" em "Envios de hoje" somente se SLA é hoje.
     if (substatus === "packed") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
       return "today";
     }
 
-    // invoice_pending e outros substatuses operacionais: são ação de HOJE
-    // porque o vendedor precisa resolver (gerar NF-e, embalar, etc.)
-    // independente do SLA futuro. Se está ready_to_ship, é acionável agora.
-    return "today";
+    // invoice_pending e outros substatuses: usar SLA para classificar.
+    // ML mostra esses em "Próximos dias" quando SLA é futuro.
+    if (dates.operationalDueDateKey) {
+      return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
+    }
+
+    return "upcoming";
   }
 
   // "shipped" = transportador já pegou o pacote. Para operação do vendedor,
@@ -461,13 +469,27 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // "packed" e "in_warehouse" = pedido no CD do ML pronto para despacho.
-    // Para operação do vendedor: é "hoje" porque não requer ação adicional.
-    if (substatus === "packed" || substatus === "in_warehouse") {
+    // "packed" = ML já empacotou. Usa SLA.
+    if (substatus === "packed") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
       return "today";
     }
 
-    return "today";
+    // "in_warehouse" = pedido no armazém ML aguardando. Usa SLA.
+    if (substatus === "in_warehouse") {
+      if (dates.operationalDueDateKey) {
+        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+          ? "today"
+          : "upcoming";
+      }
+      return "upcoming";
+    }
+
+    return "upcoming";
   }
 
   // Fulfillment: "shipped" = já saiu do CD. Sempre em trânsito.
@@ -1082,14 +1104,17 @@ export async function buildDashboardPayload(options = {}) {
   //   - "ready_to_ship": stale depois de 30 dias
   //   - "shipped"/"in_transit": stale depois de 45 dias
   //   - "delivered"/"cancelled"/"not_delivered"/"returned": sem limite (status final)
+  // Thresholds mais agressivos para shipped/in_transit:
+  // Entrega ML típica = 2-7 dias. Se pedido ainda consta como "shipped"
+  // após 10 dias, o sync incremental não pegou a atualização para "delivered".
   const STALE_THRESHOLDS_DAYS = {
     paid: 14,
     pending: 14,
     confirmed: 14,
     handling: 14,
     ready_to_ship: 30,
-    shipped: 45,
-    in_transit: 45,
+    shipped: 10,
+    in_transit: 10,
   };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
