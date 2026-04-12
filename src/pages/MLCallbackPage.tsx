@@ -37,13 +37,12 @@ export default function MLCallbackPage() {
       return;
     }
 
-    if (!oauthSession) {
-      setStatus("error");
-      setMessage("Sessão de autorização expirada. Inicie a conexão novamente.");
-      return;
-    }
+    // Se não há sessão OAuth armazenada (ex: link direto), usa redirect_uri padrão
+    // e prossegue sem code_verifier (o backend aceita sem PKCE).
+    const redirectUri = oauthSession?.redirectUri || `${window.location.origin}/ml-callback`;
+    const codeVerifier = oauthSession?.codeVerifier || undefined;
 
-    if (state && oauthSession.state !== state) {
+    if (state && oauthSession && oauthSession.state !== state) {
       clearStoredMLOAuthSession();
       setStatus("error");
       setMessage("Estado de segurança inválido. Tente novamente.");
@@ -52,8 +51,8 @@ export default function MLCallbackPage() {
 
     exchangeMLCode({
       code,
-      redirectUri: oauthSession.redirectUri,
-      codeVerifier: oauthSession.codeVerifier,
+      redirectUri,
+      codeVerifier,
     })
       .then(() => {
         clearStoredMLOAuthSession();

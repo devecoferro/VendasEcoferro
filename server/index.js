@@ -17,7 +17,7 @@ import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlOrdersHandler from "../api/ml/orders.js";
 import mlStoresHandler from "../api/ml/stores.js";
-import mlSyncHandler, { runMercadoLivreSync } from "../api/ml/sync.js";
+import mlSyncHandler, { runMercadoLivreSync, runActiveOrdersRefresh } from "../api/ml/sync.js";
 import mlSyncEventsHandler from "../api/ml/sync-events.js";
 import mlNotificationsHandler from "../api/ml/notifications.js";
 import mlReturnsHandler from "../api/ml/returns.js";
@@ -223,8 +223,11 @@ app.use((req, res) => {
 // para que atualizem em tempo real (sem polling pesado no frontend).
 // Usa updated_from para fazer sync incremental (apenas pedidos alterados).
 const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
+const ACTIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 let autoSyncRunning = false;
+let activeRefreshRunning = false;
 let autoSyncIntervalId = null;
+let activeRefreshIntervalId = null;
 
 async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
@@ -248,6 +251,29 @@ async function autoSyncOrders() {
   }
 }
 
+// ─── Active Orders Refresh ─────────────────────────────────────────
+// A cada 5 minutos, re-busca TODOS os pedidos com shipping status ativo
+// (ready_to_ship, shipped) diretamente da API ML. Isso captura transicoes
+// de status que o sync incremental (por date_last_updated) nao pega.
+// Exemplo: pedido shipped→delivered que nao aparece no incremental sync
+// porque o ML nao atualiza date_last_updated do ponto de vista do seller.
+async function autoRefreshActiveOrders() {
+  if (activeRefreshRunning || autoSyncRunning) return;
+
+  try {
+    const connection = getLatestConnection();
+    if (!connection?.id) return;
+
+    activeRefreshRunning = true;
+    const result = await runActiveOrdersRefresh({ connectionId: connection.id });
+    log.info(`Active refresh concluido: ${result.totalRefreshed} registros atualizados`);
+  } catch (error) {
+    log.error("Active refresh falhou", error);
+  } finally {
+    activeRefreshRunning = false;
+  }
+}
+
 // ─── Graceful Shutdown ──────────────────────────────────────────────
 // Quando o container Docker recebe SIGTERM (restart/stop), o servidor:
 // 1. Para de aceitar novas conexoes
@@ -263,16 +289,20 @@ async function gracefulShutdown(signal) {
 
   log.info(`Shutdown iniciado (${signal})`);
 
-  // Para auto-sync e auto-backup
+  // Para auto-sync, active refresh e auto-backup
   if (autoSyncIntervalId) {
     clearInterval(autoSyncIntervalId);
     autoSyncIntervalId = null;
+  }
+  if (activeRefreshIntervalId) {
+    clearInterval(activeRefreshIntervalId);
+    activeRefreshIntervalId = null;
   }
   stopAutoBackup();
 
   // Aguarda sync atual terminar (max 15s)
   const shutdownStart = Date.now();
-  while (autoSyncRunning && Date.now() - shutdownStart < 15000) {
+  while ((autoSyncRunning || activeRefreshRunning) && Date.now() - shutdownStart < 15000) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
@@ -319,6 +349,12 @@ app.listen(APP_PORT, APP_HOST, () => {
     autoSyncIntervalId = setInterval(autoSyncOrders, AUTO_SYNC_INTERVAL_MS);
     // Primeira execucao imediata
     autoSyncOrders();
+
+    // Active refresh: re-busca pedidos ativos a cada 5 min para manter dados frescos
+    log.info(`Active refresh iniciado (intervalo: ${ACTIVE_REFRESH_INTERVAL_MS / 1000}s)`);
+    activeRefreshIntervalId = setInterval(autoRefreshActiveOrders, ACTIVE_REFRESH_INTERVAL_MS);
+    // Primeiro active refresh 60s apos boot (depois do primeiro incremental sync)
+    setTimeout(autoRefreshActiveOrders, 60_000);
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)

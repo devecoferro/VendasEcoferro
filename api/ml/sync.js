@@ -318,6 +318,7 @@ function buildOrdersSearchUrl({
   dateFrom,
   dateTo,
   statusFilter,
+  shippingStatusFilter,
   updatedFrom,
   offset,
 }) {
@@ -340,6 +341,10 @@ function buildOrdersSearchUrl({
     params.set("order.status", statusFilter);
   }
 
+  if (shippingStatusFilter) {
+    params.set("shipping.status", shippingStatusFilter);
+  }
+
   if (updatedFrom) {
     params.set("order.date_last_updated.from", updatedFrom);
   }
@@ -356,8 +361,11 @@ export async function runMercadoLivreSync({
   dateFrom,
   dateTo,
   statusFilter,
+  shippingStatusFilter,
   updatedFrom,
   pageLimit,
+  skipMirrorSync,
+  skipLastSyncUpdate,
 }) {
   const effectivePageLimit = Number.isFinite(Number(pageLimit))
     ? Math.max(1, Math.min(Number(pageLimit), ABSOLUTE_MAX_PAGES))
@@ -407,6 +415,7 @@ export async function runMercadoLivreSync({
       dateFrom,
       dateTo,
       statusFilter,
+      shippingStatusFilter,
       updatedFrom,
       offset,
     });
@@ -574,6 +583,23 @@ export async function runMercadoLivreSync({
     warnings: [],
   };
 
+  if (skipMirrorSync) {
+    // Active refresh mode: skip mirror sync and last_sync_at update
+    invalidateDashboardCache();
+    invalidateOrdersCache();
+    invalidatePrivateSellerCenterComparisonCache();
+
+    return {
+      success: true,
+      totalFetched,
+      synced: totalSynced,
+      pages: pageCount,
+      paging,
+      mirror,
+      connection_last_sync_at: connection.last_sync_at || null,
+    };
+  }
+
   const shouldForceMirrorSync = !updatedFrom;
   const shouldRunPacksSync = shouldRunMirrorEntitySync(connection, "packs", {
     force: shouldForceMirrorSync,
@@ -664,7 +690,9 @@ export async function runMercadoLivreSync({
     };
   }
 
-  const updatedConnection = updateConnectionLastSync(connection.id);
+  const updatedConnection = skipLastSyncUpdate
+    ? connection
+    : updateConnectionLastSync(connection.id);
   invalidateDashboardCache();
   invalidateOrdersCache();
   invalidatePrivateSellerCenterComparisonCache();
@@ -685,6 +713,45 @@ export async function runMercadoLivreSync({
     mirror,
     connection_last_sync_at: updatedConnection?.last_sync_at || null,
   };
+}
+
+// ─── Active Orders Refresh ────────────────────────────────────────────────
+// Re-fetches ALL orders in active shipping statuses (ready_to_ship, shipped)
+// directly from the ML API. This catches status transitions that incremental
+// sync misses (e.g. shipped→delivered, ready_to_ship→shipped).
+//
+// Runs on a separate timer (every 5 min) from the incremental sync (30s).
+// Skips mirror sync and last_sync_at update to avoid interfering with
+// the incremental sync cycle.
+//
+// After this runs, local DB has current data for all active orders,
+// making local classification match ML Seller Center exactly.
+const ACTIVE_REFRESH_SHIPPING_STATUSES = [
+  { status: "ready_to_ship", maxPages: 15 },
+  { status: "shipped", maxPages: 5 },
+];
+
+export async function runActiveOrdersRefresh({ connectionId }) {
+  let totalRefreshed = 0;
+
+  for (const { status, maxPages } of ACTIVE_REFRESH_SHIPPING_STATUSES) {
+    try {
+      const result = await runMercadoLivreSync({
+        connectionId,
+        shippingStatusFilter: status,
+        pageLimit: maxPages,
+        skipMirrorSync: true,
+        skipLastSyncUpdate: true,
+      });
+      totalRefreshed += result.synced || 0;
+    } catch (err) {
+      // Log but continue with other statuses
+      console.error(`[active-refresh] Failed for shipping.status=${status}:`, err.message);
+    }
+  }
+
+  invalidateDashboardCache();
+  return { success: true, totalRefreshed };
 }
 
 export default async function handler(request, response) {

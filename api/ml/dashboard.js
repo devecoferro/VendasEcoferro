@@ -1171,15 +1171,17 @@ export async function buildDashboardPayload(options = {}) {
   //   - "delivered"/"cancelled"/"not_delivered"/"returned": sem limite (status final)
   // Thresholds para detectar dados stale. Para shipped/in_transit, usa
   // date_shipped (data real de envio), não sale_date. Entrega ML = 2-5 dias.
+  // Com active refresh (5 min), dados ficam frescos rapidamente.
+  // Thresholds mais agressivos para eliminar pedidos fantasma.
   const STALE_THRESHOLDS_DAYS = {
-    paid: 14,
-    pending: 14,
-    confirmed: 14,
-    handling: 14,
-    ready_to_ship: 30,
-    shipped: 7,
-    in_transit: 7,
-    not_delivered: 14,
+    paid: 7,
+    pending: 7,
+    confirmed: 7,
+    handling: 7,
+    ready_to_ship: 21,
+    shipped: 5,
+    in_transit: 5,
+    not_delivered: 10,
   };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
