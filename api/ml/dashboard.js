@@ -64,7 +64,7 @@ const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
 ]);
 const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
-const DASHBOARD_CACHE_TTL_MS = 60 * 1000; // 1 minuto
+const DASHBOARD_CACHE_TTL_MS = 15 * 1000; // 15 segundos — refresh mais agressivo para operação
 const SELLER_CENTER_MIRROR_SOURCE =
   "internal_operational_baseline+public_entities_tracked_separately";
 const SELLER_CENTER_FINALIZED_STATUS_KEYWORDS = [
@@ -401,43 +401,24 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Empacotado: pronto para envio. Usa SLA para decidir hoje/próximos.
-    // No ML Seller Center, "packed" aparece em "Envios de hoje".
+    // Empacotado: pronto para envio. Operacionalmente é HOJE — o vendedor
+    // pode/deve enviar agora, independente do SLA ser amanhã.
     if (substatus === "packed") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
       return "today";
     }
 
-    // Outros substatuses: verificar SLA
-    if (dates.operationalDueDateKey) {
-      return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
-    }
-
-    return "upcoming";
+    // invoice_pending e outros substatuses operacionais: são ação de HOJE
+    // porque o vendedor precisa resolver (gerar NF-e, embalar, etc.)
+    // independente do SLA futuro. Se está ready_to_ship, é acionável agora.
+    return "today";
   }
 
-  // "shipped" com substatuses de tracking ativo = em trânsito
-  // "shipped/none": transportador pegou o pacote mas sem tracking ativo.
-  // No ML Seller Center, pedidos recém-enviados (date_shipped = hoje)
-  // aparecem em "Próximos dias" enquanto o transportador não escaneou.
-  // Após 1 dia, o tracking normalmente já ativou. Se "none" persiste,
-  // provavelmente já foi entregue sem atualização de status → excluir.
+  // "shipped" = transportador já pegou o pacote. Para operação do vendedor,
+  // TODOS os shipped são "em trânsito" (não requerem mais ação do vendedor).
+  // Substatuses com tracking ativo (out_for_delivery etc.) ou sem tracking
+  // (none, waiting_for_withdrawal) — ambos já saíram do depósito.
   if (status === "shipped") {
-    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
-    }
-    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      // Inclui apenas se enviado hoje (date_shipped = todayKey)
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
-        return "upcoming";
-      }
-      return null;
-    }
-    return null;
+    return "in_transit";
   }
 
   // "in_transit" como status direto = definitivamente em trânsito
@@ -480,46 +461,18 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // "packed" = ML já empacotou o pedido, pronto para envio.
-    // Usa SLA para decidir hoje/próximos. Se sem SLA, assume "hoje"
-    // porque o pedido já está empacotado.
-    if (substatus === "packed") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
+    // "packed" e "in_warehouse" = pedido no CD do ML pronto para despacho.
+    // Para operação do vendedor: é "hoje" porque não requer ação adicional.
+    if (substatus === "packed" || substatus === "in_warehouse") {
       return "today";
     }
 
-    // "in_warehouse" = pedido está no armazém ML aguardando processamento.
-    // No ML Seller Center, só aparece em "Envios de hoje" se o SLA é hoje
-    // ou já passou. Caso contrário, vai para "Próximos dias".
-    if (substatus === "in_warehouse") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
-      return "upcoming";
-    }
-
-    return "upcoming";
+    return "today";
   }
 
-  // Fulfillment: "shipped" com substatuses de trânsito real = in_transit
-  // "shipped/none": ML despachou mas sem tracking. Mesma lógica do cross-docking.
+  // Fulfillment: "shipped" = já saiu do CD. Sempre em trânsito.
   if (status === "shipped") {
-    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
-    }
-    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
-        return "upcoming";
-      }
-      return null;
-    }
-    return null;
+    return "in_transit";
   }
 
   if (status === "in_transit") {

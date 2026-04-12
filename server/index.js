@@ -32,6 +32,7 @@ import nfeDocumentHandler from "../api/nfe/document.js";
 import nfeFileHandler from "../api/nfe/file.js";
 import nfeSyncMercadoLivreHandler from "../api/nfe/sync-mercadolivre.js";
 import mlStockHandler from "../api/ml/stock.js";
+import mlPickingListHandler from "../api/ml/picking-list.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import { APP_HOST, APP_PORT } from "../api/_lib/app-config.js";
@@ -166,6 +167,7 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
   nfeSyncMercadoLivreHandler(req, res)
 );
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
+app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 
