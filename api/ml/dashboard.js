@@ -421,12 +421,21 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "upcoming";
   }
 
-  // "shipped" = transportador já pegou o pacote. Para operação do vendedor,
-  // TODOS os shipped são "em trânsito" (não requerem mais ação do vendedor).
-  // Substatuses com tracking ativo (out_for_delivery etc.) ou sem tracking
-  // (none, waiting_for_withdrawal) — ambos já saíram do depósito.
+  // "shipped" com tracking ativo (carrier escaneou) = em trânsito.
+  // "shipped/none": enviado mas sem scan do carrier. ML coloca em "Próximos dias",
+  // não em "Em trânsito". Se enviado hoje → "upcoming". Senão → exclui (provavelmente
+  // já foi entregue, sync incremental não pegou a atualização).
   if (status === "shipped") {
-    return "in_transit";
+    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
+      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+        return "upcoming";
+      }
+      return null;
+    }
+    return null;
   }
 
   // "in_transit" como status direto = definitivamente em trânsito
@@ -492,9 +501,18 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // Fulfillment: "shipped" = já saiu do CD. Sempre em trânsito.
+  // Fulfillment: mesma lógica de shipped — só tracking real = in_transit.
   if (status === "shipped") {
-    return "in_transit";
+    if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
+      return "in_transit";
+    }
+    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
+      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+        return "upcoming";
+      }
+      return null;
+    }
+    return null;
   }
 
   if (status === "in_transit") {
