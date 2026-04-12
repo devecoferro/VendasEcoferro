@@ -155,6 +155,14 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
+function isWithinLastNDays(dateKey, todayKey, n) {
+  if (!dateKey || !todayKey) return false;
+  const d = new Date(dateKey + "T00:00:00");
+  const t = new Date(todayKey + "T00:00:00");
+  const diffMs = t.getTime() - d.getTime();
+  return diffMs >= 0 && diffMs <= n * 86400000;
+}
+
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
@@ -391,8 +399,13 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // Em preparação ou no hub — próximos dias
+    // Em preparação ou no hub — depende do SLA.
+    // Se SLA é hoje ou passado (vencido), o pedido é "hoje" (atrasado, precisa de ação).
+    // Se SLA é futuro ou ausente, fica em "próximos dias".
     if (CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
+      if (dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
+        return "today";
+      }
       return "upcoming";
     }
 
@@ -423,14 +436,14 @@ function classifyCrossDockingOrder(order, todayKey) {
 
   // "shipped" com tracking ativo (carrier escaneou) = em trânsito.
   // "shipped/none": enviado mas sem scan do carrier. ML coloca em "Próximos dias",
-  // não em "Em trânsito". Se enviado hoje → "upcoming". Senão → exclui (provavelmente
-  // já foi entregue, sync incremental não pegou a atualização).
+  // não em "Em trânsito". Pedidos enviados nos últimos 3 dias ficam visíveis;
+  // mais antigos são excluídos (provavelmente já entregues).
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 3)) {
         return "upcoming";
       }
       return null;
@@ -507,7 +520,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isSameCalendarDay(dates.shippedDateKey, todayKey)) {
+      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 3)) {
         return "upcoming";
       }
       return null;
