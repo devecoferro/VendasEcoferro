@@ -382,19 +382,28 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
-  // O ML Seller Center só mostra pedidos acionáveis pelo vendedor.
-  // Pedidos paid/pending/confirmed NÃO aparecem no painel operacional
-  // porque o ML ainda não atribuiu logística. Apenas "ready_to_ship"
-  // e "handling" são operacionais para o vendedor.
+  // shipping.status=pending: pedido pago que ainda não recebeu label.
+  // ML Seller Center mostra em "Próximos dias" (aguardando processamento).
+  if (status === "pending") {
+    return "upcoming";
+  }
+
+  // ready_to_ship e handling são os status operacionais principais.
   if (status === "ready_to_ship" || status === "handling") {
     // Pedido retirado pelo transportador — em trânsito
     if (CROSS_DOCKING_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
 
-    // in_hub / in_packing_list: pedido está sendo processado pelo
-    // transportador/hub. O vendedor NÃO tem ação. ML mantém em "Próximos dias".
-    if (CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
+    // in_packing_list: pedido está na lista de separação do dia.
+    // ML Seller Center classifica como "Envios de hoje".
+    if (substatus === "in_packing_list") {
+      return "today";
+    }
+
+    // in_hub: pacote está no hub do transportador aguardando processamento.
+    // ML Seller Center mantém em "Próximos dias".
+    if (substatus === "in_hub") {
       return "upcoming";
     }
 
@@ -473,8 +482,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.handlingDateKey ||
     dates.saleDateKey;
 
-  // Fulfillment: apenas ready_to_ship e handling são operacionais.
-  // paid/pending/confirmed → ML está processando, vendedor não tem ação.
+  // shipping.status=pending: pedido pago aguardando processamento no fulfillment.
+  if (status === "pending") {
+    return "upcoming";
+  }
+
+  // Fulfillment: ready_to_ship e handling são os status operacionais principais.
   if (status === "ready_to_ship" || status === "handling") {
     // "ready_to_pack" = ML está ativamente preparando o pedido → sempre "hoje"
     if (substatus === "ready_to_pack") {
@@ -1083,7 +1096,8 @@ async function fetchMLApiCounts(connection) {
       return d.paging?.total ?? null;
     }
 
-    const [readyToShip, shipped, notDelivered] = await Promise.all([
+    const [pendingShipping, readyToShip, shipped, notDelivered] = await Promise.all([
+      searchTotal("pending"),
       searchTotal("ready_to_ship"),
       searchTotal("shipped"),
       searchTotal("not_delivered"),
@@ -1093,10 +1107,12 @@ async function fetchMLApiCounts(connection) {
     if (readyToShip == null || shipped == null) return null;
 
     return {
-      // ML "Envios de hoje" + "Próximos dias" = ready_to_ship total
-      // A divisão hoje/próximos depende do substatus e SLA (classificação local)
-      ready_to_ship: readyToShip,
-      // ML "Em trânsito" ≈ shipped com tracking ativo
+      // ML Seller Center "Envios de hoje" + "Próximos dias" =
+      // shipping.status=ready_to_ship + shipping.status=pending.
+      // "pending" são pedidos pagos que ainda não receberam label de envio
+      // mas já aparecem no painel operacional do ML.
+      ready_to_ship: (readyToShip || 0) + (pendingShipping || 0),
+      // ML "Em trânsito" ≈ shipped com tracking ativo (substatus filtering local)
       shipped: shipped,
       // ML "Finalizadas" inclui not_delivered recentes + cancelled recentes
       not_delivered: notDelivered ?? 0,

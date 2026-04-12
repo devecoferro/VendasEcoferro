@@ -727,6 +727,7 @@ export async function runMercadoLivreSync({
 // After this runs, local DB has current data for all active orders,
 // making local classification match ML Seller Center exactly.
 const ACTIVE_REFRESH_SHIPPING_STATUSES = [
+  { status: "pending", maxPages: 5 },
   { status: "ready_to_ship", maxPages: 15 },
   { status: "shipped", maxPages: 5 },
 ];
