@@ -117,32 +117,42 @@ function upgradeImageUrl(url) {
     .replace(/-[IDCF]\.jpg$/i, "-O.jpg");
 }
 
-// ── Buscar todas as fotos e vídeo de um item na API do ML ───────
-async function fetchItemMedia(accessToken, itemId) {
-  if (!accessToken || !itemId) return { pictures: [], videoUrl: null };
+// ── Buscar fotos, vídeo e descrição de um item na API do ML ─────
+async function fetchItemDetails(accessToken, itemId) {
+  if (!accessToken || !itemId) return { pictures: [], videoUrl: null, description: null };
 
   try {
-    const resp = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!resp.ok) return { pictures: [], videoUrl: null };
+    const headers = { Authorization: `Bearer ${accessToken}` };
 
-    const data = await resp.json();
+    // Buscar item e descrição em paralelo
+    const [itemResp, descResp] = await Promise.all([
+      fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers }),
+      fetch(`https://api.mercadolibre.com/items/${itemId}/description`, { headers }),
+    ]);
 
-    // Extrair todas as imagens em alta qualidade
-    const pictures = (data.pictures || [])
-      .filter((p) => p?.secure_url || p?.url)
-      .map((p) => upgradeImageUrl(p.secure_url || p.url));
-
-    // Extrair vídeo se existir
+    let pictures = [];
     let videoUrl = null;
-    if (data.video_id) {
-      videoUrl = `https://www.youtube.com/embed/${data.video_id}`;
+
+    if (itemResp.ok) {
+      const data = await itemResp.json();
+      pictures = (data.pictures || [])
+        .filter((p) => p?.secure_url || p?.url)
+        .map((p) => upgradeImageUrl(p.secure_url || p.url));
+      if (data.video_id) {
+        videoUrl = `https://www.youtube.com/embed/${data.video_id}`;
+      }
     }
 
-    return { pictures, videoUrl };
+    // Extrair descrição (texto puro, sem HTML)
+    let description = null;
+    if (descResp.ok) {
+      const descData = await descResp.json();
+      description = (descData.plain_text || descData.text || "").trim() || null;
+    }
+
+    return { pictures, videoUrl, description };
   } catch {
-    return { pictures: [], videoUrl: null };
+    return { pictures: [], videoUrl: null, description: null };
   }
 }
 
@@ -307,8 +317,8 @@ export async function handleSyncToWebsite(req, res) {
         // Auto-categorizar produto baseado no título
         const categoryId = autoCategorizeName(item.title);
 
-        // Buscar todas as fotos via API do ML
-        const { pictures, videoUrl } = await fetchItemMedia(accessToken, item.item_id);
+        // Buscar fotos, vídeo e descrição via API do ML
+        const { pictures, videoUrl, description } = await fetchItemDetails(accessToken, item.item_id);
 
         // Dados do produto
         const productData = {
@@ -323,9 +333,8 @@ export async function handleSyncToWebsite(req, res) {
           category_id: categoryId,
         };
 
-        if (videoUrl) {
-          productData.video_url = videoUrl;
-        }
+        if (videoUrl) productData.video_url = videoUrl;
+        if (description) productData.description = description;
 
         const existing = existingByMlId.get(item.item_id);
 
@@ -342,6 +351,7 @@ export async function handleSyncToWebsite(req, res) {
             is_active: true,
           };
           if (videoUrl) updateFields.video_url = videoUrl;
+          if (description) updateFields.description = description;
 
           const { error: updateErr } = await supabase
             .from("products")
