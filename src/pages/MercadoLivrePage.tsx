@@ -1098,20 +1098,47 @@ export default function MercadoLivrePage() {
     );
   }, [accessibleDashboardDeposits, selectedDepositFilters]);
 
-  const shipmentCounts = useMemo(
-    () =>
-      SHIPMENT_FILTERS.reduce<Record<ShipmentBucket, number>>(
-        (accumulator, currentFilter) => {
-          accumulator[currentFilter.key] = selectedDashboardDeposits.reduce(
-            (total, deposit) => total + getDashboardBucketCount(deposit, currentFilter.key),
-            0
-          );
-          return accumulator;
-        },
-        { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
-      ),
-    [selectedDashboardDeposits]
-  );
+  // Contagens dos chips: usar dados da API ML quando disponível (fonte de verdade),
+  // senão fallback para contagem local baseada nos deposits.
+  const shipmentCounts = useMemo(() => {
+    const mlCounts = (dashboard as any)?.ml_api_counts;
+
+    // Contagem local (fallback)
+    const localCounts = SHIPMENT_FILTERS.reduce<Record<ShipmentBucket, number>>(
+      (accumulator, currentFilter) => {
+        accumulator[currentFilter.key] = selectedDashboardDeposits.reduce(
+          (total, deposit) => total + getDashboardBucketCount(deposit, currentFilter.key),
+          0
+        );
+        return accumulator;
+      },
+      { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
+    );
+
+    // Se temos contagens da API ML, usar como fonte de verdade para os totais.
+    // "ready_to_ship" do ML = hoje + próximos (splitamos usando proporção local).
+    // "shipped" do ML = em trânsito real.
+    if (mlCounts && typeof mlCounts.ready_to_ship === "number") {
+      const mlReadyToShip = mlCounts.ready_to_ship;
+      const mlShipped = mlCounts.shipped ?? localCounts.in_transit;
+      const localToday = localCounts.today;
+      const localUpcoming = localCounts.upcoming;
+      const localTotal = localToday + localUpcoming;
+
+      return {
+        today: localTotal > 0
+          ? Math.round((localToday / localTotal) * mlReadyToShip)
+          : localToday,
+        upcoming: localTotal > 0
+          ? mlReadyToShip - Math.round((localToday / localTotal) * mlReadyToShip)
+          : mlReadyToShip,
+        in_transit: mlShipped,
+        finalized: localCounts.finalized,
+      };
+    }
+
+    return localCounts;
+  }, [selectedDashboardDeposits, dashboard]);
 
   const operationalOrderIds = useMemo(() => {
     const ids = new Set<string>();

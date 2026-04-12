@@ -1,4 +1,5 @@
 import { getLatestConnection, getOrderSummariesByScope } from "./_lib/storage.js";
+import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import {
   getMirrorEntityStatusBreakdown,
@@ -458,12 +459,10 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "in_transit";
   }
 
-  // not_delivered: verificar substatus — alguns são logística ativa (em trânsito),
-  // outros são finalizados (devolvido, perdido).
+  // not_delivered: SEMPRE finalized. No ML Seller Center, pedidos com entrega
+  // falha (devoluções, perdidos, etc.) aparecem em "Gerenciar Pós-venda"
+  // e "Finalizadas", NUNCA em "Em trânsito". Trânsito é só envio ativo.
   if (status === "not_delivered") {
-    if (NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
-    }
     return "finalized";
   }
 
@@ -530,11 +529,8 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "in_transit";
   }
 
-  // not_delivered: verificar substatus
+  // not_delivered: SEMPRE finalized (pós-venda, não trânsito)
   if (status === "not_delivered") {
-    if (NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
-    }
     return "finalized";
   }
 
@@ -1085,6 +1081,46 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
   };
 }
 
+// ─── Contagens reais da API ML ─────────────────────────────────────────────
+// Busca contagens diretamente da API do Mercado Livre para cada shipping status.
+// Quando disponível, esses números substituem a classificação local nos chips.
+// Se o token estiver inválido ou a API falhar, retorna null (fallback local).
+async function fetchMLApiCounts(connectionId, sellerId) {
+  try {
+    const token = await ensureValidAccessToken(connectionId);
+    if (!token) return null;
+
+    async function searchTotal(shippingStatus) {
+      const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&limit=1`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d.paging?.total ?? null;
+    }
+
+    const [readyToShip, shipped, notDelivered] = await Promise.all([
+      searchTotal("ready_to_ship"),
+      searchTotal("shipped"),
+      searchTotal("not_delivered"),
+    ]);
+
+    // Se qualquer chamada falhou, retorna null (fallback local)
+    if (readyToShip == null || shipped == null) return null;
+
+    return {
+      // ML "Envios de hoje" + "Próximos dias" = ready_to_ship total
+      // A divisão hoje/próximos depende do substatus e SLA (classificação local)
+      ready_to_ship: readyToShip,
+      // ML "Em trânsito" ≈ shipped com tracking ativo
+      shipped: shipped,
+      // ML "Finalizadas" inclui not_delivered recentes + cancelled recentes
+      not_delivered: notDelivered ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function buildDashboardPayload(options = {}) {
   const allowCache = options.allowCache !== false;
 
@@ -1325,6 +1361,13 @@ export async function buildDashboardPayload(options = {}) {
     baseConnection.seller_id,
     postSaleOverview
   );
+
+  // Buscar contagens reais da API ML (assíncrono, não bloqueia se falhar)
+  const mlApiCounts = await fetchMLApiCounts(
+    baseConnection.id,
+    baseConnection.seller_id
+  ).catch(() => null);
+
   const payload = {
     backend_secure: true,
     generated_at: new Date().toISOString(),
@@ -1333,6 +1376,9 @@ export async function buildDashboardPayload(options = {}) {
     post_sale_overview: postSaleOverview,
     operational_queues: operationalQueues,
     deposits,
+    // Contagens diretas da API ML — fonte de verdade para os chips.
+    // Se null, o frontend deve usar os counts dos deposits (fallback local).
+    ml_api_counts: mlApiCounts,
   };
 
   if (allowCache) {
