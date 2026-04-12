@@ -156,14 +156,6 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
-function isWithinLastNDays(dateKey, todayKey, n) {
-  if (!dateKey || !todayKey) return false;
-  const d = new Date(dateKey + "T00:00:00");
-  const t = new Date(todayKey + "T00:00:00");
-  const diffMs = t.getTime() - d.getTime();
-  return diffMs >= 0 && diffMs <= n * 86400000;
-}
-
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
@@ -438,19 +430,16 @@ function classifyCrossDockingOrder(order, todayKey) {
   }
 
   // "shipped" com tracking ativo (carrier escaneou) = em trânsito.
-  // "shipped/none": enviado mas sem scan do carrier. ML coloca em "Próximos dias",
-  // não em "Em trânsito". Pedidos enviados nos últimos 3 dias ficam visíveis;
-  // mais antigos são excluídos (provavelmente já entregues).
+  // No ML Seller Center, apenas pedidos com tracking ativo aparecem em
+  // "Em trânsito". Pedidos shipped/none (sem scan do carrier),
+  // shipped/waiting_for_withdrawal (aguardando retirada pelo comprador)
+  // e shipped/claimed_me NÃO aparecem em nenhuma aba operacional.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
     }
-    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 2)) {
-        return "upcoming";
-      }
-      return null;
-    }
+    // shipped/none, waiting_for_withdrawal, claimed_me → excluídos do dashboard
+    // (não aparecem em nenhuma aba do ML Seller Center)
     return null;
   }
 
@@ -511,16 +500,10 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // Fulfillment: mesma lógica de shipped — só tracking real = in_transit.
+  // Fulfillment: mesma lógica — só tracking ativo = in_transit.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       return "in_transit";
-    }
-    if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 2)) {
-        return "upcoming";
-      }
-      return null;
     }
     return null;
   }
