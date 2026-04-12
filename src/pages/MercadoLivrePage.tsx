@@ -1115,12 +1115,15 @@ export default function MercadoLivrePage() {
       { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
     );
 
-    // Se temos contagens da API ML, usar como fonte de verdade para os totais.
-    // "ready_to_ship" do ML = hoje + próximos (splitamos usando proporção local).
-    // "shipped" do ML = em trânsito real.
+    // Se temos contagens da API ML, usar ready_to_ship como fonte de verdade
+    // para hoje + próximos (splitamos usando proporção local).
+    // "Em trânsito" e "Finalizadas" usam contagem LOCAL porque:
+    // - ML "Em trânsito" = apenas shipped com tracking ativo (substatus filtering)
+    //   e shipping.status=shipped retorna TODOS os shipped (inclui entregues sem scan)
+    // - ML "Finalizadas" = apenas cancelamentos/devoluções recentes
+    //   e shipping.status=not_delivered retorna TODOS os not_delivered
     if (mlCounts && typeof mlCounts.ready_to_ship === "number") {
       const mlReadyToShip = mlCounts.ready_to_ship;
-      const mlShipped = mlCounts.shipped ?? localCounts.in_transit;
       const localToday = localCounts.today;
       const localUpcoming = localCounts.upcoming;
       const localTotal = localToday + localUpcoming;
@@ -1132,7 +1135,7 @@ export default function MercadoLivrePage() {
         upcoming: localTotal > 0
           ? mlReadyToShip - Math.round((localToday / localTotal) * mlReadyToShip)
           : mlReadyToShip,
-        in_transit: mlShipped,
+        in_transit: localCounts.in_transit,
         finalized: localCounts.finalized,
       };
     }
