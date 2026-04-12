@@ -226,7 +226,7 @@ function autoCategorizeName(title) {
 async function getMLAccessToken() {
   try {
     const connections = db
-      .prepare("SELECT id FROM ml_connections WHERE is_active = 1 LIMIT 1")
+      .prepare("SELECT id FROM ml_connections LIMIT 1")
       .all();
     if (!connections.length) return null;
 
@@ -235,7 +235,8 @@ async function getMLAccessToken() {
 
     const validConn = await ensureValidAccessToken(conn);
     return validConn.access_token || null;
-  } catch {
+  } catch (err) {
+    log.warn(`Falha ao obter token ML: ${err.message}`);
     return null;
   }
 }
