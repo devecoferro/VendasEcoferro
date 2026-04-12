@@ -258,7 +258,7 @@ async function autoSyncOrders() {
 // Exemplo: pedido shipped→delivered que nao aparece no incremental sync
 // porque o ML nao atualiza date_last_updated do ponto de vista do seller.
 async function autoRefreshActiveOrders() {
-  if (activeRefreshRunning || autoSyncRunning) return;
+  if (activeRefreshRunning) return;
 
   try {
     const connection = getLatestConnection();
