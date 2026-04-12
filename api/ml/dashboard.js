@@ -1,4 +1,4 @@
-import { getLatestConnection, getOrderSummariesByScope } from "./_lib/storage.js";
+import { getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import {
@@ -1085,10 +1085,12 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
 // Busca contagens diretamente da API do Mercado Livre para cada shipping status.
 // Quando disponível, esses números substituem a classificação local nos chips.
 // Se o token estiver inválido ou a API falhar, retorna null (fallback local).
-async function fetchMLApiCounts(connectionId, sellerId) {
+async function fetchMLApiCounts(connection) {
   try {
-    const token = await ensureValidAccessToken(connectionId);
-    if (!token) return null;
+    const validConnection = await ensureValidAccessToken(connection);
+    if (!validConnection?.access_token) return null;
+    const token = validConnection.access_token;
+    const sellerId = validConnection.seller_id;
 
     async function searchTotal(shippingStatus) {
       const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&limit=1`;
@@ -1364,11 +1366,24 @@ export async function buildDashboardPayload(options = {}) {
     postSaleOverview
   );
 
-  // Buscar contagens reais da API ML (assíncrono, não bloqueia se falhar)
-  const mlApiCounts = await fetchMLApiCounts(
-    baseConnection.id,
-    baseConnection.seller_id
-  ).catch(() => null);
+  // Buscar contagens reais da API ML de TODAS as conexões (sellers).
+  // Agrega totais para refletir a visão unificada do dashboard.
+  let mlApiCounts = null;
+  try {
+    const allConnections = listConnections().filter((c) => c?.id);
+    const countsPromises = allConnections.map((c) => fetchMLApiCounts(c).catch(() => null));
+    const allCounts = await Promise.all(countsPromises);
+    const validCounts = allCounts.filter(Boolean);
+    if (validCounts.length > 0) {
+      mlApiCounts = {
+        ready_to_ship: validCounts.reduce((sum, c) => sum + (c.ready_to_ship || 0), 0),
+        shipped: validCounts.reduce((sum, c) => sum + (c.shipped || 0), 0),
+        not_delivered: validCounts.reduce((sum, c) => sum + (c.not_delivered || 0), 0),
+      };
+    }
+  } catch {
+    mlApiCounts = null;
+  }
 
   const payload = {
     backend_secure: true,

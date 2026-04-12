@@ -7,7 +7,7 @@ import rateLimit from "express-rate-limit";
 import "../api/_lib/db.js";
 import { DB_PATH } from "../api/_lib/app-config.js";
 import { db } from "../api/_lib/db.js";
-import { getLatestConnection } from "../api/ml/_lib/storage.js";
+import { getLatestConnection, listConnections } from "../api/ml/_lib/storage.js";
 import { isTokenExpiringSoon } from "../api/ml/_lib/mercado-livre.js";
 import createLogger from "../api/_lib/logger.js";
 import { startAutoBackup, stopAutoBackup, runBackup } from "../api/_lib/backup.js";
@@ -233,17 +233,23 @@ async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
 
   try {
-    const connection = getLatestConnection();
-    if (!connection?.id) return; // Sem conexao ML configurada
-
     autoSyncRunning = true;
-    const updatedFrom = connection.last_sync_at || undefined;
+    const connections = listConnections();
+    if (connections.length === 0) return; // Sem conexao ML configurada
 
-    await runMercadoLivreSync({
-      connectionId: connection.id,
-      updatedFrom,
-      pageLimit: 20,
-    });
+    for (const connection of connections) {
+      if (!connection?.id) continue;
+      try {
+        const updatedFrom = connection.last_sync_at || undefined;
+        await runMercadoLivreSync({
+          connectionId: connection.id,
+          updatedFrom,
+          pageLimit: 20,
+        });
+      } catch (err) {
+        log.error(`Auto-sync falhou para ${connection.seller_nickname || connection.seller_id}`, err);
+      }
+    }
   } catch (error) {
     log.error("Auto-sync falhou", error);
   } finally {
@@ -261,12 +267,21 @@ async function autoRefreshActiveOrders() {
   if (activeRefreshRunning) return;
 
   try {
-    const connection = getLatestConnection();
-    if (!connection?.id) return;
-
     activeRefreshRunning = true;
-    const result = await runActiveOrdersRefresh({ connectionId: connection.id });
-    log.info(`Active refresh concluido: ${result.totalRefreshed} registros atualizados`);
+    const connections = listConnections();
+    if (connections.length === 0) return;
+
+    let totalRefreshed = 0;
+    for (const connection of connections) {
+      if (!connection?.id) continue;
+      try {
+        const result = await runActiveOrdersRefresh({ connectionId: connection.id });
+        totalRefreshed += result.totalRefreshed || 0;
+      } catch (err) {
+        log.error(`Active refresh falhou para ${connection.seller_nickname || connection.seller_id}`, err);
+      }
+    }
+    log.info(`Active refresh concluido: ${totalRefreshed} registros atualizados (${connections.length} conexoes)`);
   } catch (error) {
     log.error("Active refresh falhou", error);
   } finally {
