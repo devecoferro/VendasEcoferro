@@ -399,23 +399,18 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // Em preparação ou no hub — depende do SLA.
-    // Se SLA é hoje ou passado (vencido), o pedido é "hoje" (atrasado, precisa de ação).
-    // Se SLA é futuro ou ausente, fica em "próximos dias".
+    // in_hub / in_packing_list: pedido está sendo processado pelo
+    // transportador/hub. O vendedor NÃO tem ação. ML mantém em "Próximos dias".
     if (CROSS_DOCKING_UPCOMING_SUBSTATUSES.has(substatus)) {
-      if (dates.operationalDueDateKey && isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) {
-        return "today";
-      }
       return "upcoming";
     }
 
-    // Pronto para coleta — envios de hoje
+    // Pronto para coleta — envios de hoje (coletor vem buscar)
     if (substatus === "ready_for_pickup") {
       return "today";
     }
 
     // Empacotado: pronto para envio. Usa SLA para decidir hoje/próximos.
-    // ML Seller Center coloca "packed" em "Envios de hoje" somente se SLA é hoje.
     if (substatus === "packed") {
       if (dates.operationalDueDateKey) {
         return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
@@ -425,8 +420,15 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // invoice_pending e outros substatuses: usar SLA para classificar.
-    // ML mostra esses em "Próximos dias" quando SLA é futuro.
+    // invoice_pending: vendedor ainda precisa emitir NF-e.
+    // ML mantém em "Próximos dias" independente do SLA — o pedido
+    // só vai para "Envios de hoje" DEPOIS que a NF-e é emitida
+    // e o substatus muda para ready_for_pickup ou packed.
+    if (substatus === "invoice_pending") {
+      return "upcoming";
+    }
+
+    // Outros substatuses raros: usar SLA para classificar.
     if (dates.operationalDueDateKey) {
       return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey) ? "today" : "upcoming";
     }
@@ -443,7 +445,7 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 3)) {
+      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 2)) {
         return "upcoming";
       }
       return null;
@@ -491,13 +493,9 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // "packed" = ML já empacotou. Usa SLA.
+    // "packed" = ML já empacotou no centro de distribuição → vai sair hoje.
+    // ML Seller Center mostra esses em "Envios de hoje" independente do SLA.
     if (substatus === "packed") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
       return "today";
     }
 
@@ -520,7 +518,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "in_transit";
     }
     if (substatus === "none" || substatus === "waiting_for_withdrawal" || substatus === "claimed_me") {
-      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 3)) {
+      if (dates.shippedDateKey && isWithinLastNDays(dates.shippedDateKey, todayKey, 2)) {
         return "upcoming";
       }
       return null;
@@ -1145,6 +1143,7 @@ export async function buildDashboardPayload(options = {}) {
     ready_to_ship: 30,
     shipped: 7,
     in_transit: 7,
+    not_delivered: 14,
   };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
