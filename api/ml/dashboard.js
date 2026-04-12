@@ -1104,24 +1104,24 @@ export async function buildDashboardPayload(options = {}) {
   //   - "ready_to_ship": stale depois de 30 dias
   //   - "shipped"/"in_transit": stale depois de 45 dias
   //   - "delivered"/"cancelled"/"not_delivered"/"returned": sem limite (status final)
-  // Thresholds mais agressivos para shipped/in_transit:
-  // Entrega ML típica = 2-7 dias. Se pedido ainda consta como "shipped"
-  // após 10 dias, o sync incremental não pegou a atualização para "delivered".
+  // Thresholds para detectar dados stale. Para shipped/in_transit, usa
+  // date_shipped (data real de envio), não sale_date. Entrega ML = 2-5 dias.
   const STALE_THRESHOLDS_DAYS = {
     paid: 14,
     pending: 14,
     confirmed: 14,
     handling: 14,
     ready_to_ship: 30,
-    shipped: 10,
-    in_transit: 10,
+    shipped: 7,
+    in_transit: 7,
   };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
     if (!saleDate) return false;
 
+    const snapshot = getShipmentSnapshot(order);
     const shipmentStatus = normalizeState(
-      getShipmentSnapshot(order).status || order.order_status || "",
+      snapshot.status || order.order_status || "",
       ""
     );
     const thresholdDays = STALE_THRESHOLDS_DAYS[shipmentStatus];
@@ -1129,7 +1129,17 @@ export async function buildDashboardPayload(options = {}) {
     // Status finais (delivered, cancelled, etc.) ou desconhecidos: sem filtro de freshness
     if (thresholdDays == null) return true;
 
-    const ageMs = today.getTime() - saleDate.getTime();
+    // Para shipped/in_transit: usar data de envio (não data de venda)
+    let referenceDate = saleDate;
+    if (shipmentStatus === "shipped" || shipmentStatus === "in_transit") {
+      const statusHistory = snapshot.status_history || {};
+      const shippedDate = statusHistory.date_shipped ? new Date(statusHistory.date_shipped) : null;
+      if (shippedDate && !isNaN(shippedDate.getTime())) {
+        referenceDate = shippedDate;
+      }
+    }
+
+    const ageMs = today.getTime() - referenceDate.getTime();
     const ageDays = ageMs / (24 * 60 * 60 * 1000);
     return ageDays <= thresholdDays;
   });
