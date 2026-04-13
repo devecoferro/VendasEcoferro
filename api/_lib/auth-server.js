@@ -340,9 +340,30 @@ export function clearSessionCookie(response) {
 }
 
 export async function ensureDefaultAdmin() {
+  if (!DEFAULT_ADMIN_USERNAME || !DEFAULT_ADMIN_PASSWORD) {
+    return null;
+  }
+
   const existingProfile = getProfileRowByUsername(DEFAULT_ADMIN_USERNAME);
+
   if (existingProfile) {
-    return existingProfile;
+    // Sincronizar senha com env var — garante que credenciais sempre funcionam
+    // após redeploy, mesmo se o hash no banco ficou dessincronizado.
+    const passwordMatches = verifyPassword(DEFAULT_ADMIN_PASSWORD, existingProfile.password_hash);
+    if (!passwordMatches) {
+      const newHash = createPasswordHash(DEFAULT_ADMIN_PASSWORD);
+      db.prepare(
+        `UPDATE app_user_profiles SET password_hash = ?, active = 1, updated_at = ? WHERE id = ?`
+      ).run(newHash, nowIso(), existingProfile.id);
+      console.log(`[auth] Admin password synced from env vars for user "${DEFAULT_ADMIN_USERNAME}".`);
+    }
+    // Garantir que está ativo
+    if (!existingProfile.active) {
+      db.prepare(
+        `UPDATE app_user_profiles SET active = 1, updated_at = ? WHERE id = ?`
+      ).run(nowIso(), existingProfile.id);
+    }
+    return getProfileRowById(existingProfile.id);
   }
 
   const timestamp = nowIso();
@@ -384,6 +405,7 @@ export async function ensureDefaultAdmin() {
     updated_at: timestamp,
   });
 
+  console.log(`[auth] Default admin "${DEFAULT_ADMIN_USERNAME}" created.`);
   return getProfileRowById(id);
 }
 

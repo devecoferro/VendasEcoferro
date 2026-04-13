@@ -59,8 +59,8 @@ export default function LoginPage() {
     >
       <div className="absolute inset-0 bg-[rgba(7,17,39,0.24)]" />
 
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] items-center px-5 py-8 sm:px-8 lg:px-14 xl:px-20 2xl:px-24">
-        <div className="w-full max-w-[628px]">
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1500px] items-center justify-center px-5 py-8 sm:px-8 lg:px-14 xl:px-20 2xl:px-24">
+        <div className="w-full max-w-[520px]">
           <div className="rounded-[34px] border border-white/20 bg-[rgba(20,35,70,0.42)] px-7 py-8 shadow-[0_20px_56px_rgba(0,0,0,0.22)] backdrop-blur-[4px] sm:px-8 sm:py-9 lg:px-9 lg:py-10">
             <div className="mb-5 flex flex-col items-center text-center sm:mb-6">
               <img
