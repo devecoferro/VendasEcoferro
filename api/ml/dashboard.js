@@ -1135,6 +1135,15 @@ const TODAY_SUBSTATUSES = new Set([
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
 ]);
+// Shipped substatuses que o ML Seller Center coloca em "Próximos dias"
+// (o pacote está no ponto de retirada aguardando o comprador).
+const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
+  "waiting_for_withdrawal",
+]);
+// Dias máximos desde o envio para considerar "Em trânsito".
+// ML Seller Center só mostra shipped recentes — orders muito antigos
+// com substatus ativo são tratados como pendências, não trânsito.
+const TRANSIT_MAX_DAYS = 7;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
@@ -1275,14 +1284,29 @@ async function fetchMLLiveChipCounts(connection) {
       }
     }
 
-    // Shipped → substatus de tracking ativo = "Em trânsito"
-    // ML Seller Center mostra TODOS os shipped com substatus ativo,
-    // sem filtro de data — um pedido shipped há 5 dias mas still out_for_delivery
-    // continua em "Em trânsito" até ser delivered/returned.
+    // Shipped → classificar por substatus:
+    // 1. waiting_for_withdrawal → "Próximos dias" (pacote no ponto de retirada)
+    // 2. out_for_delivery/receiver_absent/not_visited + recente → "Em trânsito"
+    // 3. Outros → excluído (entregues não confirmados, antigos sem tracking)
     for (const [, pack] of shippedPacks) {
       const info = substatusMap.get(String(pack.shipping_id)) || { substatus: "none", dateShipped: null };
-      if (TRANSIT_SHIPPED_SUBSTATUSES.has(info.substatus)) {
-        inTransit++;
+      const { substatus, dateShipped } = info;
+
+      if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
+        // waiting_for_withdrawal → ML mostra em "Próximos dias"
+        upcoming++;
+      } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
+        // Só conta como "Em trânsito" se shipped recentemente
+        const shippedDateKey = getDateKey(dateShipped);
+        if (shippedDateKey) {
+          const ageDays = (new Date(todayKey + "T12:00:00").getTime() - new Date(shippedDateKey + "T12:00:00").getTime()) / 86400000;
+          if (ageDays <= TRANSIT_MAX_DAYS) {
+            inTransit++;
+          }
+        } else {
+          // Sem data de envio — conta se substatus está ativo
+          inTransit++;
+        }
       }
     }
 

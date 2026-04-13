@@ -94,11 +94,11 @@ app.set("trust proxy", 1);
 // ─── Rate Limiting ──────────────────────────────────────────────────
 // Protege rotas sensiveis contra brute force e abuso.
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 20, // 20 tentativas por janela
+  windowMs: 5 * 60 * 1000, // 5 minutos (janela menor)
+  max: 50, // 50 tentativas por janela — autofill do browser gasta várias
   standardHeaders: true,
   legacyHeaders: false,
-  message: { ok: false, error: "Muitas tentativas. Tente novamente em 15 minutos." },
+  message: { ok: false, error: "Muitas tentativas. Tente novamente em 5 minutos." },
 });
 
 const apiLimiter = rateLimit({
