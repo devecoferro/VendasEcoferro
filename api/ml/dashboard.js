@@ -1214,29 +1214,38 @@ function deduplicateOrdersToPacks(orders) {
   return packs;
 }
 
-// Carrega TODOS os substatuses e datas de envio em UMA query.
+// Busca substatus REAL de cada shipment via API ML em paralelo.
 // Retorna Map<shipping_id, { substatus, dateShipped }>.
-// Antes: 270 queries individuais = 1870ms. Agora: 1 query = ~50ms.
-function loadAllShipmentSubstatuses() {
+// Faz batches de 20 para não saturar a API.
+async function fetchShipmentSubstatuses(token, shippingIds) {
   const map = new Map();
-  try {
-    const rows = db.prepare(`
-      SELECT shipping_id,
-             json_extract(raw_data, '$.shipment_snapshot.substatus') as substatus,
-             json_extract(raw_data, '$.shipment_snapshot.status_history.date_shipped') as date_shipped
-      FROM ml_orders
-      WHERE shipping_id IS NOT NULL
-        AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, ''))
-            IN ('pending', 'ready_to_ship', 'shipped', 'handling')
-      GROUP BY shipping_id
-    `).all();
-    for (const row of rows) {
-      map.set(String(row.shipping_id), {
-        substatus: (row.substatus || "none").toLowerCase().trim(),
-        dateShipped: row.date_shipped || null,
-      });
+  if (!shippingIds.length) return map;
+
+  const BATCH_SIZE = 20;
+  for (let i = 0; i < shippingIds.length; i += BATCH_SIZE) {
+    const batch = shippingIds.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map(async (id) => {
+        try {
+          const res = await fetch(`https://api.mercadolibre.com/shipments/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return { id, substatus: "none", dateShipped: null };
+          const data = await res.json();
+          return {
+            id,
+            substatus: (data.substatus || "none").toLowerCase().trim(),
+            dateShipped: data.status_history?.date_shipped || null,
+          };
+        } catch {
+          return { id, substatus: "none", dateShipped: null };
+        }
+      })
+    );
+    for (const r of results) {
+      map.set(String(r.id), { substatus: r.substatus, dateShipped: r.dateShipped });
     }
-  } catch { /* fallback: empty map */ }
+  }
   return map;
 }
 
@@ -1265,10 +1274,19 @@ async function fetchMLLiveChipCounts(connection) {
     const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
     const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
 
-    // 3. Carregar substatuses em BATCH (1 query, não 270)
-    const substatusMap = loadAllShipmentSubstatuses();
+    // 3. Coletar todos os shipping_ids que precisam de substatus
+    const shippingIdsToCheck = new Set();
+    for (const [, pack] of rtsPacks) {
+      if (pack.shipping_id) shippingIdsToCheck.add(pack.shipping_id);
+    }
+    for (const [, pack] of shippedPacks) {
+      if (pack.shipping_id) shippingIdsToCheck.add(pack.shipping_id);
+    }
 
-    // 4. Classificar cada pack
+    // 4. Buscar substatus REAL via API ML (não do DB local que pode estar desatualizado)
+    const substatusMap = await fetchShipmentSubstatuses(token, [...shippingIdsToCheck]);
+
+    // 5. Classificar cada pack
     let today = 0;
     let upcoming = 0;
     let inTransit = 0;
