@@ -169,12 +169,50 @@ app.get("/api/debug/ml-api-test", async (_req, res) => {
       results.sample_order_tags = sampleD.results[0].tags;
     }
 
-    // Test 3: shipments multiget
+    // Test 3: shipments single - get full details
     if (sampleD.results?.[0]?.shipping?.id) {
       const shipId = sampleD.results[0].shipping.id;
       const r3 = await fetch(`https://api.mercadolibre.com/shipments/${shipId}`, { headers: h });
-      results.shipments_single = { status: r3.status, error: (await r3.json()).message };
+      const j3 = await r3.json();
+      results.shipments_single = { status: r3.status, shipping_status: j3.status, substatus: j3.substatus, keys: Object.keys(j3).slice(0, 20) };
     }
+
+    // Test 5: Get ALL substatus totals for ready_to_ship
+    const rtsSubstatuses = [
+      "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
+      "picked_up", "authorized_by_carrier", "handling", "manufacturing",
+      "ready_to_print", "printed", "stale", "waiting_for_carrier",
+    ];
+    results.rts_substatus_breakdown = {};
+    let rtsSubTotal = 0;
+    for (const sub of rtsSubstatuses) {
+      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&shipping.substatus=${sub}&limit=1`, { headers: h });
+      const j = await r.json();
+      const total = j.paging?.total || 0;
+      if (total > 0) results.rts_substatus_breakdown[sub] = total;
+      rtsSubTotal += total;
+    }
+    results.rts_substatus_total = rtsSubTotal;
+    results.rts_all_total = results.rts_all.total;
+    results.rts_unaccounted = results.rts_all.total - rtsSubTotal;
+
+    // Test 6: Get ALL substatus totals for shipped
+    const shippedSubstatuses = [
+      "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
+      "waiting_for_withdrawal", "in_transit", "delivered", "soon_deliver",
+      "returned_to_sender", "returning_to_sender",
+    ];
+    results.shipped_substatus_breakdown = {};
+    let shippedSubTotal = 0;
+    for (const sub of shippedSubstatuses) {
+      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=shipped&shipping.substatus=${sub}&limit=1`, { headers: h });
+      const j = await r.json();
+      const total = j.paging?.total || 0;
+      if (total > 0) results.shipped_substatus_breakdown[sub] = total;
+      shippedSubTotal += total;
+    }
+    results.shipped_substatus_total = shippedSubTotal;
+    results.shipped_all_total = results.shipped_all.total;
 
     // Test 4: orders/{id} for full shipping details
     if (sampleD.results?.[0]?.id) {
