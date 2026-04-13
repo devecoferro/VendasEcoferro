@@ -88,6 +88,9 @@ function safeDependencyHealth() {
 
 const app = express();
 
+// Traefik reverse proxy — necessário para express-rate-limit identificar IPs corretamente
+app.set("trust proxy", 1);
+
 // ─── Rate Limiting ──────────────────────────────────────────────────
 // Protege rotas sensiveis contra brute force e abuso.
 const authLimiter = rateLimit({
