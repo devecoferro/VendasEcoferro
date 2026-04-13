@@ -448,7 +448,7 @@ function classifyCrossDockingOrder(order, todayKey) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 3 ? "in_transit" : null;
+      return shippedAge <= 2 ? "in_transit" : null;
     }
     return null;
   }
@@ -520,7 +520,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 3 ? "in_transit" : null;
+      return shippedAge <= 2 ? "in_transit" : null;
     }
     return null;
   }
