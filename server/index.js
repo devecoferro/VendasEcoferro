@@ -133,6 +133,63 @@ app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
+// ─── DEBUG: Test ML API endpoints (temporary) ───────────────────────
+app.get("/api/debug/ml-api-test", async (_req, res) => {
+  try {
+    const { getLatestConnection } = await import("../api/ml/_lib/storage.js");
+    const { ensureValidAccessToken } = await import("../api/ml/_lib/mercado-livre.js");
+    const conn = getLatestConnection();
+    const valid = await ensureValidAccessToken(conn);
+    if (!valid?.access_token) return res.json({ error: "no token" });
+    const token = valid.access_token;
+    const sid = String(valid.seller_id);
+    const h = { Authorization: `Bearer ${token}` };
+    const results = {};
+
+    // Test 1: orders/search with substatus filter
+    const substatusTests = [
+      ["rts_ready_for_pickup", `shipping.status=ready_to_ship&shipping.substatus=ready_for_pickup`],
+      ["rts_picked_up", `shipping.status=ready_to_ship&shipping.substatus=picked_up`],
+      ["rts_in_warehouse", `shipping.status=ready_to_ship&shipping.substatus=in_warehouse`],
+      ["rts_all", `shipping.status=ready_to_ship`],
+      ["pending_all", `shipping.status=pending`],
+      ["shipped_all", `shipping.status=shipped`],
+    ];
+    for (const [label, qs] of substatusTests) {
+      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&${qs}&limit=1`, { headers: h });
+      const j = await r.json();
+      results[label] = { status: r.status, total: j.paging?.total, error: j.message };
+    }
+
+    // Test 2: check shipping fields in order response
+    const sampleR = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&limit=1`, { headers: h });
+    const sampleD = await sampleR.json();
+    if (sampleD.results?.[0]) {
+      results.sample_order_shipping = sampleD.results[0].shipping;
+      results.sample_order_tags = sampleD.results[0].tags;
+    }
+
+    // Test 3: shipments multiget
+    if (sampleD.results?.[0]?.shipping?.id) {
+      const shipId = sampleD.results[0].shipping.id;
+      const r3 = await fetch(`https://api.mercadolibre.com/shipments/${shipId}`, { headers: h });
+      results.shipments_single = { status: r3.status, error: (await r3.json()).message };
+    }
+
+    // Test 4: orders/{id} for full shipping details
+    if (sampleD.results?.[0]?.id) {
+      const ordId = sampleD.results[0].id;
+      const r4 = await fetch(`https://api.mercadolibre.com/orders/${ordId}`, { headers: h });
+      const j4 = await r4.json();
+      results.single_order_shipping = j4.shipping;
+    }
+
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/health/dependencies", (_req, res) => {
   const payload = safeDependencyHealth();
   res.status(payload.ok ? 200 : 500).json(payload);
