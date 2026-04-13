@@ -837,6 +837,7 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     post_sale_overview?: MLDashboardPostSaleOverview;
     operational_queues?: MLDashboardOperationalQueues;
     deposits?: MLDashboardDeposit[];
+    ml_live_chip_counts?: MLLiveChipCounts;
     error?: string;
   }>(
     "/api/ml/dashboard",
@@ -858,6 +859,7 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     post_sale_overview: data?.post_sale_overview,
     operational_queues: data?.operational_queues,
     deposits: Array.isArray(data?.deposits) ? data.deposits : [],
+    ml_live_chip_counts: data?.ml_live_chip_counts,
   };
 }
 
