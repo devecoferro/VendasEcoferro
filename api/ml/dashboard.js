@@ -1322,14 +1322,15 @@ async function fetchMLLiveChipCounts(connection) {
       }
     }
 
-    // Finalizadas → entregas concluídas hoje (delivered)
-    // ML Seller Center mostra "Finalizadas" = delivered, NÃO cancelled/not_delivered
-    // (cancelled/not_delivered ficam em "Gerenciar Pós-venda", chip separado)
+    // Finalizadas → apenas not_delivered (entrega tentada mas falhou)
+    // ML Seller Center: "Finalizadas" = not_delivered no fluxo de envio
+    // "Gerenciar Pós-venda" = cancelled (chip separado no ML)
+    // "delivered" NÃO entra — entregas concluídas saem do painel de envios
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
-      const deliveredUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=delivered&order.date_last_updated.from=${todayISO}&limit=1`;
-      const dR = await fetch(deliveredUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
-      finalized = dR.paging?.total || 0;
+      const ndUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=1`;
+      const ndR = await fetch(ndUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+      finalized = ndR.paging?.total || 0;
     } catch {
       // Finalized = 0 se falhar
     }
