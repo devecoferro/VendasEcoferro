@@ -1231,21 +1231,18 @@ export async function buildDashboardPayload(options = {}) {
           : classifyCrossDockingOrder(order, todayKey);
 
       // Finalizadas: só mostra pedidos cancelados/devolvidos recentes.
-      // Usa a DATA DA EXCEÇÃO (date_cancelled, date_not_delivered, date_returned),
-      // não a data de venda, para alinhar com o ML Seller Center que mostra
-      // apenas as finalizações dos últimos ~2 dias.
+      // ML Seller Center mostra apenas finalizações do dia atual.
+      // Usa a DATA DA EXCEÇÃO (date_cancelled, date_not_delivered, date_returned).
       if (bucket === "finalized") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
-        const exceptionDate =
-          parseDate(statusHistory.date_cancelled) ||
-          parseDate(statusHistory.date_not_delivered) ||
-          parseDate(statusHistory.date_returned) ||
-          (order.sale_date ? new Date(order.sale_date) : null);
-        const ageDays = exceptionDate
-          ? (today.getTime() - exceptionDate.getTime()) / (24 * 60 * 60 * 1000)
-          : 999;
-        if (ageDays > 2) {
+        const exceptionDateKey =
+          getDateKey(statusHistory.date_cancelled) ||
+          getDateKey(statusHistory.date_not_delivered) ||
+          getDateKey(statusHistory.date_returned) ||
+          getDateKey(order.sale_date);
+        // ML mostra apenas finalizações de hoje (mesmo dia calendário)
+        if (!exceptionDateKey || exceptionDateKey < todayKey) {
           continue;
         }
       }

@@ -731,10 +731,15 @@ const ACTIVE_REFRESH_SHIPPING_STATUSES = [
   { status: "ready_to_ship", maxPages: 15 },
   { status: "shipped", maxPages: 5 },
 ];
+// Pedidos recém-entregues/cancelados: atualiza no DB local para limpar
+// dados stale (ex: pedido que era shipped/out_for_delivery mas agora
+// é delivered — sem esse sync, fica preso como "Em trânsito").
+const ACTIVE_REFRESH_RECENT_DELIVERED_DAYS = 3;
 
 export async function runActiveOrdersRefresh({ connectionId }) {
   let totalRefreshed = 0;
 
+  // 1. Sync all orders in active shipping statuses
   for (const { status, maxPages } of ACTIVE_REFRESH_SHIPPING_STATUSES) {
     try {
       const result = await runMercadoLivreSync({
@@ -746,9 +751,30 @@ export async function runActiveOrdersRefresh({ connectionId }) {
       });
       totalRefreshed += result.synced || 0;
     } catch (err) {
-      // Log but continue with other statuses
       console.error(`[active-refresh] Failed for shipping.status=${status}:`, err.message);
     }
+  }
+
+  // 2. Sync recently-delivered orders to clear stale shipped data.
+  // Orders that were shipped/out_for_delivery yesterday but got delivered
+  // today won't appear in shipping.status=shipped anymore. Without this,
+  // they stay as "Em trânsito" in our dashboard forever.
+  try {
+    const recentDate = new Date();
+    recentDate.setDate(recentDate.getDate() - ACTIVE_REFRESH_RECENT_DELIVERED_DAYS);
+    const updatedFrom = recentDate.toISOString();
+
+    const result = await runMercadoLivreSync({
+      connectionId,
+      shippingStatusFilter: "delivered",
+      updatedFrom,
+      pageLimit: 10,
+      skipMirrorSync: true,
+      skipLastSyncUpdate: true,
+    });
+    totalRefreshed += result.synced || 0;
+  } catch (err) {
+    console.error("[active-refresh] Failed for recent delivered:", err.message);
   }
 
   invalidateDashboardCache();
