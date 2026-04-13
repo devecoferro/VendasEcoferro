@@ -1115,26 +1115,18 @@ export default function MercadoLivrePage() {
       { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
     );
 
-    // Se temos contagens da API ML, usar ready_to_ship como fonte de verdade
-    // para hoje + próximos (splitamos usando proporção local).
-    // "Em trânsito" e "Finalizadas" usam contagem LOCAL porque:
-    // - ML "Em trânsito" = apenas shipped com tracking ativo (substatus filtering)
-    //   e shipping.status=shipped retorna TODOS os shipped (inclui entregues sem scan)
-    // - ML "Finalizadas" = apenas cancelamentos/devoluções recentes
-    //   e shipping.status=not_delivered retorna TODOS os not_delivered
+    // Se temos contagens da API ML, usar para ajustar os chips:
+    // - "Envios de hoje": contagem LOCAL (classificação por substatus é precisa)
+    // - "Próximos dias": ML total (pending+ready_to_ship) MENOS hoje local
+    //   Isso captura pedidos que ainda não sincronizamos
+    // - "Em trânsito" e "Finalizadas": contagem LOCAL (ML API não tem filtro exato)
     if (mlCounts && typeof mlCounts.ready_to_ship === "number") {
-      const mlReadyToShip = mlCounts.ready_to_ship;
+      const mlTotal = mlCounts.ready_to_ship; // = pending + ready_to_ship from ML API
       const localToday = localCounts.today;
-      const localUpcoming = localCounts.upcoming;
-      const localTotal = localToday + localUpcoming;
 
       return {
-        today: localTotal > 0
-          ? Math.round((localToday / localTotal) * mlReadyToShip)
-          : localToday,
-        upcoming: localTotal > 0
-          ? mlReadyToShip - Math.round((localToday / localTotal) * mlReadyToShip)
-          : mlReadyToShip,
+        today: localToday,
+        upcoming: Math.max(0, mlTotal - localToday),
         in_transit: localCounts.in_transit,
         finalized: localCounts.finalized,
       };
