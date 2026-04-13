@@ -438,17 +438,18 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "upcoming";
   }
 
-  // "shipped" com tracking ativo (carrier escaneou) = em trânsito.
-  // No ML Seller Center, apenas pedidos com tracking ativo aparecem em
-  // "Em trânsito". Pedidos shipped/none (sem scan do carrier),
-  // shipped/waiting_for_withdrawal (aguardando retirada pelo comprador)
-  // e shipped/claimed_me NÃO aparecem em nenhuma aba operacional.
+  // "shipped" com tracking ativo = em trânsito, MAS apenas se recente.
+  // ML Seller Center "Em trânsito" mostra apenas envios recentes com
+  // tracking ativo. Pedidos shipped há muitos dias com substatus
+  // "out_for_delivery" são stale (provavelmente já entregues sem scan).
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
+      // Só conta como "Em trânsito" se shipped nos últimos 3 dias
+      const shippedAge = dates.shippedDateKey
+        ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+        : 999;
+      return shippedAge <= 3 ? "in_transit" : null;
     }
-    // shipped/none, waiting_for_withdrawal, claimed_me → excluídos do dashboard
-    // (não aparecem em nenhuma aba do ML Seller Center)
     return null;
   }
 
@@ -513,10 +514,13 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // Fulfillment: mesma lógica — só tracking ativo = in_transit.
+  // Fulfillment: mesma lógica — só tracking recente = in_transit.
   if (status === "shipped") {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      return "in_transit";
+      const shippedAge = dates.shippedDateKey
+        ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+        : 999;
+      return shippedAge <= 3 ? "in_transit" : null;
     }
     return null;
   }
