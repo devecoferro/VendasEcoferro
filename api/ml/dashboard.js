@@ -1146,7 +1146,7 @@ const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
 // Dias máximos desde o envio para considerar "Em trânsito".
 // ML Seller Center só mostra shipped recentes — orders muito antigos
 // com substatus ativo são tratados como pendências, não trânsito.
-const TRANSIT_MAX_DAYS = 3;
+const TRANSIT_MAX_DAYS = 2;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
@@ -1299,17 +1299,15 @@ async function fetchMLLiveChipCounts(connection) {
         // waiting_for_withdrawal → ML mostra em "Próximos dias"
         upcoming++;
       } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
-        // Só conta como "Em trânsito" se shipped recentemente
+        // Só conta como "Em trânsito" se shipped recentemente E temos data
         const shippedDateKey = getDateKey(dateShipped);
         if (shippedDateKey) {
           const ageDays = (new Date(todayKey + "T12:00:00").getTime() - new Date(shippedDateKey + "T12:00:00").getTime()) / 86400000;
           if (ageDays <= TRANSIT_MAX_DAYS) {
             inTransit++;
           }
-        } else {
-          // Sem data de envio — conta se substatus está ativo
-          inTransit++;
         }
+        // Sem data de envio → ignora (provavelmente antigo sem dados completos)
       }
     }
 
