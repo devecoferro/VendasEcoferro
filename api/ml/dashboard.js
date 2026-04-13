@@ -1146,7 +1146,7 @@ const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
 // Dias máximos desde o envio para considerar "Em trânsito".
 // ML Seller Center só mostra shipped recentes — orders muito antigos
 // com substatus ativo são tratados como pendências, não trânsito.
-const TRANSIT_MAX_DAYS = 7;
+const TRANSIT_MAX_DAYS = 3;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
