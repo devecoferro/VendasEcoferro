@@ -1126,11 +1126,14 @@ const ML_LIVE_MAX_PAGES = 15;
 const ML_LIVE_CACHE_TTL_MS = 60 * 1000; // 60s — chip counts mudam devagar
 let liveChipCache = null;
 
-// Substatuses que o ML Seller Center classifica como "Envios de hoje"
-// Deve ser IDÊNTICO ao NATIVE_TODAY_SUBSTATUSES (ready_for_pickup, in_warehouse, ready_to_pack, packed).
+// Substatuses que o ML Seller Center classifica como "Envios de hoje".
+// Inclui substatuses NATIVOS (fulfillment) + CROSS-DOCKING:
+// - Native: ready_for_pickup, in_warehouse, ready_to_pack, packed
+// - Cross-docking: picked_up (carrier coletou), authorized_by_carrier
 // "in_packing_list" é UPCOMING (próximos dias), não hoje.
 const TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
+  "picked_up", "authorized_by_carrier",
 ]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
