@@ -1322,18 +1322,14 @@ async function fetchMLLiveChipCounts(connection) {
       }
     }
 
-    // Finalizadas → não buscar paginado, só contar cancelados/not_delivered de hoje
-    // Usamos paging.total com filtro de data para ser eficiente
+    // Finalizadas → entregas concluídas hoje (delivered)
+    // ML Seller Center mostra "Finalizadas" = delivered, NÃO cancelled/not_delivered
+    // (cancelled/not_delivered ficam em "Gerenciar Pós-venda", chip separado)
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
-      const cancelledUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=cancelled&order.date_last_updated.from=${todayISO}&limit=1`;
-      const notDeliveredUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=1`;
-      const [cR, ndR] = await Promise.all([
-        fetch(cancelledUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
-        fetch(notDeliveredUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
-      ]);
-      // Para finalized, pack dedup importa menos (volume baixo)
-      finalized = (cR.paging?.total || 0) + (ndR.paging?.total || 0);
+      const deliveredUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=delivered&order.date_last_updated.from=${todayISO}&limit=1`;
+      const dR = await fetch(deliveredUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+      finalized = dR.paging?.total || 0;
     } catch {
       // Finalized = 0 se falhar
     }
