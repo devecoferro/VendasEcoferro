@@ -1127,13 +1127,14 @@ const ML_LIVE_CACHE_TTL_MS = 60 * 1000; // 60s — chip counts mudam devagar
 let liveChipCache = null;
 
 // Substatuses que o ML Seller Center classifica como "Envios de hoje".
-// Inclui substatuses NATIVOS (fulfillment) + CROSS-DOCKING:
-// - Native: ready_for_pickup, in_warehouse, ready_to_pack, packed
-// - Cross-docking: picked_up (carrier coletou), authorized_by_carrier
+// Substatuses que o ML Seller Center classifica como "Envios de hoje":
+// Pedidos que AINDA estão aguardando processamento/coleta no armazém.
+// NOTA: "picked_up" e "authorized_by_carrier" NÃO entram aqui —
+// significam que o transportador JÁ coletou, então o ML Seller Center
+// os remove de "Envios de hoje" (ficam em transição entre ready_to_ship e shipped).
 // "in_packing_list" é UPCOMING (próximos dias), não hoje.
 const TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
-  "picked_up", "authorized_by_carrier",
 ]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
@@ -1214,38 +1215,30 @@ function deduplicateOrdersToPacks(orders) {
   return packs;
 }
 
-// Busca substatus REAL de cada shipment via API ML em paralelo.
+// Carrega substatuses e datas de envio do DB local em UMA query.
 // Retorna Map<shipping_id, { substatus, dateShipped }>.
-// Faz batches de 20 para não saturar a API.
-async function fetchShipmentSubstatuses(token, shippingIds) {
+// Nota: /shipments/{id} API retorna 401 para seller tokens, então usamos DB local.
+// O DB local pode ter lag de minutos, mas as classificações são tolerantes a isso.
+function loadAllShipmentSubstatuses() {
   const map = new Map();
-  if (!shippingIds.length) return map;
-
-  const BATCH_SIZE = 20;
-  for (let i = 0; i < shippingIds.length; i += BATCH_SIZE) {
-    const batch = shippingIds.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map(async (id) => {
-        try {
-          const res = await fetch(`https://api.mercadolibre.com/shipments/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (!res.ok) return { id, substatus: "none", dateShipped: null };
-          const data = await res.json();
-          return {
-            id,
-            substatus: (data.substatus || "none").toLowerCase().trim(),
-            dateShipped: data.status_history?.date_shipped || null,
-          };
-        } catch {
-          return { id, substatus: "none", dateShipped: null };
-        }
-      })
-    );
-    for (const r of results) {
-      map.set(String(r.id), { substatus: r.substatus, dateShipped: r.dateShipped });
+  try {
+    const rows = db.prepare(`
+      SELECT shipping_id,
+             json_extract(raw_data, '$.shipment_snapshot.substatus') as substatus,
+             json_extract(raw_data, '$.shipment_snapshot.status_history.date_shipped') as date_shipped
+      FROM ml_orders
+      WHERE shipping_id IS NOT NULL
+        AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, ''))
+            IN ('pending', 'ready_to_ship', 'shipped', 'handling')
+      GROUP BY shipping_id
+    `).all();
+    for (const row of rows) {
+      map.set(String(row.shipping_id), {
+        substatus: (row.substatus || "none").toLowerCase().trim(),
+        dateShipped: row.date_shipped || null,
+      });
     }
-  }
+  } catch { /* fallback: empty map */ }
   return map;
 }
 
@@ -1274,19 +1267,10 @@ async function fetchMLLiveChipCounts(connection) {
     const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
     const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
 
-    // 3. Coletar todos os shipping_ids que precisam de substatus
-    const shippingIdsToCheck = new Set();
-    for (const [, pack] of rtsPacks) {
-      if (pack.shipping_id) shippingIdsToCheck.add(pack.shipping_id);
-    }
-    for (const [, pack] of shippedPacks) {
-      if (pack.shipping_id) shippingIdsToCheck.add(pack.shipping_id);
-    }
+    // 3. Carregar substatuses em BATCH do DB local (1 query, ~50ms)
+    const substatusMap = loadAllShipmentSubstatuses();
 
-    // 4. Buscar substatus REAL via API ML (não do DB local que pode estar desatualizado)
-    const substatusMap = await fetchShipmentSubstatuses(token, [...shippingIdsToCheck]);
-
-    // 5. Classificar cada pack
+    // 4. Classificar cada pack
     let today = 0;
     let upcoming = 0;
     let inTransit = 0;
