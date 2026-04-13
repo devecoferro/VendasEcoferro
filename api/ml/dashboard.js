@@ -1136,6 +1136,11 @@ let liveChipCache = null;
 const TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
 ]);
+// Substatuses em transição: transportador já coletou mas ML ainda marca como ready_to_ship.
+// ML Seller Center NÃO conta estes em nenhum chip — ficam invisíveis até virar "shipped".
+const TRANSITION_SUBSTATUSES = new Set([
+  "picked_up", "authorized_by_carrier",
+]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
 ]);
@@ -1279,14 +1284,18 @@ async function fetchMLLiveChipCounts(connection) {
     // Pending → sempre "upcoming"
     upcoming += pendingPacks.size;
 
-    // Ready to ship → usar substatus local para split hoje/próximos
+    // Ready to ship → classificar por substatus:
+    // - TODAY_SUBSTATUSES → "Envios de hoje"
+    // - TRANSITION_SUBSTATUSES (picked_up, authorized_by_carrier) → excluído (em transição)
+    // - Tudo resto → "Próximos dias"
     for (const [, pack] of rtsPacks) {
       const info = substatusMap.get(String(pack.shipping_id)) || { substatus: "none" };
       if (TODAY_SUBSTATUSES.has(info.substatus)) {
         today++;
-      } else {
+      } else if (!TRANSITION_SUBSTATUSES.has(info.substatus)) {
         upcoming++;
       }
+      // picked_up/authorized_by_carrier → não conta em nenhum chip
     }
 
     // Shipped → classificar por substatus:
