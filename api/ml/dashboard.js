@@ -1126,8 +1126,11 @@ const ML_LIVE_MAX_PAGES = 15;
 const ML_LIVE_CACHE_TTL_MS = 60 * 1000; // 60s — chip counts mudam devagar
 let liveChipCache = null;
 
+// Substatuses que o ML Seller Center classifica como "Envios de hoje"
+// Deve ser IDÊNTICO ao NATIVE_TODAY_SUBSTATUSES (ready_for_pickup, in_warehouse, ready_to_pack, packed).
+// "in_packing_list" é UPCOMING (próximos dias), não hoje.
 const TODAY_SUBSTATUSES = new Set([
-  "ready_for_pickup", "packed", "in_packing_list", "ready_to_pack",
+  "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
 ]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
@@ -1272,19 +1275,14 @@ async function fetchMLLiveChipCounts(connection) {
       }
     }
 
-    // Shipped → só tracking ativo E recente = "Em trânsito"
+    // Shipped → substatus de tracking ativo = "Em trânsito"
+    // ML Seller Center mostra TODOS os shipped com substatus ativo,
+    // sem filtro de data — um pedido shipped há 5 dias mas still out_for_delivery
+    // continua em "Em trânsito" até ser delivered/returned.
     for (const [, pack] of shippedPacks) {
       const info = substatusMap.get(String(pack.shipping_id)) || { substatus: "none", dateShipped: null };
-      const { substatus, dateShipped } = info;
-      if (TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
-        // Só conta se shipped nos últimos 2 dias
-        const shippedDateKey = getDateKey(dateShipped);
-        if (shippedDateKey) {
-          const ageDays = (new Date(todayKey + "T12:00:00").getTime() - new Date(shippedDateKey + "T12:00:00").getTime()) / 86400000;
-          if (ageDays <= 2) {
-            inTransit++;
-          }
-        }
+      if (TRANSIT_SHIPPED_SUBSTATUSES.has(info.substatus)) {
+        inTransit++;
       }
     }
 
