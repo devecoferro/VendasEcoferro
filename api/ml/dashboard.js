@@ -109,6 +109,7 @@ let dashboardCache = null;
 
 export function invalidateDashboardCache() {
   dashboardCache = null;
+  liveChipCache = null;
 }
 
 function normalizeState(value, fallback = "none") {
@@ -1090,6 +1091,9 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
 
 const ML_LIVE_PAGE_LIMIT = 50;
 const ML_LIVE_MAX_PAGES = 15;
+const ML_LIVE_CACHE_TTL_MS = 60 * 1000; // 60s — chip counts mudam devagar
+let liveChipCache = null;
+
 const TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup", "packed", "in_packing_list", "ready_to_pack",
 ]);
@@ -1097,27 +1101,43 @@ const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
 ]);
 
-// Busca TODAS as orders de um shipping status, paginando.
+// Busca TODAS as orders de um shipping status com paginação PARALELA.
+// 1. Busca página 1 (para obter total)
+// 2. Busca TODAS as páginas restantes em paralelo
 async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, maxPages = ML_LIVE_MAX_PAGES) {
-  const allOrders = [];
-  let offset = 0;
-  let pages = 0;
+  const baseUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&sort=date_desc&limit=${ML_LIVE_PAGE_LIMIT}`;
+  const headers = { Authorization: `Bearer ${token}` };
 
-  while (pages < maxPages) {
-    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&sort=date_desc&limit=${ML_LIVE_PAGE_LIMIT}&offset=${offset}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) break;
-    const d = await r.json();
-    const results = Array.isArray(d.results) ? d.results : [];
-    if (results.length === 0) break;
-    allOrders.push(...results);
-    pages++;
-    offset += results.length;
-    const total = d.paging?.total ?? 0;
-    if (offset >= total || results.length < ML_LIVE_PAGE_LIMIT) break;
+  // Página 1: obtém dados + total
+  const firstR = await fetch(`${baseUrl}&offset=0`, { headers });
+  if (!firstR.ok) return [];
+  const firstD = await firstR.json();
+  const firstResults = Array.isArray(firstD.results) ? firstD.results : [];
+  if (firstResults.length === 0) return [];
+
+  const total = firstD.paging?.total ?? firstResults.length;
+  if (total <= ML_LIVE_PAGE_LIMIT) return firstResults;
+
+  // Calcula páginas restantes e busca todas em PARALELO
+  const remainingPages = Math.min(
+    Math.ceil((total - ML_LIVE_PAGE_LIMIT) / ML_LIVE_PAGE_LIMIT),
+    maxPages - 1
+  );
+
+  const pagePromises = [];
+  for (let i = 0; i < remainingPages; i++) {
+    const offset = (i + 1) * ML_LIVE_PAGE_LIMIT;
+    if (offset >= total) break;
+    pagePromises.push(
+      fetch(`${baseUrl}&offset=${offset}`, { headers })
+        .then((r) => (r.ok ? r.json() : { results: [] }))
+        .then((d) => (Array.isArray(d.results) ? d.results : []))
+        .catch(() => [])
+    );
   }
 
-  return allOrders;
+  const remainingResults = await Promise.all(pagePromises);
+  return [firstResults, ...remainingResults].flat();
 }
 
 // Agrupa orders por pack (como ML conta nos chips).
@@ -1168,6 +1188,11 @@ function getLocalShipmentSubstatus(shippingId) {
 }
 
 async function fetchMLLiveChipCounts(connection) {
+  // Cache de 60s para evitar chamadas API repetidas
+  if (liveChipCache && liveChipCache.expiresAt > Date.now()) {
+    return liveChipCache.data;
+  }
+
   try {
     const validConnection = await ensureValidAccessToken(connection);
     if (!validConnection?.access_token) return null;
@@ -1237,7 +1262,9 @@ async function fetchMLLiveChipCounts(connection) {
       // Finalized = 0 se falhar
     }
 
-    return { today, upcoming, in_transit: inTransit, finalized };
+    const result = { today, upcoming, in_transit: inTransit, finalized };
+    liveChipCache = { data: result, expiresAt: Date.now() + ML_LIVE_CACHE_TTL_MS };
+    return result;
   } catch (err) {
     console.error("[fetchMLLiveChipCounts] Error:", err.message);
     return null;
