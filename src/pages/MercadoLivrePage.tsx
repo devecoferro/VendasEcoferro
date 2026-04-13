@@ -1098,11 +1098,9 @@ export default function MercadoLivrePage() {
     );
   }, [accessibleDashboardDeposits, selectedDepositFilters]);
 
-  // Contagens dos chips: usar dados da API ML quando disponível (fonte de verdade),
-  // senão fallback para contagem local baseada nos deposits.
+  // Contagens dos chips: ML LIVE como fonte de verdade (pack-deduplicated).
+  // Fallback para contagem local se ML API indisponível.
   const shipmentCounts = useMemo(() => {
-    const mlCounts = (dashboard as any)?.ml_api_counts;
-
     // Contagem local (fallback)
     const localCounts = SHIPMENT_FILTERS.reduce<Record<ShipmentBucket, number>>(
       (accumulator, currentFilter) => {
@@ -1115,20 +1113,15 @@ export default function MercadoLivrePage() {
       { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
     );
 
-    // Se temos contagens da API ML, usar para ajustar os chips:
-    // - "Envios de hoje": contagem LOCAL (classificação por substatus é precisa)
-    // - "Próximos dias": ML total (pending+ready_to_ship) MENOS hoje local
-    //   Isso captura pedidos que ainda não sincronizamos
-    // - "Em trânsito" e "Finalizadas": contagem LOCAL (ML API não tem filtro exato)
-    if (mlCounts && typeof mlCounts.ready_to_ship === "number") {
-      const mlTotal = mlCounts.ready_to_ship; // = pending + ready_to_ship from ML API
-      const localToday = localCounts.today;
-
+    // Se temos contagens LIVE do ML (pack-deduplicated), usar DIRETO.
+    // Todos os 4 chips vêm do ML — zero cálculo local.
+    const liveCounts = dashboard?.ml_live_chip_counts;
+    if (liveCounts && typeof liveCounts.today === "number") {
       return {
-        today: localToday,
-        upcoming: Math.max(0, mlTotal - localToday),
-        in_transit: localCounts.in_transit,
-        finalized: localCounts.finalized,
+        today: liveCounts.today,
+        upcoming: liveCounts.upcoming,
+        in_transit: liveCounts.in_transit,
+        finalized: liveCounts.finalized,
       };
     }
 

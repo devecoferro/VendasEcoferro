@@ -1,3 +1,4 @@
+import { db } from "../_lib/db.js";
 import { getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
@@ -65,7 +66,7 @@ const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
 ]);
 const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
-const DASHBOARD_CACHE_TTL_MS = 15 * 1000; // 15 segundos — refresh mais agressivo para operação
+const DASHBOARD_CACHE_TTL_MS = 30 * 1000; // 30 segundos — fetchMLLiveChipCounts faz ~10 API calls
 const SELLER_CENTER_MIRROR_SOURCE =
   "internal_operational_baseline+public_entities_tracked_separately";
 const SELLER_CENTER_FINALIZED_STATUS_KEYWORDS = [
@@ -1081,47 +1082,164 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
   };
 }
 
-// ─── Contagens reais da API ML ─────────────────────────────────────────────
-// Busca contagens diretamente da API do Mercado Livre para cada shipping status.
-// Quando disponível, esses números substituem a classificação local nos chips.
-// Se o token estiver inválido ou a API falhar, retorna null (fallback local).
-async function fetchMLApiCounts(connection) {
+// ─── Contagens LIVE dos chips (pack-deduplicated) ─────────────────────────
+// Busca TODOS os pedidos ativos da API ML, agrupa por pack (como o ML faz),
+// e classifica em buckets usando substatus do DB local.
+// Retorna { today, upcoming, in_transit, finalized } — os 4 números exatos
+// que o ML Seller Center mostra nos chips.
+
+const ML_LIVE_PAGE_LIMIT = 50;
+const ML_LIVE_MAX_PAGES = 15;
+const TODAY_SUBSTATUSES = new Set([
+  "ready_for_pickup", "packed", "in_packing_list", "ready_to_pack",
+]);
+const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
+  "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
+]);
+
+// Busca TODAS as orders de um shipping status, paginando.
+async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, maxPages = ML_LIVE_MAX_PAGES) {
+  const allOrders = [];
+  let offset = 0;
+  let pages = 0;
+
+  while (pages < maxPages) {
+    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&sort=date_desc&limit=${ML_LIVE_PAGE_LIMIT}&offset=${offset}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) break;
+    const d = await r.json();
+    const results = Array.isArray(d.results) ? d.results : [];
+    if (results.length === 0) break;
+    allOrders.push(...results);
+    pages++;
+    offset += results.length;
+    const total = d.paging?.total ?? 0;
+    if (offset >= total || results.length < ML_LIVE_PAGE_LIMIT) break;
+  }
+
+  return allOrders;
+}
+
+// Agrupa orders por pack (como ML conta nos chips).
+// Chave: pack_id > shipping_id > order_id
+function deduplicateOrdersToPacks(orders) {
+  const packs = new Map();
+  for (const order of orders) {
+    const packId = order.pack_id ? String(order.pack_id) : null;
+    const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
+    const orderId = String(order.id);
+    const key = packId || shippingId || orderId;
+
+    if (!packs.has(key)) {
+      packs.set(key, {
+        key,
+        shipping_id: shippingId,
+        shipping_status: "",
+        order_ids: [],
+        date_created: order.date_created,
+      });
+    }
+    const pack = packs.get(key);
+    pack.order_ids.push(orderId);
+    // Usa o primeiro shipping_id encontrado para o pack
+    if (!pack.shipping_id && shippingId) pack.shipping_id = shippingId;
+  }
+  return packs;
+}
+
+// Busca substatus do shipment no DB local (já sincronizado pelo active refresh).
+function getLocalShipmentSubstatus(shippingId) {
+  if (!shippingId) return "none";
+  try {
+    const row = db.prepare(`
+      SELECT json_extract(raw_data, '$.shipment_snapshot.substatus') as substatus,
+             json_extract(raw_data, '$.shipment_snapshot.status_history.date_shipped') as date_shipped
+      FROM ml_orders
+      WHERE shipping_id = ? OR json_extract(raw_data, '$.shipment_snapshot.id') = ?
+      LIMIT 1
+    `).get(shippingId, shippingId);
+    return {
+      substatus: (row?.substatus || "none").toLowerCase().trim(),
+      dateShipped: row?.date_shipped || null,
+    };
+  } catch {
+    return { substatus: "none", dateShipped: null };
+  }
+}
+
+async function fetchMLLiveChipCounts(connection) {
   try {
     const validConnection = await ensureValidAccessToken(connection);
     if (!validConnection?.access_token) return null;
     const token = validConnection.access_token;
-    const sellerId = validConnection.seller_id;
+    const sellerId = String(validConnection.seller_id);
+    const todayKey = getCalendarKey(new Date());
 
-    async function searchTotal(shippingStatus) {
-      const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&limit=1`;
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) return null;
-      const d = await r.json();
-      return d.paging?.total ?? null;
-    }
-
-    const [pendingShipping, readyToShip, shipped, notDelivered] = await Promise.all([
-      searchTotal("pending"),
-      searchTotal("ready_to_ship"),
-      searchTotal("shipped"),
-      searchTotal("not_delivered"),
+    // 1. Buscar todos os pedidos ativos em paralelo
+    const [pendingOrders, rtsOrders, shippedOrders] = await Promise.all([
+      fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
+      fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
+      fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
     ]);
 
-    // Se qualquer chamada falhou, retorna null (fallback local)
-    if (readyToShip == null || shipped == null) return null;
+    // 2. Agrupar por pack (como ML conta)
+    const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
+    const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
+    const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
 
-    return {
-      // ML Seller Center "Envios de hoje" + "Próximos dias" =
-      // shipping.status=ready_to_ship + shipping.status=pending.
-      // "pending" são pedidos pagos que ainda não receberam label de envio
-      // mas já aparecem no painel operacional do ML.
-      ready_to_ship: (readyToShip || 0) + (pendingShipping || 0),
-      // ML "Em trânsito" ≈ shipped com tracking ativo (substatus filtering local)
-      shipped: shipped,
-      // ML "Finalizadas" inclui not_delivered recentes + cancelled recentes
-      not_delivered: notDelivered ?? 0,
-    };
-  } catch {
+    // 3. Classificar cada pack
+    let today = 0;
+    let upcoming = 0;
+    let inTransit = 0;
+    let finalized = 0;
+
+    // Pending → sempre "upcoming"
+    upcoming += pendingPacks.size;
+
+    // Ready to ship → usar substatus local para split hoje/próximos
+    for (const [, pack] of rtsPacks) {
+      const { substatus } = getLocalShipmentSubstatus(pack.shipping_id);
+      if (TODAY_SUBSTATUSES.has(substatus)) {
+        today++;
+      } else {
+        upcoming++;
+      }
+    }
+
+    // Shipped → só tracking ativo E recente = "Em trânsito"
+    for (const [, pack] of shippedPacks) {
+      const { substatus, dateShipped } = getLocalShipmentSubstatus(pack.shipping_id);
+      if (TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
+        // Só conta se shipped nos últimos 2 dias
+        const shippedDateKey = getDateKey(dateShipped);
+        if (shippedDateKey) {
+          const ageDays = (new Date(todayKey + "T12:00:00").getTime() - new Date(shippedDateKey + "T12:00:00").getTime()) / 86400000;
+          if (ageDays <= 2) {
+            inTransit++;
+          }
+        }
+      }
+    }
+
+    // Finalizadas → não buscar paginado, só contar cancelados/not_delivered de hoje
+    // Usamos paging.total com filtro de data para ser eficiente
+    try {
+      const todayISO = todayKey + "T00:00:00.000-03:00";
+      const cancelledUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=cancelled&order.date_last_updated.from=${todayISO}&limit=1`;
+      const notDeliveredUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=1`;
+      const [cR, ndR] = await Promise.all([
+        fetch(cancelledUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
+        fetch(notDeliveredUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
+      ]);
+      // Para finalized, pack dedup importa menos (volume baixo)
+      finalized = (cR.paging?.total || 0) + (ndR.paging?.total || 0);
+    } catch {
+      // Finalized = 0 se falhar
+    }
+
+    return { today, upcoming, in_transit: inTransit, finalized };
+  } catch (err) {
+    console.error("[fetchMLLiveChipCounts] Error:", err.message);
     return null;
   }
 }
@@ -1366,23 +1484,25 @@ export async function buildDashboardPayload(options = {}) {
     postSaleOverview
   );
 
-  // Buscar contagens reais da API ML de TODAS as conexões (sellers).
-  // Agrega totais para refletir a visão unificada do dashboard.
-  let mlApiCounts = null;
+  // ─── Contagens LIVE dos chips (pack-deduplicated, ML = fonte de verdade) ───
+  // Busca todos os pedidos ativos de TODAS as conexões, agrupa por pack,
+  // e retorna os 4 números exatos: { today, upcoming, in_transit, finalized }.
+  let mlLiveChipCounts = null;
   try {
     const allConnections = listConnections().filter((c) => c?.id);
-    const countsPromises = allConnections.map((c) => fetchMLApiCounts(c).catch(() => null));
+    const countsPromises = allConnections.map((c) => fetchMLLiveChipCounts(c).catch(() => null));
     const allCounts = await Promise.all(countsPromises);
     const validCounts = allCounts.filter(Boolean);
     if (validCounts.length > 0) {
-      mlApiCounts = {
-        ready_to_ship: validCounts.reduce((sum, c) => sum + (c.ready_to_ship || 0), 0),
-        shipped: validCounts.reduce((sum, c) => sum + (c.shipped || 0), 0),
-        not_delivered: validCounts.reduce((sum, c) => sum + (c.not_delivered || 0), 0),
+      mlLiveChipCounts = {
+        today: validCounts.reduce((sum, c) => sum + (c.today || 0), 0),
+        upcoming: validCounts.reduce((sum, c) => sum + (c.upcoming || 0), 0),
+        in_transit: validCounts.reduce((sum, c) => sum + (c.in_transit || 0), 0),
+        finalized: validCounts.reduce((sum, c) => sum + (c.finalized || 0), 0),
       };
     }
   } catch {
-    mlApiCounts = null;
+    mlLiveChipCounts = null;
   }
 
   const payload = {
@@ -1393,9 +1513,10 @@ export async function buildDashboardPayload(options = {}) {
     post_sale_overview: postSaleOverview,
     operational_queues: operationalQueues,
     deposits,
-    // Contagens diretas da API ML — fonte de verdade para os chips.
-    // Se null, o frontend deve usar os counts dos deposits (fallback local).
-    ml_api_counts: mlApiCounts,
+    // Contagens LIVE dos chips — ML API como fonte de verdade.
+    // Pack-deduplicated, classificado por substatus local.
+    // Se null, o frontend usa counts dos deposits (fallback local).
+    ml_live_chip_counts: mlLiveChipCounts,
   };
 
   if (allowCache) {

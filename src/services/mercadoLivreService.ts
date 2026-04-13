@@ -165,6 +165,13 @@ export interface MLDashboardDeposit {
   summary_rows_by_bucket?: Record<MLOperationalBucket, MLDashboardSummaryRow[]>;
 }
 
+export interface MLLiveChipCounts {
+  today: number;
+  upcoming: number;
+  in_transit: number;
+  finalized: number;
+}
+
 export interface MLDashboardResponse {
   backend_secure: boolean;
   generated_at: string;
@@ -173,6 +180,7 @@ export interface MLDashboardResponse {
   post_sale_overview?: MLDashboardPostSaleOverview;
   operational_queues?: MLDashboardOperationalQueues;
   deposits: MLDashboardDeposit[];
+  ml_live_chip_counts?: MLLiveChipCounts;
 }
 
 export interface MLPrivateSellerCenterSnapshotTask {
