@@ -1253,10 +1253,19 @@ export default function MercadoLivrePage() {
     ordersPagination.has_more ||
     ordersPagination.loaded < ordersPagination.total;
   const isOperationalListFullyLoaded = ordersPagination.fully_loaded;
+  const hasClientSideOperationalFilters =
+    Boolean(searchQuery.trim()) ||
+    hasQuickSalesFilters(appliedQuickFilters) ||
+    getActiveFilterCount(appliedFilters) > 0 ||
+    Boolean(operationalFocus);
+  // Quando o usuário tem busca/filtro ativo NÃO mostrar o spinner "completar bucket" —
+  // ele esperaria ver "0 resultados" imediatamente. O aviso de carga incremental
+  // continua aparecendo logo acima do grid.
   const shouldShowProgressiveEmptyState =
     filteredOperationalOrders.length === 0 &&
     permittedOrders.length > 0 &&
-    isOperationalListIncomplete;
+    isOperationalListIncomplete &&
+    !hasClientSideOperationalFilters;
   const canGenerateBatchLabels = readyOrders.length > 0 && isOperationalListFullyLoaded;
 
   const hasOperationalSummaryWithoutVisibleOrders = useMemo(
@@ -1270,11 +1279,6 @@ export default function MercadoLivrePage() {
       ),
     [accessibleDashboardDeposits, isOperationalListIncomplete, permittedOrders.length]
   );
-  const hasClientSideOperationalFilters =
-    Boolean(searchQuery.trim()) ||
-    hasQuickSalesFilters(appliedQuickFilters) ||
-    getActiveFilterCount(appliedFilters) > 0 ||
-    Boolean(operationalFocus);
   const selectedBucketTotalCount = operationalOrderIds.size;
   const visibleBucketOrderCount = bucketOrders.length;
   const shouldShowPartialBucketProgress =
@@ -1961,8 +1965,21 @@ export default function MercadoLivrePage() {
               Nenhum pedido encontrado para os filtros aplicados.
             </p>
             <p className="mt-1 text-[15px] text-[#666666]">
-              Ajuste a busca, remova filtros ativos ou troque o bucket operacional.
+              {isOperationalListIncomplete
+                ? `A base ainda está carregando (${ordersPagination.loaded} de ${ordersPagination.total}). Se for um pedido recente, aguarde a próxima página ou clique em "Carregar mais agora".`
+                : "Ajuste a busca, remova filtros ativos ou troque o bucket operacional."}
             </p>
+            {isOperationalListIncomplete && ordersPagination.has_more && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-4 h-9 rounded-full border-[#c8dafc] bg-white text-[#2968c8] hover:bg-[#eef4ff]"
+                onClick={() => void loadMoreOrders()}
+                disabled={ordersPagination.loading_more}
+              >
+                {ordersPagination.loading_more ? "Carregando..." : "Carregar mais agora"}
+              </Button>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
