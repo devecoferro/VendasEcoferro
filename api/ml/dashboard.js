@@ -1136,10 +1136,13 @@ let liveChipCache = null;
 const TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
 ]);
-// Substatuses em transição: transportador já coletou mas ML ainda marca como ready_to_ship.
-// ML Seller Center NÃO conta estes em nenhum chip — ficam invisíveis até virar "shipped".
+// Substatuses em transição: ML Seller Center NÃO conta em nenhum chip.
+// Ficam invisíveis — estão entre "ready_to_ship" e "shipped" no fluxo logístico.
+// - picked_up/authorized_by_carrier: transportador já coletou
+// - in_packing_list/in_hub: cross-docking — pacote em processamento no hub
 const TRANSITION_SUBSTATUSES = new Set([
   "picked_up", "authorized_by_carrier",
+  "in_packing_list", "in_hub",
 ]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
   "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
@@ -1289,27 +1292,13 @@ async function fetchMLLiveChipCounts(connection) {
     // 4. Buscar substatus REAL via /shipments/{id} API (em paralelo)
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
-    // Debug: contar orders com tag not_paid
-    const pendingNotPaid = pendingOrders.filter(o => (o.tags || []).includes("not_paid")).length;
-    const rtsNotPaid = rtsOrders.filter(o => (o.tags || []).includes("not_paid")).length;
-    const shippedNotPaid = shippedOrders.filter(o => (o.tags || []).includes("not_paid")).length;
-    console.log(`[chips] not_paid tags: pending=${pendingNotPaid}/${pendingOrders.length} rts=${rtsNotPaid}/${rtsOrders.length} shipped=${shippedNotPaid}/${shippedOrders.length}`);
-
-    console.log(`[chips] Orders: pending=${pendingOrders.length} rts=${rtsOrders.length} shipped=${shippedOrders.length}`);
-    console.log(`[chips] Packs: pending=${pendingPacks.size} rts=${rtsPacks.size} shipped=${shippedPacks.size}`);
-    console.log(`[chips] Shipments fetched: ${shipmentMap.size} / ${allShippingIds.size} requested`);
-
-    // Contadores de debug para substatus
-    const debugSubstatuses = {};
-    const debugStatuses = {};
+    // (sem debug logs em produção)
 
     // 5. Classificar cada pack com base no substatus REAL
     let today = 0;
     let upcoming = 0;
     let inTransit = 0;
     let finalized = 0;
-    let rtsSkippedNoShipment = 0;
-    let rtsSkippedNotRts = 0;
 
     // Pending → sempre "upcoming"
     upcoming += pendingPacks.size;
@@ -1318,20 +1307,12 @@ async function fetchMLLiveChipCounts(connection) {
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        rtsSkippedNoShipment++;
         upcoming++;
         continue;
       }
 
-      const realKey = shipment.status + "/" + shipment.substatus;
-      debugStatuses[realKey] = (debugStatuses[realKey] || 0) + 1;
-      debugSubstatuses[shipment.substatus] = (debugSubstatuses[shipment.substatus] || 0) + 1;
-
       // Se o shipment REAL já foi cancelado/entregue/shipped, não contar
-      if (shipment.status !== "ready_to_ship") {
-        rtsSkippedNotRts++;
-        continue;
-      }
+      if (shipment.status !== "ready_to_ship") continue;
 
       const sub = shipment.substatus;
       if (TODAY_SUBSTATUSES.has(sub)) {
@@ -1342,10 +1323,6 @@ async function fetchMLLiveChipCounts(connection) {
         upcoming++;
       }
     }
-
-    console.log(`[chips] RTS classification: skippedNoShipment=${rtsSkippedNoShipment} skippedNotRts=${rtsSkippedNotRts}`);
-    console.log(`[chips] RTS real statuses:`, JSON.stringify(debugStatuses));
-    console.log(`[chips] RTS real substatuses:`, JSON.stringify(debugSubstatuses));
 
     // Shipped → classificar pelo substatus REAL:
     for (const [, pack] of shippedPacks) {
@@ -1377,7 +1354,6 @@ async function fetchMLLiveChipCounts(connection) {
 
     const result = { today, upcoming, in_transit: inTransit, finalized };
     liveChipCache = { data: result, expiresAt: Date.now() + ML_LIVE_CACHE_TTL_MS };
-    console.log("[fetchMLLiveChipCounts] Result:", JSON.stringify(result));
     return result;
   } catch (err) {
     console.error("[fetchMLLiveChipCounts] Error:", err.message);
