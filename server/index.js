@@ -133,7 +133,7 @@ app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
-// ─── DEBUG: Test ML API endpoints (temporary) ───────────────────────
+// ─── DEBUG: Test ML API endpoints (temporary — remover após validação) ──
 app.get("/api/debug/ml-api-test", async (_req, res) => {
   try {
     const { getLatestConnection } = await import("../api/ml/_lib/storage.js");

@@ -1220,30 +1220,35 @@ function deduplicateOrdersToPacks(orders) {
   return packs;
 }
 
-// Carrega substatuses e datas de envio do DB local em UMA query.
-// Retorna Map<shipping_id, { substatus, dateShipped }>.
-// Nota: /shipments/{id} API retorna 401 para seller tokens, então usamos DB local.
-// O DB local pode ter lag de minutos, mas as classificações são tolerantes a isso.
-function loadAllShipmentSubstatuses() {
+// ── Busca substatus em tempo real via /shipments/{id} API ──────────
+// Faz chamadas em paralelo com concorrência controlada.
+// Retorna Map<shipping_id, { status, substatus, dateShipped }>.
+async function fetchShipmentDetails(token, shippingIds, concurrency = 20) {
   const map = new Map();
-  try {
-    const rows = db.prepare(`
-      SELECT shipping_id,
-             json_extract(raw_data, '$.shipment_snapshot.substatus') as substatus,
-             json_extract(raw_data, '$.shipment_snapshot.status_history.date_shipped') as date_shipped
-      FROM ml_orders
-      WHERE shipping_id IS NOT NULL
-        AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, ''))
-            IN ('pending', 'ready_to_ship', 'shipped', 'handling')
-      GROUP BY shipping_id
-    `).all();
-    for (const row of rows) {
-      map.set(String(row.shipping_id), {
-        substatus: (row.substatus || "none").toLowerCase().trim(),
-        dateShipped: row.date_shipped || null,
-      });
+  const headers = { Authorization: `Bearer ${token}` };
+  const ids = [...shippingIds];
+
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const batch = ids.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(async (sid) => {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/shipments/${sid}`, { headers });
+          if (!r.ok) return null;
+          const j = await r.json();
+          return {
+            id: String(sid),
+            status: (j.status || "").toLowerCase(),
+            substatus: (j.substatus || "none").toLowerCase(),
+            dateShipped: j.status_history?.date_shipped || null,
+          };
+        } catch { return null; }
+      })
+    );
+    for (const r of results) {
+      if (r) map.set(r.id, r);
     }
-  } catch { /* fallback: empty map */ }
+  }
   return map;
 }
 
@@ -1260,7 +1265,7 @@ async function fetchMLLiveChipCounts(connection) {
     const sellerId = String(validConnection.seller_id);
     const todayKey = getCalendarKey(new Date());
 
-    // 1. Buscar todos os pedidos ativos em paralelo
+    // 1. Buscar todos os pedidos ativos em paralelo (orders/search)
     const [pendingOrders, rtsOrders, shippedOrders] = await Promise.all([
       fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
       fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
@@ -1272,10 +1277,19 @@ async function fetchMLLiveChipCounts(connection) {
     const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
     const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
 
-    // 3. Carregar substatuses em BATCH do DB local (1 query, ~50ms)
-    const substatusMap = loadAllShipmentSubstatuses();
+    // 3. Coletar TODOS os shipping_ids únicos de rts + shipped
+    const allShippingIds = new Set();
+    for (const [, pack] of rtsPacks) {
+      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
+    }
+    for (const [, pack] of shippedPacks) {
+      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
+    }
 
-    // 4. Classificar cada pack
+    // 4. Buscar substatus REAL via /shipments/{id} API (em paralelo)
+    const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
+
+    // 5. Classificar cada pack com base no substatus REAL
     let today = 0;
     let upcoming = 0;
     let inTransit = 0;
@@ -1284,48 +1298,49 @@ async function fetchMLLiveChipCounts(connection) {
     // Pending → sempre "upcoming"
     upcoming += pendingPacks.size;
 
-    // Ready to ship → classificar por substatus:
-    // - TODAY_SUBSTATUSES → "Envios de hoje"
-    // - TRANSITION_SUBSTATUSES (picked_up, authorized_by_carrier) → excluído (em transição)
-    // - Tudo resto → "Próximos dias"
+    // Ready to ship → classificar pelo substatus REAL do shipment:
     for (const [, pack] of rtsPacks) {
-      const info = substatusMap.get(String(pack.shipping_id)) || { substatus: "none" };
-      if (TODAY_SUBSTATUSES.has(info.substatus)) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      if (!shipment) {
+        // Sem dados de shipment → conta como upcoming (seguro)
+        upcoming++;
+        continue;
+      }
+
+      // Se o shipment REAL já foi cancelado/entregue/shipped, não contar
+      // (orders/search retorna fantasmas — orders com shipments já cancelados)
+      if (shipment.status !== "ready_to_ship") continue;
+
+      const sub = shipment.substatus;
+      if (TODAY_SUBSTATUSES.has(sub)) {
         today++;
-      } else if (!TRANSITION_SUBSTATUSES.has(info.substatus)) {
+      } else if (TRANSITION_SUBSTATUSES.has(sub)) {
+        // picked_up/authorized_by_carrier → não conta em nenhum chip
+      } else {
+        // invoice_pending, in_packing_list, etc → "Próximos dias"
         upcoming++;
       }
-      // picked_up/authorized_by_carrier → não conta em nenhum chip
     }
 
-    // Shipped → classificar por substatus:
-    // 1. waiting_for_withdrawal → "Próximos dias" (pacote no ponto de retirada)
-    // 2. out_for_delivery/receiver_absent/not_visited + recente → "Em trânsito"
-    // 3. Outros → excluído (entregues não confirmados, antigos sem tracking)
+    // Shipped → classificar pelo substatus REAL:
     for (const [, pack] of shippedPacks) {
-      const info = substatusMap.get(String(pack.shipping_id)) || { substatus: "none", dateShipped: null };
-      const { substatus, dateShipped } = info;
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      if (!shipment) continue;
 
-      if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
-        // waiting_for_withdrawal → ML mostra em "Próximos dias"
+      // Se o shipment REAL não é mais shipped, não contar
+      if (shipment.status !== "shipped") continue;
+
+      const sub = shipment.substatus;
+      if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
         upcoming++;
-      } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(substatus)) {
-        // Só conta como "Em trânsito" se shipped recentemente E temos data
-        const shippedDateKey = getDateKey(dateShipped);
-        if (shippedDateKey) {
-          const ageDays = (new Date(todayKey + "T12:00:00").getTime() - new Date(shippedDateKey + "T12:00:00").getTime()) / 86400000;
-          if (ageDays <= TRANSIT_MAX_DAYS) {
-            inTransit++;
-          }
-        }
-        // Sem data de envio → ignora (provavelmente antigo sem dados completos)
+      } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(sub) || sub === "soon_deliver" || sub === "in_transit") {
+        inTransit++;
       }
+      // delivered, returned_to_sender, etc → não conta (status final)
     }
 
-    // Finalizadas → apenas not_delivered (entrega tentada mas falhou)
-    // ML Seller Center: "Finalizadas" = not_delivered no fluxo de envio
-    // "Gerenciar Pós-venda" = cancelled (chip separado no ML)
-    // "delivered" NÃO entra — entregas concluídas saem do painel de envios
+    // Finalizadas → not_delivered (entrega tentada mas falhou)
+    // cancelled vai pra "Gerenciar Pós-venda", delivered sai do painel
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
       const ndUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=1`;
@@ -1337,6 +1352,7 @@ async function fetchMLLiveChipCounts(connection) {
 
     const result = { today, upcoming, in_transit: inTransit, finalized };
     liveChipCache = { data: result, expiresAt: Date.now() + ML_LIVE_CACHE_TTL_MS };
+    console.log("[fetchMLLiveChipCounts] Result:", JSON.stringify(result));
     return result;
   } catch (err) {
     console.error("[fetchMLLiveChipCounts] Error:", err.message);
