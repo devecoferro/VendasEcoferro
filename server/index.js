@@ -222,6 +222,37 @@ app.get("/api/debug/ml-api-test", async (_req, res) => {
       results.single_order_shipping = j4.shipping;
     }
 
+    // Test 7: Get actual substatuses from /shipments/{id} for a sample of rts orders
+    const sampleSize = 50;
+    const rtsR = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&limit=${sampleSize}&sort=date_desc`, { headers: h });
+    const rtsD = await rtsR.json();
+    const rtsOrders = rtsD.results || [];
+    const shipIds = [...new Set(rtsOrders.map(o => o.shipping?.id).filter(Boolean))];
+
+    const substatusCounts = {};
+    const statusCounts = {};
+    let shipmentsSampled = 0;
+
+    // Batch 10 at a time
+    for (let i = 0; i < Math.min(shipIds.length, 30); i++) {
+      const sr = await fetch(`https://api.mercadolibre.com/shipments/${shipIds[i]}`, { headers: h });
+      if (sr.ok) {
+        const sj = await sr.json();
+        const key = sj.status + '/' + sj.substatus;
+        statusCounts[key] = (statusCounts[key] || 0) + 1;
+        substatusCounts[sj.substatus] = (substatusCounts[sj.substatus] || 0) + 1;
+        shipmentsSampled++;
+      }
+    }
+
+    results.shipment_sample = {
+      sampled: shipmentsSampled,
+      total_rts_orders: rtsOrders.length,
+      unique_shipping_ids: shipIds.length,
+      status_substatus_distribution: statusCounts,
+      substatus_distribution: substatusCounts,
+    };
+
     res.json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });
