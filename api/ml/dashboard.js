@@ -1289,11 +1289,21 @@ async function fetchMLLiveChipCounts(connection) {
     // 4. Buscar substatus REAL via /shipments/{id} API (em paralelo)
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
+    console.log(`[chips] Orders: pending=${pendingOrders.length} rts=${rtsOrders.length} shipped=${shippedOrders.length}`);
+    console.log(`[chips] Packs: pending=${pendingPacks.size} rts=${rtsPacks.size} shipped=${shippedPacks.size}`);
+    console.log(`[chips] Shipments fetched: ${shipmentMap.size} / ${allShippingIds.size} requested`);
+
+    // Contadores de debug para substatus
+    const debugSubstatuses = {};
+    const debugStatuses = {};
+
     // 5. Classificar cada pack com base no substatus REAL
     let today = 0;
     let upcoming = 0;
     let inTransit = 0;
     let finalized = 0;
+    let rtsSkippedNoShipment = 0;
+    let rtsSkippedNotRts = 0;
 
     // Pending → sempre "upcoming"
     upcoming += pendingPacks.size;
@@ -1302,14 +1312,20 @@ async function fetchMLLiveChipCounts(connection) {
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        // Sem dados de shipment → conta como upcoming (seguro)
+        rtsSkippedNoShipment++;
         upcoming++;
         continue;
       }
 
+      const realKey = shipment.status + "/" + shipment.substatus;
+      debugStatuses[realKey] = (debugStatuses[realKey] || 0) + 1;
+      debugSubstatuses[shipment.substatus] = (debugSubstatuses[shipment.substatus] || 0) + 1;
+
       // Se o shipment REAL já foi cancelado/entregue/shipped, não contar
-      // (orders/search retorna fantasmas — orders com shipments já cancelados)
-      if (shipment.status !== "ready_to_ship") continue;
+      if (shipment.status !== "ready_to_ship") {
+        rtsSkippedNotRts++;
+        continue;
+      }
 
       const sub = shipment.substatus;
       if (TODAY_SUBSTATUSES.has(sub)) {
@@ -1317,10 +1333,13 @@ async function fetchMLLiveChipCounts(connection) {
       } else if (TRANSITION_SUBSTATUSES.has(sub)) {
         // picked_up/authorized_by_carrier → não conta em nenhum chip
       } else {
-        // invoice_pending, in_packing_list, etc → "Próximos dias"
         upcoming++;
       }
     }
+
+    console.log(`[chips] RTS classification: skippedNoShipment=${rtsSkippedNoShipment} skippedNotRts=${rtsSkippedNotRts}`);
+    console.log(`[chips] RTS real statuses:`, JSON.stringify(debugStatuses));
+    console.log(`[chips] RTS real substatuses:`, JSON.stringify(debugSubstatuses));
 
     // Shipped → classificar pelo substatus REAL:
     for (const [, pack] of shippedPacks) {
