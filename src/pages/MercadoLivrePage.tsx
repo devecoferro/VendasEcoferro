@@ -43,6 +43,8 @@ import {
   Send,
   ShoppingCart,
   SlidersHorizontal,
+  Tag,
+  Printer,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -51,6 +53,7 @@ import {
   getMLNFeDocument,
   getMLOrderDocuments,
   mapMLOrdersToProcessingResults,
+  mapMLOrderToSaleData,
   type MLDashboardDeposit,
   type MLNFeResponse,
   type MLOrderDocumentsResponse,
@@ -58,6 +61,7 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
+import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
 import {
   BUYER_TYPE_FILTER_OPTIONS,
   DELIVERY_FILTER_OPTIONS,
@@ -497,12 +501,18 @@ function VirtualizedOrderList({
   onToggleExpand,
   onOpenDocuments,
   onGenerateLabels,
+  selectedOrderIds,
+  onToggleSelect,
+  onPrintInternalLabel,
 }: {
   orders: MLOrder[];
   expandedOrders: Record<string, boolean>;
   onToggleExpand: (orderId: string) => void;
   onOpenDocuments: (order: MLOrder) => void;
   onGenerateLabels: (orders: MLOrder[]) => void;
+  selectedOrderIds: Set<string>;
+  onToggleSelect: (orderId: string) => void;
+  onPrintInternalLabel: (order: MLOrder) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -574,6 +584,11 @@ function VirtualizedOrderList({
                 <div className="border-b border-[#ededed] px-5 py-4">
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
+                      <Checkbox
+                        checked={selectedOrderIds.has(order.id)}
+                        onCheckedChange={() => onToggleSelect(order.id)}
+                        aria-label={`Selecionar pedido ${order.sale_number}`}
+                      />
                       <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
                         ML
                       </span>
@@ -633,6 +648,15 @@ function VirtualizedOrderList({
                       >
                         <FileText className="mr-2 h-4 w-4" />
                         Documentos
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-10 rounded-lg border-[#ffe1c4] text-[#b86900] hover:bg-[#fff5df]"
+                        onClick={() => onPrintInternalLabel(order)}
+                        title="Etiqueta interna com logo Ecoferro"
+                      >
+                        <Tag className="mr-2 h-4 w-4" />
+                        Etiqueta Ecoferro
                       </Button>
                       <Button
                         variant={eligibleForLabel ? "default" : "outline"}
@@ -768,6 +792,8 @@ export default function MercadoLivrePage() {
   );
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+  const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
   const [documentsDialogOpen, setDocumentsDialogOpen] = useState(false);
   const [documentsOrder, setDocumentsOrder] = useState<MLOrder | null>(null);
   const [orderDocuments, setOrderDocuments] = useState<MLOrderDocumentsResponse | null>(null);
@@ -946,6 +972,107 @@ export default function MercadoLivrePage() {
     }
     navigate("/review");
   }, [documentsOrder, handleGenerateLabels, navigate]);
+
+  const handleToggleSelectOrder = useCallback((orderId: string) => {
+    setSelectedOrderIds((current) => {
+      const next = new Set(current);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedOrderIds(new Set());
+  }, []);
+
+  const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
+    try {
+      await exportSalePdf(mapMLOrderToSaleData(order));
+    } catch (caughtError) {
+      toast.error(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Falha ao gerar a etiqueta interna Ecoferro."
+      );
+    }
+  }, []);
+
+  const handlePrintInternalLabelsEcoferroBulk = useCallback(
+    async (ordersToPrint: MLOrder[]) => {
+      if (ordersToPrint.length === 0) {
+        toast.info("Selecione pelo menos um pedido.");
+        return;
+      }
+      try {
+        const sales = ordersToPrint.map(mapMLOrderToSaleData);
+        await exportBatchPdf(sales);
+        toast.success(`${sales.length} etiqueta(s) Ecoferro geradas em lote.`);
+      } catch (caughtError) {
+        toast.error(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Falha ao gerar as etiquetas internas em lote."
+        );
+      }
+    },
+    []
+  );
+
+  const handlePrintMlLabelsAndNFeBulk = useCallback(
+    async (ordersToPrint: MLOrder[]) => {
+      if (ordersToPrint.length === 0) {
+        toast.info("Selecione pelo menos um pedido.");
+        return;
+      }
+      setBulkPrintingMl(true);
+      let opened = 0;
+      let failed = 0;
+      try {
+        for (const order of ordersToPrint) {
+          try {
+            const docs = await getMLOrderDocuments(order.order_id);
+            const labelUrl =
+              docs?.shipping_label_external?.print_url ||
+              docs?.shipping_label_external?.label_url ||
+              null;
+            const danfeUrl =
+              docs?.invoice_nfe_document?.danfe_print_url ||
+              docs?.invoice_nfe_document?.invoice_url ||
+              null;
+
+            if (labelUrl) {
+              window.open(labelUrl, "_blank", "noopener,noreferrer");
+              opened += 1;
+            }
+            if (danfeUrl) {
+              window.open(danfeUrl, "_blank", "noopener,noreferrer");
+              opened += 1;
+            }
+            if (!labelUrl && !danfeUrl) {
+              failed += 1;
+            }
+          } catch {
+            failed += 1;
+          }
+        }
+        if (opened > 0) {
+          toast.success(`${opened} documento(s) abertos para impressao.`);
+        }
+        if (failed > 0) {
+          toast.warning(
+            `${failed} pedido(s) sem etiqueta/NF-e disponivel para impressao.`
+          );
+        }
+      } finally {
+        setBulkPrintingMl(false);
+      }
+    },
+    []
+  );
 
 
   const handleDepositToggle = (value: string) => {
@@ -1823,12 +1950,65 @@ export default function MercadoLivrePage() {
           </div>
         ) : (
           <div className="space-y-4">
+            {selectedOrderIds.size > 0 && (
+              <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#d9e7ff] bg-[#eef4ff] px-4 py-3 shadow-sm">
+                <div className="text-sm font-medium text-[#22304a]">
+                  {selectedOrderIds.size} pedido(s) selecionado(s)
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    className="h-9 rounded-lg border-[#ffe1c4] text-[#b86900] hover:bg-[#fff5df]"
+                    onClick={() =>
+                      handlePrintInternalLabelsEcoferroBulk(
+                        filteredOperationalOrders.filter((order) =>
+                          selectedOrderIds.has(order.id)
+                        )
+                      )
+                    }
+                  >
+                    <Tag className="mr-2 h-4 w-4" />
+                    Etiquetas Ecoferro
+                  </Button>
+                  <Button
+                    variant="default"
+                    className="h-9 rounded-lg bg-[#3483fa] text-white hover:bg-[#2968c8]"
+                    disabled={bulkPrintingMl}
+                    onClick={() =>
+                      handlePrintMlLabelsAndNFeBulk(
+                        filteredOperationalOrders.filter((order) =>
+                          selectedOrderIds.has(order.id)
+                        )
+                      )
+                    }
+                  >
+                    {bulkPrintingMl ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Printer className="mr-2 h-4 w-4" />
+                    )}
+                    Imprimir etiqueta ML + DANFe
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="h-9 rounded-lg text-[#5f6b7a]"
+                    onClick={handleClearSelection}
+                  >
+                    <X className="mr-2 h-4 w-4" />
+                    Limpar
+                  </Button>
+                </div>
+              </div>
+            )}
             <VirtualizedOrderList
               orders={filteredOperationalOrders}
               expandedOrders={expandedOrders}
               onToggleExpand={handleToggleExpandedOrder}
               onOpenDocuments={handleOpenDocumentsDialog}
               onGenerateLabels={handleGenerateLabels}
+              selectedOrderIds={selectedOrderIds}
+              onToggleSelect={handleToggleSelectOrder}
+              onPrintInternalLabel={handlePrintInternalLabelEcoferro}
             />
 
             {ordersPagination.has_more && (

@@ -213,6 +213,43 @@ export function getInvoiceDocument(options = {}) {
   return mapInvoiceRow(row);
 }
 
+/**
+ * Retorna conjuntos com os identificadores (order_id, shipment_id, pack_id)
+ * que ja possuem NFe emitida (invoice_key preenchida) na tabela
+ * ml_invoice_documents. Usado pelas rotas de dashboard/orders para
+ * identificar pedidos que ainda chegam do ML como "invoice_pending"
+ * mas que de fato ja tiveram a NFe emitida no nosso sistema (ou que
+ * voltaram do ML com a chave da NFe ja vinculada).
+ */
+export function getEmittedInvoiceLookup(sellerId) {
+  const normalizedSellerId = normalizeNullable(sellerId);
+  const result = {
+    orderIds: new Set(),
+    shipmentIds: new Set(),
+    packIds: new Set(),
+  };
+  if (!normalizedSellerId) {
+    return result;
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT order_id, shipment_id, pack_id
+         FROM ml_invoice_documents
+        WHERE seller_id = ?
+          AND COALESCE(NULLIF(TRIM(invoice_key), ''), NULLIF(TRIM(invoice_number), '')) IS NOT NULL`
+    )
+    .all(normalizedSellerId);
+
+  for (const row of rows) {
+    if (row.order_id) result.orderIds.add(String(row.order_id));
+    if (row.shipment_id) result.shipmentIds.add(String(row.shipment_id));
+    if (row.pack_id) result.packIds.add(String(row.pack_id));
+  }
+
+  return result;
+}
+
 export function upsertShippingLabelDocument(record) {
   const sellerId = normalizeNullable(record.seller_id);
   const shipmentId = normalizeNullable(record.shipment_id);

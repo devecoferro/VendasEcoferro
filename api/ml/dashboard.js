@@ -7,6 +7,7 @@ import {
   getSellerCenterMirrorOverview,
 } from "./_lib/mirror-storage.js";
 import { listNfeDocumentsBySellerId } from "../nfe/_lib/nfe-storage.js";
+import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
 import {
   getLatestPrivateSellerCenterSnapshotsByStoreAndTab,
   getPrivateSellerCenterSnapshotStatus,
@@ -304,7 +305,7 @@ function fetchStoredOrders(limit = null) {
     ${limit != null ? `LIMIT ${Math.max(0, Number(limit) || 0)}` : ""}
   `).all(...DASHBOARD_ACTIVE_STATUSES);
 
-  return rows.map((row) => {
+  const mappedOrders = rows.map((row) => {
     let rawData = {};
     try {
       rawData = typeof row.raw_data === "string" ? JSON.parse(row.raw_data) : row.raw_data || {};
@@ -316,6 +317,53 @@ function fetchStoredOrders(limit = null) {
       amount: row.grouped_amount_total || row.amount || 0,
     };
   });
+
+  // Enriquece pedidos com flag __nfe_emitted=true quando ja existe registro
+  // em ml_invoice_documents (NFe efetivamente emitida no nosso sistema).
+  // Isso evita classificar como "para gerar NFe" pedidos cujo ML ainda nao
+  // refletiu o substatus mas que ja foram faturados.
+  enrichOrdersWithEmittedInvoiceFlag(mappedOrders);
+
+  return mappedOrders;
+}
+
+function enrichOrdersWithEmittedInvoiceFlag(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) return;
+
+  // Agrupa por seller_id para minimizar queries.
+  const sellerLookups = new Map();
+
+  for (const order of orders) {
+    const rawData = order.raw_data || {};
+    const sellerId =
+      rawData.seller_id ||
+      rawData.seller?.id ||
+      order.seller_id ||
+      rawData.shipment_snapshot?.seller_id;
+    if (!sellerId) continue;
+
+    const sellerKey = String(sellerId);
+    if (!sellerLookups.has(sellerKey)) {
+      sellerLookups.set(sellerKey, getEmittedInvoiceLookup(sellerKey));
+    }
+    const lookup = sellerLookups.get(sellerKey);
+
+    const orderId = order.order_id ? String(order.order_id) : null;
+    const shipmentId =
+      rawData.shipment_snapshot?.id ||
+      rawData.shipping_id ||
+      order.shipping_id;
+    const packId = rawData.pack_id;
+
+    const hasNfe =
+      (orderId && lookup.orderIds.has(orderId)) ||
+      (shipmentId && lookup.shipmentIds.has(String(shipmentId))) ||
+      (packId && lookup.packIds.has(String(packId)));
+
+    if (hasNfe) {
+      order.raw_data = { ...rawData, __nfe_emitted: true };
+    }
+  }
 }
 
 function readDashboardCache() {
@@ -352,18 +400,25 @@ function isOrderReadyForInvoiceLabel(order) {
   return hasApprovedPayment && shipmentStatus === "ready_to_ship";
 }
 
+function hasEmittedInvoice(order) {
+  const rawData = getRawData(order);
+  return rawData?.__nfe_emitted === true;
+}
+
 function isOrderReadyToPrintLabel(order) {
-  return (
-    isOrderReadyForInvoiceLabel(order) &&
-    normalizeState(getShipmentSnapshot(order).substatus) !== "invoice_pending"
-  );
+  if (!isOrderReadyForInvoiceLabel(order)) return false;
+  const substatus = normalizeState(getShipmentSnapshot(order).substatus);
+  // NFe ja emitida no nosso sistema -> nao esta mais em "para gerar NFe".
+  if (substatus === "invoice_pending") {
+    return hasEmittedInvoice(order);
+  }
+  return true;
 }
 
 function isOrderInvoicePending(order) {
-  return (
-    isOrderReadyForInvoiceLabel(order) &&
-    normalizeState(getShipmentSnapshot(order).substatus) === "invoice_pending"
-  );
+  if (!isOrderReadyForInvoiceLabel(order)) return false;
+  if (hasEmittedInvoice(order)) return false;
+  return normalizeState(getShipmentSnapshot(order).substatus) === "invoice_pending";
 }
 
 function isOrderUnderReview(order) {
@@ -460,7 +515,17 @@ function classifyCrossDockingOrder(order, todayKey) {
     // ML mantém em "Próximos dias" independente do SLA — o pedido
     // só vai para "Envios de hoje" DEPOIS que a NF-e é emitida
     // e o substatus muda para ready_for_pickup ou packed.
+    // Se a NFe ja foi emitida no nosso sistema (mas o ML ainda nao
+    // refletiu o substatus), tratamos como "packed": usa SLA.
     if (substatus === "invoice_pending") {
+      if (hasEmittedInvoice(order)) {
+        if (dates.operationalDueDateKey) {
+          return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+            ? "today"
+            : "upcoming";
+        }
+        return "today";
+      }
       return "upcoming";
     }
 
@@ -593,6 +658,10 @@ function classifyNativeMercadoLivreOrder(order) {
       }
 
       if (CROSS_DOCKING_NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
+        // NFe ja emitida -> sai do bloqueio "invoice_pending" e vai para "today".
+        if (substatus === "invoice_pending" && hasEmittedInvoice(order)) {
+          return "today";
+        }
         return "upcoming";
       }
 
@@ -628,6 +697,10 @@ function classifyNativeMercadoLivreOrder(order) {
     }
 
     if (NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
+      // NFe ja emitida -> sai do bloqueio "invoice_pending" e vai para "today".
+      if (substatus === "invoice_pending" && hasEmittedInvoice(order)) {
+        return "today";
+      }
       return "upcoming";
     }
   }
@@ -1507,6 +1580,12 @@ export async function buildDashboardPayload(options = {}) {
         }
       }
     }
+
+  // Garantir que "Vendas sem deposito" sempre apareca no filtro do frontend
+  // (mesmo vazio), espelhando o comportamento do ML Seller Center.
+  if (!depositsMap.has("without-deposit")) {
+    depositsMap.set("without-deposit", buildEmptyDepositEntry(buildFallbackWithoutDepositInfo()));
+  }
 
   const deposits = Array.from(depositsMap.values())
     .map((deposit) => {

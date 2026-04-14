@@ -7,6 +7,7 @@ import {
   getPaginatedOrderRows,
   getPaginatedOrderSummaries,
 } from "./_lib/storage.js";
+import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
 
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
@@ -26,6 +27,7 @@ const CLIENT_RAW_DATA_KEYS = [
   "billing_info_status",
   "billing_info_snapshot",
   "shipping_id",
+  "__nfe_emitted",
 ];
 
 const ordersCache = new Map();
@@ -154,6 +156,10 @@ function pickDashboardRawData(rawData) {
     };
   }
 
+  if (rawData.__nfe_emitted === true) {
+    payload.__nfe_emitted = true;
+  }
+
   if (rawData.shipment_snapshot && typeof rawData.shipment_snapshot === "object") {
     payload.shipment_snapshot = {
       status: rawData.shipment_snapshot.status ?? null,
@@ -187,6 +193,44 @@ function pickDashboardRawData(rawData) {
   }
 
   return payload;
+}
+
+function enrichOrdersWithEmittedInvoiceFlag(orders) {
+  if (!Array.isArray(orders) || orders.length === 0) return;
+
+  const sellerLookups = new Map();
+
+  for (const order of orders) {
+    const rawData = order.raw_data || {};
+    const sellerId =
+      rawData.seller_id ||
+      rawData.seller?.id ||
+      order.seller_id ||
+      rawData.shipment_snapshot?.seller_id;
+    if (!sellerId) continue;
+
+    const sellerKey = String(sellerId);
+    if (!sellerLookups.has(sellerKey)) {
+      sellerLookups.set(sellerKey, getEmittedInvoiceLookup(sellerKey));
+    }
+    const lookup = sellerLookups.get(sellerKey);
+
+    const orderId = order.order_id ? String(order.order_id) : null;
+    const shipmentId =
+      rawData.shipment_snapshot?.id ||
+      rawData.shipping_id ||
+      order.shipping_id;
+    const packId = rawData.pack_id;
+
+    const hasNfe =
+      (orderId && lookup.orderIds.has(orderId)) ||
+      (shipmentId && lookup.shipmentIds.has(String(shipmentId))) ||
+      (packId && lookup.packIds.has(String(packId)));
+
+    if (hasNfe) {
+      order.raw_data = { ...rawData, __nfe_emitted: true };
+    }
+  }
 }
 
 function sanitizeOrderForClient(order) {
@@ -399,6 +443,7 @@ export default async function handler(request, response) {
               ? consolidatedOrders.filter(isOperationalOrder)
               : consolidatedOrders;
         })();
+    enrichOrdersWithEmittedInvoiceFlag(scopedOrders);
     const clientOrders = scopedOrders.map((order) => shapeOrderForView(order, view));
     const totalOrders = shouldPaginate ? countOrdersByScope(scope) : clientOrders.length;
     const effectiveLimit = limit ?? clientOrders.length;

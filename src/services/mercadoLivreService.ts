@@ -492,7 +492,7 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
   };
 }
 
-export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
+export function mapMLOrderToSaleData(order: MLOrder) {
   const { saleDate, saleTime } = formatSaleDate(order.sale_date);
   const primaryItem = order.items?.[0];
   const groupedItems: SaleItemData[] = (order.items || []).map((item) => ({
@@ -518,25 +518,35 @@ export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
     order.product_image_url || primaryItem?.product_image_url || "";
 
   return {
-    sale: {
-      id: order.id,
-      saleNumber: order.sale_number || order.order_id,
-      saleDate,
-      saleTime,
-      customerName: order.buyer_name || "",
-      customerNickname: order.buyer_nickname || "",
-      productName,
-      sku,
-      quantity: order.quantity || 1,
-      amount: order.amount ?? undefined,
-      barcodeValue: sku,
-      qrcodeValue: sku,
-      saleQrcodeValue: order.sale_number || order.order_id,
-      productImageUrl,
-      productImageData: "",
-      labelObservation: "",
-      groupedItems,
-    },
+    id: order.id,
+    saleNumber: order.sale_number || order.order_id,
+    saleDate,
+    saleTime,
+    customerName: order.buyer_name || "",
+    customerNickname: order.buyer_nickname || "",
+    productName,
+    sku,
+    quantity: order.quantity || 1,
+    amount: order.amount ?? undefined,
+    barcodeValue: sku,
+    qrcodeValue: sku,
+    saleQrcodeValue: order.sale_number || order.order_id,
+    productImageUrl,
+    productImageData: "",
+    labelObservation: "",
+    groupedItems,
+  };
+}
+
+export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
+  const { saleDate, saleTime } = formatSaleDate(order.sale_date);
+  const sku = order.sku || order.items?.[0]?.sku || "";
+  const productName =
+    (order.items?.length || 0) > 1
+      ? `Pacote com ${order.items?.length} produtos`
+      : order.item_title || order.items?.[0]?.item_title || "";
+  return {
+    sale: mapMLOrderToSaleData(order),
     rawText: JSON.stringify(
       {
         order_id: order.order_id,

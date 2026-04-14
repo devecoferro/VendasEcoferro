@@ -461,19 +461,26 @@ export function isOrderReadyForInvoiceLabel(order: MLOrder): boolean {
   return hasApprovedPayment && shipmentStatus === "ready_to_ship";
 }
 
+export function hasEmittedInvoice(order: MLOrder): boolean {
+  const rawData = getRawData(order) as Record<string, unknown> | null;
+  return rawData?.__nfe_emitted === true;
+}
+
 export function isOrderReadyToPrintLabel(order: MLOrder): boolean {
-  return (
-    isOrderReadyForInvoiceLabel(order) &&
-    normalizeState(getShipmentSnapshot(order).substatus) !== "invoice_pending"
-  );
+  if (!isOrderReadyForInvoiceLabel(order)) return false;
+  const substatus = normalizeState(getShipmentSnapshot(order).substatus);
+  if (substatus === "invoice_pending") {
+    // NFe ja emitida no nosso sistema -> liberado para imprimir etiqueta.
+    return hasEmittedInvoice(order);
+  }
+  return true;
 }
 
 export function isOrderInvoicePending(order: MLOrder): boolean {
+  if (!isOrderReadyForInvoiceLabel(order)) return false;
+  if (hasEmittedInvoice(order)) return false;
   const shipmentSnapshot = getShipmentSnapshot(order);
-  return (
-    isOrderReadyForInvoiceLabel(order) &&
-    normalizeState(shipmentSnapshot.substatus) === "invoice_pending"
-  );
+  return normalizeState(shipmentSnapshot.substatus) === "invoice_pending";
 }
 
 export function isOrderForCollection(order: MLOrder): boolean {
