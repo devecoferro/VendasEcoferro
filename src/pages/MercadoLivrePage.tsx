@@ -33,7 +33,6 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  ChevronsRight,
   CircleAlert,
   FileText,
   Info,
@@ -500,7 +499,6 @@ function VirtualizedOrderList({
   expandedOrders,
   onToggleExpand,
   onOpenDocuments,
-  onGenerateLabels,
   selectedOrderIds,
   onToggleSelect,
   onPrintInternalLabel,
@@ -509,7 +507,6 @@ function VirtualizedOrderList({
   expandedOrders: Record<string, boolean>;
   onToggleExpand: (orderId: string) => void;
   onOpenDocuments: (order: MLOrder) => void;
-  onGenerateLabels: (orders: MLOrder[]) => void;
   selectedOrderIds: Set<string>;
   onToggleSelect: (orderId: string) => void;
   onPrintInternalLabel: (order: MLOrder) => void;
@@ -554,7 +551,6 @@ function VirtualizedOrderList({
           const buyerName =
             order.buyer_name || order.buyer_nickname || "Comprador não identificado";
           const buyerType = getBuyerType(order);
-          const eligibleForLabel = isOrderReadyToPrintLabel(order);
           const orderItems = getDisplayOrderItems(order);
           const packageProductsCount = orderItems.length;
           const totalUnits = orderItems.reduce(
@@ -657,19 +653,6 @@ function VirtualizedOrderList({
                       >
                         <Tag className="mr-2 h-4 w-4" />
                         Etiqueta Ecoferro
-                      </Button>
-                      <Button
-                        variant={eligibleForLabel ? "default" : "outline"}
-                        className={`h-10 rounded-lg px-5 ${
-                          eligibleForLabel
-                            ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
-                            : "border-[#d8d8d8] text-[#8a8a8a]"
-                        }`}
-                        disabled={!eligibleForLabel}
-                        onClick={() => onGenerateLabels([order])}
-                      >
-                        {eligibleForLabel ? "Gerar etiqueta" : "Não elegível"}
-                        <ChevronsRight className="ml-2 h-4 w-4" />
                       </Button>
                     </div>
                   </div>
@@ -2005,7 +1988,6 @@ export default function MercadoLivrePage() {
               expandedOrders={expandedOrders}
               onToggleExpand={handleToggleExpandedOrder}
               onOpenDocuments={handleOpenDocumentsDialog}
-              onGenerateLabels={handleGenerateLabels}
               selectedOrderIds={selectedOrderIds}
               onToggleSelect={handleToggleSelectOrder}
               onPrintInternalLabel={handlePrintInternalLabelEcoferro}
