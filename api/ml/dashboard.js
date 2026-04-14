@@ -1289,6 +1289,12 @@ async function fetchMLLiveChipCounts(connection) {
     // 4. Buscar substatus REAL via /shipments/{id} API (em paralelo)
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
+    // Debug: contar orders com tag not_paid
+    const pendingNotPaid = pendingOrders.filter(o => (o.tags || []).includes("not_paid")).length;
+    const rtsNotPaid = rtsOrders.filter(o => (o.tags || []).includes("not_paid")).length;
+    const shippedNotPaid = shippedOrders.filter(o => (o.tags || []).includes("not_paid")).length;
+    console.log(`[chips] not_paid tags: pending=${pendingNotPaid}/${pendingOrders.length} rts=${rtsNotPaid}/${rtsOrders.length} shipped=${shippedNotPaid}/${shippedOrders.length}`);
+
     console.log(`[chips] Orders: pending=${pendingOrders.length} rts=${rtsOrders.length} shipped=${shippedOrders.length}`);
     console.log(`[chips] Packs: pending=${pendingPacks.size} rts=${rtsPacks.size} shipped=${shippedPacks.size}`);
     console.log(`[chips] Shipments fetched: ${shipmentMap.size} / ${allShippingIds.size} requested`);
