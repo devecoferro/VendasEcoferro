@@ -46,6 +46,16 @@ const INCREMENTAL_SYNC_COOLDOWN_MS = 45000;
 const MIRROR_SYNC_COOLDOWN_MS = 15 * 60 * 1000;
 const syncRequestsInFlight = new Map();
 
+// Piso de sincronizacao: nao buscar nada criado antes desta data. Aplicado
+// a todos os caminhos (sync manual, active-refresh, webhooks), porque o
+// sistema so precisa operar com vendas de 01/04/2026 em diante.
+const MIN_SYNC_DATE_FROM = "2026-04-01";
+
+function clampDateFrom(value) {
+  if (typeof value !== "string" || value.length === 0) return MIN_SYNC_DATE_FROM;
+  return value < MIN_SYNC_DATE_FROM ? MIN_SYNC_DATE_FROM : value;
+}
+
 function parseIsoDate(value) {
   if (!value) {
     return null;
@@ -329,9 +339,11 @@ function buildOrdersSearchUrl({
     offset: String(offset),
   });
 
-  if (dateFrom) {
-    params.set("order.date_created.from", `${dateFrom}T00:00:00.000-03:00`);
-  }
+  // Aplica o piso global (MIN_SYNC_DATE_FROM) — mesmo se nenhum dateFrom foi
+  // passado, a busca nunca vai alem dessa data. Se passou um dateFrom mais
+  // antigo que o piso, clampa pro piso.
+  const effectiveDateFrom = clampDateFrom(dateFrom);
+  params.set("order.date_created.from", `${effectiveDateFrom}T00:00:00.000-03:00`);
 
   if (dateTo) {
     params.set("order.date_created.to", `${dateTo}T23:59:59.000-03:00`);
