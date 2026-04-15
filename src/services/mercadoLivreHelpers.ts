@@ -5,10 +5,24 @@
 } from "@/services/mercadoLivreService";
 
 export type ShipmentBucket = "today" | "upcoming" | "in_transit" | "finalized";
-export type SortOption = "sale_date_desc" | "sale_date_asc";
+export type SortOption =
+  | "sale_date_desc"
+  | "sale_date_asc"
+  | "amount_desc"
+  | "amount_asc";
 export type BuyerTypeFilter = "person" | "business";
-export type StatusFilterOption = "under_review" | "invoice_pending";
-export type DeliveryFormFilter = "collection";
+export type StatusFilterOption =
+  | "under_review"
+  | "invoice_pending"
+  | "label_ready"
+  | "ready_to_ship"
+  | "processing_warehouse"
+  | "in_transit"
+  | "completed"
+  | "not_completed"
+  | "cancelled";
+export type DeliveryFormFilter = "collection" | "fulfillment";
+export type InvoiceFilterOption = "missing_fiscal_data";
 export type FilterOrigin = "native_api" | "operational_internal";
 export type OperationalSummaryKey =
   | "cancelled"
@@ -22,6 +36,7 @@ export interface MercadoLivreFilters {
   buyerTypes: BuyerTypeFilter[];
   statuses: StatusFilterOption[];
   deliveryForms: DeliveryFormFilter[];
+  invoiceStates: InvoiceFilterOption[];
 }
 
 export interface OrderDepositInfo {
@@ -102,6 +117,7 @@ export const DEFAULT_ML_FILTERS: MercadoLivreFilters = {
   buyerTypes: [],
   statuses: [],
   deliveryForms: [],
+  invoiceStates: [],
 };
 
 export const BUYER_TYPE_FILTER_OPTIONS: Array<FilterOptionDefinition<BuyerTypeFilter>> = [
@@ -132,12 +148,69 @@ export const STATUS_FILTER_OPTIONS: Array<FilterOptionDefinition<StatusFilterOpt
     origin: "native_api",
     sourceLabel: "API do ML",
   },
+  {
+    value: "label_ready",
+    label: "Etiquetas para imprimir",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "ready_to_ship",
+    label: "Prontas para enviar",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "processing_warehouse",
+    label: "Processando no centro de distribuição",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "in_transit",
+    label: "A caminho",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "completed",
+    label: "Concluídas",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "not_completed",
+    label: "Não concluídas",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+  {
+    value: "cancelled",
+    label: "Canceladas",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
 ];
 
 export const DELIVERY_FILTER_OPTIONS: Array<FilterOptionDefinition<DeliveryFormFilter>> = [
   {
     value: "collection",
     label: "Para coleta",
+    origin: "operational_internal",
+    sourceLabel: "Operacional interno",
+  },
+  {
+    value: "fulfillment",
+    label: "Mercado Envios Full",
+    origin: "native_api",
+    sourceLabel: "API do ML",
+  },
+];
+
+export const INVOICE_FILTER_OPTIONS: Array<FilterOptionDefinition<InvoiceFilterOption>> = [
+  {
+    value: "missing_fiscal_data",
+    label: "Sem dados fiscais",
     origin: "operational_internal",
     sourceLabel: "Operacional interno",
   },
@@ -498,6 +571,88 @@ export function isOrderForCollection(order: MLOrder): boolean {
   );
 }
 
+export function isOrderFulfillment(order: MLOrder): boolean {
+  const shipmentSnapshot = getShipmentSnapshot(order);
+  const logisticType = normalizeState(
+    shipmentSnapshot.logistic_type || getDepositInfo(order).logisticType
+  );
+  return logisticType === "fulfillment";
+}
+
+function getShipmentStatus(order: MLOrder): string {
+  return normalizeState(getShipmentSnapshot(order).status || order.order_status);
+}
+
+function getShipmentSubstatus(order: MLOrder): string {
+  return normalizeState(getShipmentSnapshot(order).substatus);
+}
+
+export function isOrderLabelReady(order: MLOrder): boolean {
+  // Etiquetas para imprimir = pronta com NF-e emitida (mesma regra de
+  // isOrderReadyToPrintLabel, mas nomeada para alinhar com ML Seller Center).
+  return isOrderReadyToPrintLabel(order);
+}
+
+export function isOrderReadyToShipNow(order: MLOrder): boolean {
+  // "Prontas para enviar" — substatuses que o ML agrupa no bucket "Envios de hoje".
+  const status = getShipmentStatus(order);
+  if (status !== "ready_to_ship") return false;
+  const sub = getShipmentSubstatus(order);
+  return [
+    "ready_for_pickup",
+    "in_warehouse",
+    "ready_to_pack",
+    "packed",
+    "in_packing_list",
+  ].includes(sub);
+}
+
+export function isOrderProcessingWarehouse(order: MLOrder): boolean {
+  // "Processando no centro de distribuição" — transicao: buffered (em fila),
+  // picked_up / authorized_by_carrier (transportadora pegou, aguardando embarque).
+  const status = getShipmentStatus(order);
+  const sub = getShipmentSubstatus(order);
+  if (["pending", "handling"].includes(status) && sub === "buffered") return true;
+  if (status === "ready_to_ship" && ["picked_up", "authorized_by_carrier"].includes(sub)) {
+    return true;
+  }
+  return false;
+}
+
+export function isOrderInTransit(order: MLOrder): boolean {
+  // "A caminho" — shipped sem estar esperando retirada no ponto.
+  const status = getShipmentStatus(order);
+  if (status === "in_transit") return true;
+  if (status === "shipped") {
+    const sub = getShipmentSubstatus(order);
+    return sub !== "waiting_for_withdrawal";
+  }
+  return false;
+}
+
+export function isOrderCompleted(order: MLOrder): boolean {
+  return getShipmentStatus(order) === "delivered";
+}
+
+export function isOrderNotCompleted(order: MLOrder): boolean {
+  const status = getShipmentStatus(order);
+  return status === "not_delivered" || status === "returned";
+}
+
+export function isOrderCancelled(order: MLOrder): boolean {
+  return getShipmentStatus(order) === "cancelled";
+}
+
+export function isOrderMissingFiscalData(order: MLOrder): boolean {
+  // "Sem dados fiscais" — billing_info_status nao indica que tem dados completos.
+  // Valores possiveis: "ok", "available", "pending", "missing", "" (vazio).
+  // Consideramos sem dados qualquer coisa diferente de "ok"/"available" OU quando
+  // nao ha snapshot de billing.
+  const status = getBillingInfoStatus(order);
+  if (status === "ok" || status === "available") return false;
+  return !hasBillingInfoSnapshot(order);
+}
+
 export function isOrderFinalException(order: MLOrder): boolean {
   const shipmentStatus = normalizeState(getShipmentSnapshot(order).status || order.order_status);
   return FINAL_EXCEPTION_STATUSES.has(shipmentStatus);
@@ -540,9 +695,28 @@ export function matchesSupportedFilters(
   if (
     filters.statuses.length > 0 &&
     !filters.statuses.some((statusFilter) => {
-      if (statusFilter === "under_review") return isOrderUnderReview(order);
-      if (statusFilter === "invoice_pending") return isOrderInvoicePending(order);
-      return false;
+      switch (statusFilter) {
+        case "under_review":
+          return isOrderUnderReview(order);
+        case "invoice_pending":
+          return isOrderInvoicePending(order);
+        case "label_ready":
+          return isOrderLabelReady(order);
+        case "ready_to_ship":
+          return isOrderReadyToShipNow(order);
+        case "processing_warehouse":
+          return isOrderProcessingWarehouse(order);
+        case "in_transit":
+          return isOrderInTransit(order);
+        case "completed":
+          return isOrderCompleted(order);
+        case "not_completed":
+          return isOrderNotCompleted(order);
+        case "cancelled":
+          return isOrderCancelled(order);
+        default:
+          return false;
+      }
     })
   ) {
     return false;
@@ -552,6 +726,17 @@ export function matchesSupportedFilters(
     filters.deliveryForms.length > 0 &&
     !filters.deliveryForms.some((deliveryForm) => {
       if (deliveryForm === "collection") return isOrderForCollection(order);
+      if (deliveryForm === "fulfillment") return isOrderFulfillment(order);
+      return false;
+    })
+  ) {
+    return false;
+  }
+
+  if (
+    filters.invoiceStates.length > 0 &&
+    !filters.invoiceStates.some((invoiceState) => {
+      if (invoiceState === "missing_fiscal_data") return isOrderMissingFiscalData(order);
       return false;
     })
   ) {
@@ -564,6 +749,11 @@ export function matchesSupportedFilters(
 export function sortOrders(orders: MLOrder[], sort: SortOption): MLOrder[] {
   const sorted = [...orders];
   sorted.sort((left, right) => {
+    if (sort === "amount_desc" || sort === "amount_asc") {
+      const leftAmount = Number(left.amount) || 0;
+      const rightAmount = Number(right.amount) || 0;
+      return sort === "amount_asc" ? leftAmount - rightAmount : rightAmount - leftAmount;
+    }
     const leftTime = parseDate(left.sale_date)?.getTime() ?? 0;
     const rightTime = parseDate(right.sale_date)?.getTime() ?? 0;
     return sort === "sale_date_asc" ? leftTime - rightTime : rightTime - leftTime;

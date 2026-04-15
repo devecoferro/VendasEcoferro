@@ -186,6 +186,9 @@ function pickDashboardRawData(rawData) {
         rawData.shipment_snapshot.shipping_option &&
         typeof rawData.shipment_snapshot.shipping_option === "object"
           ? {
+              // name é usado pelo detector isOrderForCollection como fallback
+              // quando logistic_type não indica cross_docking (ex: "retirada").
+              name: rawData.shipment_snapshot.shipping_option.name ?? null,
               estimated_delivery_limit:
                 rawData.shipment_snapshot.shipping_option.estimated_delivery_limit ?? null,
               estimated_delivery_final:
@@ -193,6 +196,19 @@ function pickDashboardRawData(rawData) {
             }
           : null,
     };
+  }
+
+  // billing_info_snapshot: envia apenas flag compacta para o frontend
+  // distinguir "temos dados fiscais" vs "não temos" sem vazar CPF/CNPJ.
+  // O helper hasBillingInfoSnapshot() conta keys — então {__has_data:true}
+  // mantém o comportamento correto.
+  const billingSnapshot = rawData.billing_info_snapshot;
+  if (
+    billingSnapshot &&
+    typeof billingSnapshot === "object" &&
+    Object.keys(billingSnapshot).length > 0
+  ) {
+    payload.billing_info_snapshot = { __has_data: true };
   }
 
   return payload;

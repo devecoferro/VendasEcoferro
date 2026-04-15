@@ -65,6 +65,7 @@ import {
   BUYER_TYPE_FILTER_OPTIONS,
   DELIVERY_FILTER_OPTIONS,
   DEFAULT_ML_FILTERS,
+  INVOICE_FILTER_OPTIONS,
   SHIPMENT_BUCKET_LABELS,
   STATUS_FILTER_OPTIONS,
   buildDepositOptions,
@@ -200,8 +201,16 @@ function cloneFilters(filters: MercadoLivreFilters): MercadoLivreFilters {
     buyerTypes: [...filters.buyerTypes],
     statuses: [...filters.statuses],
     deliveryForms: [...filters.deliveryForms],
+    invoiceStates: [...filters.invoiceStates],
   };
 }
+
+const SORT_LABELS: Record<MercadoLivreFilters["sort"], string> = {
+  sale_date_desc: "Vendas mais recentes",
+  sale_date_asc: "Vendas mais antigas",
+  amount_desc: "Maior valor",
+  amount_asc: "Menor valor",
+};
 
 function createDefaultFilters(): MercadoLivreFilters {
   return cloneFilters(DEFAULT_ML_FILTERS);
@@ -316,6 +325,15 @@ function buildSummaryText(
       .map((label) => `"${label}"`)
   );
 
+  parts.push(
+    ...filters.invoiceStates
+      .map(
+        (value) =>
+          INVOICE_FILTER_OPTIONS.find((option) => option.value === value)?.label || value
+      )
+      .map((label) => `"${label}"`)
+  );
+
   if (parts.length === 1) {
     return `Você está visualizando o bucket ${parts[0]} com resumo operacional interno no topo e detalhamento operacional separado nos cards abaixo.`;
   }
@@ -324,7 +342,11 @@ function buildSummaryText(
 }
 
 function getActiveFilterCount(filters: MercadoLivreFilters): number {
-  let count = filters.buyerTypes.length + filters.statuses.length + filters.deliveryForms.length;
+  let count =
+    filters.buyerTypes.length +
+    filters.statuses.length +
+    filters.deliveryForms.length +
+    filters.invoiceStates.length;
   if (filters.sort !== DEFAULT_ML_FILTERS.sort) count += 1;
   return count;
 }
@@ -371,14 +393,28 @@ function buildActiveFilterChips(
     });
   }
 
-  if (filters.sort === "sale_date_asc") {
+  for (const invoiceState of filters.invoiceStates) {
     chips.push({
-      key: "sort:sale_date_asc",
-      label: "Vendas mais antigas",
+      key: `invoice:${invoiceState}`,
+      label:
+        INVOICE_FILTER_OPTIONS.find((option) => option.value === invoiceState)?.label ||
+        invoiceState,
       remove: () =>
         setFilters((current) => ({
           ...current,
-          sort: "sale_date_desc",
+          invoiceStates: current.invoiceStates.filter((entry) => entry !== invoiceState),
+        })),
+    });
+  }
+
+  if (filters.sort !== DEFAULT_ML_FILTERS.sort) {
+    chips.push({
+      key: `sort:${filters.sort}`,
+      label: SORT_LABELS[filters.sort],
+      remove: () =>
+        setFilters((current) => ({
+          ...current,
+          sort: DEFAULT_ML_FILTERS.sort,
         })),
     });
   }
@@ -2073,7 +2109,7 @@ export default function MercadoLivrePage() {
         </div>
       </div>
       <Dialog open={filtersOpen} onOpenChange={setFiltersOpen}>
-        <DialogContent className="sm:max-w-[920px]">
+        <DialogContent className="sm:max-w-[720px] max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Filtrar e ordenar</DialogTitle>
             <DialogDescription>
@@ -2109,9 +2145,9 @@ export default function MercadoLivrePage() {
               )}
             </div>
           </div>
-          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="space-y-3 rounded-2xl border border-border/60 p-4">
-              <Label className="text-sm font-semibold">Ordenação</Label>
+          <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+            <section className="space-y-3 rounded-2xl border border-border/60 p-4">
+              <Label className="text-sm font-semibold">Ordenar por</Label>
               <Select
                 value={draftFilters.sort}
                 onValueChange={(value) =>
@@ -2127,16 +2163,18 @@ export default function MercadoLivrePage() {
                 <SelectContent>
                   <SelectItem value="sale_date_desc">Vendas mais recentes</SelectItem>
                   <SelectItem value="sale_date_asc">Vendas mais antigas</SelectItem>
+                  <SelectItem value="amount_desc">Maior valor</SelectItem>
+                  <SelectItem value="amount_asc">Menor valor</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-3 rounded-2xl border border-dashed border-border/60 bg-secondary/20 p-4">
-              <Label className="text-sm font-semibold">Canal fixo do painel</Label>
+            </section>
+            <section className="space-y-3 rounded-2xl border border-dashed border-border/60 bg-secondary/20 p-4">
+              <Label className="text-sm font-semibold">Canal de venda</Label>
               <div className="rounded-xl border border-border/60 bg-white px-3 py-3 text-sm text-muted-foreground">
-                Mercado Livre. Este canal é informativo nesta tela e não gera filtro adicional.
+                Mercado Livre. Este canal é fixo nesta tela e não gera filtro adicional.
               </div>
-            </div>
-            <div className="space-y-3 rounded-2xl border border-border/60 p-4">
+            </section>
+            <section className="space-y-3 rounded-2xl border border-border/60 p-4">
               <Label className="text-sm font-semibold">Tipo de comprador</Label>
               <div className="space-y-3">
                 {BUYER_TYPE_FILTER_OPTIONS.map((option) => (
@@ -2154,10 +2192,10 @@ export default function MercadoLivrePage() {
                   </label>
                 ))}
               </div>
-            </div>
-            <div className="space-y-3 rounded-2xl border border-border/60 p-4">
+            </section>
+            <section className="space-y-3 rounded-2xl border border-border/60 p-4">
               <Label className="text-sm font-semibold">Status</Label>
-              <div className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {STATUS_FILTER_OPTIONS.map((option) => (
                   <label key={option.value} className="flex items-center gap-3 text-sm">
                     <Checkbox
@@ -2173,8 +2211,8 @@ export default function MercadoLivrePage() {
                   </label>
                 ))}
               </div>
-            </div>
-            <div className="space-y-3 rounded-2xl border border-border/60 p-4">
+            </section>
+            <section className="space-y-3 rounded-2xl border border-border/60 p-4">
               <Label className="text-sm font-semibold">Formas de entrega</Label>
               <div className="space-y-3">
                 {DELIVERY_FILTER_OPTIONS.map((option) => (
@@ -2192,18 +2230,28 @@ export default function MercadoLivrePage() {
                   </label>
                 ))}
               </div>
-            </div>
-            <div className="space-y-3 rounded-2xl border border-dashed border-border/60 bg-secondary/20 p-4 text-sm text-muted-foreground">
-              <p className="font-semibold text-foreground">Filtros nativos x operacionais</p>
-              <p>
-                NF-e sem emitir usa shipment.substatus e é tratado como filtro nativo da API.
-                Pessoa/Negócio, Em revisão e Para coleta continuam disponíveis, mas aparecem como
-                classificação operacional porque dependem da combinação local de status,
-                pagamentos, tags, flows, logistic_type e shipping_option.
-              </p>
-            </div>
+            </section>
+            <section className="space-y-3 rounded-2xl border border-border/60 p-4">
+              <Label className="text-sm font-semibold">Notas fiscais</Label>
+              <div className="space-y-3">
+                {INVOICE_FILTER_OPTIONS.map((option) => (
+                  <label key={option.value} className="flex items-center gap-3 text-sm">
+                    <Checkbox
+                      checked={draftFilters.invoiceStates.includes(option.value)}
+                      onCheckedChange={() =>
+                        setDraftFilters((current) => ({
+                          ...current,
+                          invoiceStates: toggleMultiFilter(current.invoiceStates, option.value),
+                        }))
+                      }
+                    />
+                    <div className="flex flex-1 items-center justify-between gap-2"><span>{option.label}</span><FilterOriginBadge option={option} /></div>
+                  </label>
+                ))}
+              </div>
+            </section>
           </div>
-          <DialogFooter className="flex flex-col gap-3 sm:flex-row sm:justify-between">
+          <DialogFooter className="flex flex-col gap-3 sm:flex-row sm:justify-between pt-3 border-t border-border/40">
             <Button variant="ghost" onClick={() => setDraftFilters(createDefaultFilters())}>
               Limpar filtros
             </Button>
