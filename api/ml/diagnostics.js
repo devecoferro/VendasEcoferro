@@ -4,7 +4,7 @@ import {
   invalidateDashboardCache,
 } from "./dashboard.js";
 import { runActiveOrdersRefresh } from "./sync.js";
-import { listConnections } from "../_lib/storage.js";
+import { listConnections } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { db } from "../_lib/db.js";
 
