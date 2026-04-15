@@ -32,7 +32,6 @@ import { useMercadoLivreData } from "@/hooks/useMercadoLivreData";
 import {
   Check,
   ChevronDown,
-  ChevronUp,
   CircleAlert,
   FileText,
   Info,
@@ -145,34 +144,6 @@ const QUICK_SALES_STATUS_OPTIONS: Array<{
   { value: "under_review", label: "Em revisão" },
   { value: "collection", label: "Para coleta" },
 ];
-
-function formatCurrency(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value)) {
-    return "-";
-  }
-
-  return value.toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
-}
-
-function getDisplayOrderItems(order: MLOrder): MLOrder["items"] {
-  if (Array.isArray(order.items) && order.items.length > 0) {
-    return order.items;
-  }
-
-  return [
-    {
-      item_title: order.item_title,
-      sku: order.sku,
-      quantity: order.quantity,
-      amount: order.amount,
-      item_id: order.item_id,
-      product_image_url: order.product_image_url,
-    },
-  ];
-}
 
 function getDashboardBucketCount(
   deposit: MLDashboardDeposit,
@@ -533,16 +504,12 @@ function DepositFilterMenu({
 // de todos os 300+. Reduz drasticamente o uso de memória e DOM nodes.
 function VirtualizedOrderList({
   orders,
-  expandedOrders,
-  onToggleExpand,
   onOpenDocuments,
   selectedOrderIds,
   onToggleSelect,
   onPrintInternalLabel,
 }: {
   orders: MLOrder[];
-  expandedOrders: Record<string, boolean>;
-  onToggleExpand: (orderId: string) => void;
   onOpenDocuments: (order: MLOrder) => void;
   selectedOrderIds: Set<string>;
   onToggleSelect: (orderId: string) => void;
@@ -553,23 +520,17 @@ function VirtualizedOrderList({
   const virtualizer = useVirtualizer({
     count: orders.length,
     getScrollElement: () => parentRef.current,
-    // Estimativa de altura: card colapsado ~320px, expandido inclui a
-    // pre-visualizacao completa da etiqueta (SaleCardPreview).
+    // Preview da etiqueta fica sempre visivel — altura estimada inclui o
+    // cabecalho + secao NF-e + SaleCardPreview (~280px p/ 1 item, +140px
+    // por item extra). measureElement corrige qualquer divergencia real.
     estimateSize: (index) => {
       const order = orders[index];
-      const isExpanded = expandedOrders[order?.id] ?? true;
-      const itemCount = Math.max(1, (order?.items?.length || 1));
-      // Preview: ~280px p/ 1 item, +140px por item extra em modo compacto.
+      const itemCount = Math.max(1, order?.items?.length || 1);
       const previewHeight = 280 + Math.max(0, itemCount - 1) * 140;
-      return isExpanded ? 320 + previewHeight : 320;
+      return 320 + previewHeight;
     },
     overscan: 3,
   });
-
-  // Recalcular tamanhos quando expandedOrders mudar
-  useEffect(() => {
-    virtualizer.measure();
-  }, [expandedOrders, virtualizer]);
 
   return (
     <div
@@ -588,20 +549,7 @@ function VirtualizedOrderList({
           const order = orders[virtualRow.index];
           const deposit = getDepositInfo(order);
           const shipment = getShipmentPresentation(order);
-          const buyerName =
-            order.buyer_name || order.buyer_nickname || "Comprador não identificado";
           const buyerType = getBuyerType(order);
-          const orderItems = getDisplayOrderItems(order);
-          const packageProductsCount = orderItems.length;
-          const totalUnits = orderItems.reduce(
-            (total, item) => total + Math.max(0, item.quantity || 0),
-            0
-          );
-          const packageAmount = orderItems.reduce(
-            (total, item) => total + (item.amount ?? 0),
-            0
-          );
-          const isExpanded = expandedOrders[order.id] ?? true;
 
           return (
             <div
@@ -618,33 +566,25 @@ function VirtualizedOrderList({
             >
               <article className="mb-4 overflow-hidden rounded-[18px] border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
                 <div className="border-b border-[#ededed] px-5 py-4">
-                  <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                    <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
-                      <Checkbox
-                        checked={selectedOrderIds.has(order.id)}
-                        onCheckedChange={() => onToggleSelect(order.id)}
-                        aria-label={`Selecionar pedido ${order.sale_number}`}
-                      />
-                      <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
-                        ML
+                  <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
+                    <Checkbox
+                      checked={selectedOrderIds.has(order.id)}
+                      onCheckedChange={() => onToggleSelect(order.id)}
+                      aria-label={`Selecionar pedido ${order.sale_number}`}
+                    />
+                    <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
+                      ML
+                    </span>
+                    {deposit.hasDeposit && (
+                      <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a]">
+                        {deposit.displayLabel}
                       </span>
-                      {deposit.hasDeposit && (
-                        <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a]">
-                          {deposit.displayLabel}
-                        </span>
-                      )}
-                      <span className="text-[15px] font-semibold text-[#6a6a6a]">
-                        #{order.sale_number}
-                      </span>
-                      <span>|</span>
-                      <span>{formatSaleMoment(order.sale_date)}</span>
-                    </div>
-                    <div className="flex flex-col gap-1 text-left xl:items-end xl:text-right">
-                      <div className="text-[15px] font-medium text-[#666666]">{buyerName}</div>
-                      {order.buyer_nickname && (
-                        <div className="text-[13px] text-[#8a8a8a]">{order.buyer_nickname}</div>
-                      )}
-                    </div>
+                    )}
+                    <span className="text-[15px] font-semibold text-[#6a6a6a]">
+                      #{order.sale_number}
+                    </span>
+                    <span>|</span>
+                    <span>{formatSaleMoment(order.sale_date)}</span>
                   </div>
                 </div>
 
@@ -699,35 +639,7 @@ function VirtualizedOrderList({
                 </div>
 
                 <div className="px-5 pb-5">
-                  <div className="overflow-hidden rounded-[14px] bg-[#f7f7f7]">
-                    <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 px-5 py-5 text-[15px] text-[#666666]">
-                      <button
-                        type="button"
-                        onClick={() => onToggleExpand(order.id)}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[#3483fa] transition hover:bg-white"
-                      >
-                        {isExpanded ? (
-                          <ChevronUp className="h-5 w-5" />
-                        ) : (
-                          <ChevronDown className="h-5 w-5" />
-                        )}
-                      </button>
-                      <div className="font-medium text-[#666666]">
-                        Pacote de {packageProductsCount} produto
-                        {packageProductsCount > 1 ? "s" : ""}
-                      </div>
-                      <div className="text-right">{formatCurrency(packageAmount)}</div>
-                      <div className="text-right">
-                        {totalUnits} unidade{totalUnits > 1 ? "s" : ""}
-                      </div>
-                    </div>
-
-                    {isExpanded && (
-                      <div className="border-t border-[#ebebeb] bg-[#fafafa] p-4">
-                        <SaleCardPreview sale={mapMLOrderToSaleData(order)} />
-                      </div>
-                    )}
-                  </div>
+                  <SaleCardPreview sale={mapMLOrderToSaleData(order)} />
                 </div>
               </article>
             </div>
@@ -777,7 +689,6 @@ export default function MercadoLivrePage() {
     DEFAULT_QUICK_SALES_FILTERS
   );
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
-  const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
   const [documentsDialogOpen, setDocumentsDialogOpen] = useState(false);
@@ -822,13 +733,6 @@ export default function MercadoLivrePage() {
     toast.success(`${ordersToReview.length} pedido(s) enviados para conferência.`);
     navigate("/review");
   }, [navigate, setResults]);
-
-  const handleToggleExpandedOrder = (orderId: string) => {
-    setExpandedOrders((current) => ({
-      ...current,
-      [orderId]: !(current[orderId] ?? true),
-    }));
-  };
 
   const loadOrderDocuments = useCallback(
     async (order: MLOrder, options: { refresh?: boolean } = {}) => {
@@ -2092,8 +1996,6 @@ export default function MercadoLivrePage() {
             )}
             <VirtualizedOrderList
               orders={filteredOperationalOrders}
-              expandedOrders={expandedOrders}
-              onToggleExpand={handleToggleExpandedOrder}
               onOpenDocuments={handleOpenDocumentsDialog}
               selectedOrderIds={selectedOrderIds}
               onToggleSelect={handleToggleSelectOrder}
