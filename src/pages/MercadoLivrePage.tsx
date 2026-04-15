@@ -37,6 +37,7 @@ import {
   Info,
   Link2,
   Loader2,
+  Receipt,
   Search,
   Send,
   ShoppingCart,
@@ -508,12 +509,20 @@ function VirtualizedOrderList({
   selectedOrderIds,
   onToggleSelect,
   onPrintInternalLabel,
+  onGenerateNFe,
+  onPrintMlLabel,
+  generatingNFeForOrderId,
+  printingLabelForOrderId,
 }: {
   orders: MLOrder[];
   onOpenDocuments: (order: MLOrder) => void;
   selectedOrderIds: Set<string>;
   onToggleSelect: (orderId: string) => void;
   onPrintInternalLabel: (order: MLOrder) => void;
+  onGenerateNFe: (order: MLOrder) => void;
+  onPrintMlLabel: (order: MLOrder) => void;
+  generatingNFeForOrderId: string | null;
+  printingLabelForOrderId: string | null;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Offset do container em relacao ao topo do documento — o windowVirtualizer
@@ -634,25 +643,70 @@ function VirtualizedOrderList({
                         )}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-                      <Button
-                        variant="outline"
-                        className="h-9 w-full rounded-lg border-[#d9e7ff] text-[13px] text-[#2968c8] hover:bg-[#eef4ff] sm:h-10 sm:w-auto sm:text-sm"
-                        onClick={() => onOpenDocuments(order)}
-                      >
-                        <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
-                        Documentos
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-9 w-full rounded-lg border-[#ffe1c4] text-[13px] text-[#b86900] hover:bg-[#fff5df] sm:h-10 sm:w-auto sm:text-sm"
-                        onClick={() => onPrintInternalLabel(order)}
-                        title="Etiqueta interna com logo Ecoferro"
-                      >
-                        <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
-                        Etiqueta Ecoferro
-                      </Button>
-                    </div>
+                    {(() => {
+                      const nfeEligible = isOrderInvoicePending(order);
+                      const labelEligible = isOrderReadyToPrintLabel(order);
+                      const isGeneratingNFe = generatingNFeForOrderId === order.order_id;
+                      const isPrintingLabel = printingLabelForOrderId === order.order_id;
+
+                      return (
+                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2.5 lg:max-w-[560px] lg:justify-end">
+                          <Button
+                            variant="outline"
+                            className="h-9 w-full rounded-lg border-[#d9e7ff] text-[13px] text-[#2968c8] hover:bg-[#eef4ff] sm:h-10 sm:w-auto sm:text-sm"
+                            onClick={() => onOpenDocuments(order)}
+                          >
+                            <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            Documentos
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="h-9 w-full rounded-lg border-[#ffe1c4] text-[13px] text-[#b86900] hover:bg-[#fff5df] sm:h-10 sm:w-auto sm:text-sm"
+                            onClick={() => onPrintInternalLabel(order)}
+                            title="Etiqueta interna com logo Ecoferro"
+                          >
+                            <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            Etiqueta Ecoferro
+                          </Button>
+                          {/* Gerar NF-e: so clicavel quando o pedido esta aguardando emissao da NF-e. */}
+                          <Button
+                            disabled={!nfeEligible || isGeneratingNFe}
+                            className="h-9 w-full rounded-lg bg-[#ff6d1b] px-3 text-[13px] font-semibold text-white shadow-sm hover:bg-[#e65c10] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:h-10 sm:w-auto sm:text-sm"
+                            onClick={() => onGenerateNFe(order)}
+                            title={
+                              nfeEligible
+                                ? "Solicitar emissao da NF-e de venda"
+                                : "NF-e ja emitida ou pedido ainda nao elegivel"
+                            }
+                          >
+                            {isGeneratingNFe ? (
+                              <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
+                            ) : (
+                              <Receipt className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            )}
+                            Gerar NF-e
+                          </Button>
+                          {/* Imprimir etiqueta ML + DANFe: so clicavel quando o pedido esta pronto para impressao. */}
+                          <Button
+                            disabled={!labelEligible || isPrintingLabel}
+                            className="h-9 w-full rounded-lg bg-[#fff159] px-3 text-[13px] font-semibold text-[#333333] shadow-sm hover:bg-[#ffe924] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:h-10 sm:w-auto sm:text-sm"
+                            onClick={() => onPrintMlLabel(order)}
+                            title={
+                              labelEligible
+                                ? "Imprimir etiqueta ML + DANFe"
+                                : "Aguardando emissao da NF-e para liberar a impressao"
+                            }
+                          >
+                            {isPrintingLabel ? (
+                              <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
+                            ) : (
+                              <Printer className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            )}
+                            <span className="truncate">Etiqueta ML + DANFe</span>
+                          </Button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -709,6 +763,11 @@ export default function MercadoLivrePage() {
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
+  // Estados per-order para os botoes "Gerar NF-e" e "Etiqueta ML + DANFe"
+  // no card — evitam o spinner global dos botoes em lote e deixam claro
+  // qual pedido especifico esta sendo processado.
+  const [generatingNFeForOrderId, setGeneratingNFeForOrderId] = useState<string | null>(null);
+  const [printingLabelForOrderId, setPrintingLabelForOrderId] = useState<string | null>(null);
   const [documentsDialogOpen, setDocumentsDialogOpen] = useState(false);
   const [documentsOrder, setDocumentsOrder] = useState<MLOrder | null>(null);
   const [orderDocuments, setOrderDocuments] = useState<MLOrderDocumentsResponse | null>(null);
@@ -1007,6 +1066,52 @@ export default function MercadoLivrePage() {
       }
     },
     []
+  );
+
+  // Gera a NF-e de um unico pedido direto do card, sem abrir o dialog
+  // de documentos. Reusa a mesma rota que o dialog chama, porem atualiza
+  // a listagem operacional no final para refletir a mudanca de status.
+  const handleGenerateSingleOrderNFe = useCallback(
+    async (order: MLOrder) => {
+      setGeneratingNFeForOrderId(order.order_id);
+      try {
+        const payload = await generateMLNFe(order.order_id);
+        if (payload.action === "generate_failed") {
+          toast.error(payload.nfe.note);
+        } else if (payload.action === "blocked") {
+          toast.info(payload.nfe.note);
+        } else if (payload.action === "noop_existing_invoice") {
+          toast.success("NF-e ja localizada para este pedido.");
+        } else {
+          toast.success(payload.nfe.note);
+        }
+        void refresh();
+      } catch (caughtError) {
+        toast.error(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Falha ao solicitar a emissao da NF-e."
+        );
+      } finally {
+        setGeneratingNFeForOrderId(null);
+      }
+    },
+    [refresh]
+  );
+
+  // Imprime etiqueta ML + DANFe de um unico pedido direto do card. Mantem
+  // o spinner local (per-order) alem do estado global de bulk para nao
+  // travar outros botoes do banner enquanto um card individual imprime.
+  const handlePrintSingleOrderMlLabel = useCallback(
+    async (order: MLOrder) => {
+      setPrintingLabelForOrderId(order.order_id);
+      try {
+        await handlePrintMlLabelsAndNFeBulk([order]);
+      } finally {
+        setPrintingLabelForOrderId(null);
+      }
+    },
+    [handlePrintMlLabelsAndNFeBulk]
   );
 
 
@@ -1518,21 +1623,19 @@ export default function MercadoLivrePage() {
           </div>
         )}
 
-        <div className="rounded-[28px] border border-[#e5e5e5] bg-white px-4 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)] sm:px-6 sm:py-7 lg:px-7">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="flex items-start gap-4 lg:gap-5">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[20px] border-2 border-[#3483fa] bg-white text-[#3483fa] sm:h-16 sm:w-16 sm:rounded-[22px]">
-                <Send className="h-7 w-7 sm:h-8 sm:w-8" />
+        <div className="rounded-[18px] border border-[#e5e5e5] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.04)] sm:px-5 sm:py-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#3483fa]/70 bg-white text-[#3483fa] sm:h-11 sm:w-11">
+                <Send className="h-5 w-5 sm:h-[22px] sm:w-[22px]" />
               </div>
-              <div className="max-w-[460px]">
-                <h2 className="text-[24px] font-semibold leading-[1.15] tracking-[-0.02em] text-[#333333] sm:text-[31px] lg:text-[36px]">
-                  Operação Mercado Livre sincronizada
-                </h2>
-              </div>
+              <h2 className="truncate text-[15px] font-semibold leading-tight tracking-[-0.01em] text-[#333333] sm:text-[17px]">
+                Operação Mercado Livre sincronizada
+              </h2>
             </div>
 
-            <div className="inline-flex items-center gap-2 self-start rounded-full border border-[#dfe7f6] bg-white px-4 py-3 text-[15px] text-[#333333] shadow-[0_1px_2px_rgba(0,0,0,0.04)] sm:text-[17px]">
-              <Info className="h-4 w-4 text-[#3483fa]" />
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-[#dfe7f6] bg-white px-3 py-1.5 text-[12px] text-[#333333] shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:text-[13px]">
+              <Info className="h-3.5 w-3.5 text-[#3483fa]" />
               <span>
                 Atualizado às <span className="font-semibold">{lastUpdateLabel}</span>
               </span>
@@ -1540,7 +1643,7 @@ export default function MercadoLivrePage() {
           </div>
         </div>
 
-        <div className="space-y-6 pt-6 lg:pt-20">
+        <div className="space-y-6 pt-2">
         <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="grid flex-1 gap-3 md:grid-cols-2 xl:grid-cols-[180px_180px_180px_auto_auto]">
@@ -2025,6 +2128,10 @@ export default function MercadoLivrePage() {
               selectedOrderIds={selectedOrderIds}
               onToggleSelect={handleToggleSelectOrder}
               onPrintInternalLabel={handlePrintInternalLabelEcoferro}
+              onGenerateNFe={handleGenerateSingleOrderNFe}
+              onPrintMlLabel={handlePrintSingleOrderMlLabel}
+              generatingNFeForOrderId={generatingNFeForOrderId}
+              printingLabelForOrderId={printingLabelForOrderId}
             />
 
             {ordersPagination.has_more && (

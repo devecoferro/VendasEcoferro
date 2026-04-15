@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Loader2, Printer, ScanLine } from "lucide-react";
+import { ExternalLink, Keyboard, Loader2, Printer, ScanLine, Search } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,9 +43,11 @@ async function collectLabelUrlForOrder(orderId: string): Promise<string | null> 
 
 export default function ConferenciaVendaPage() {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const manualInputRef = useRef<HTMLInputElement | null>(null);
   const lastScanAtRef = useRef<number>(0);
 
   const [scanBuffer, setScanBuffer] = useState("");
+  const [manualCode, setManualCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,19 +56,37 @@ export default function ConferenciaVendaPage() {
 
   // Mantem o input escondido focado: o leitor USB e' um HID que "digita"
   // no elemento com foco atual. Refoca ao clicar em qualquer lugar da pagina.
+  // Exceto quando o usuario esta usando o campo manual (ou qualquer outro
+  // input/button clicado de proposito), para nao roubar o foco dele.
   useEffect(() => {
-    const focusInput = () => {
-      if (
-        inputRef.current &&
-        document.activeElement !== inputRef.current &&
-        !printing
-      ) {
-        inputRef.current.focus();
-      }
+    const isInteractiveFocus = () => {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active) return false;
+      const tag = active.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      // Allow contenteditable regions to keep focus.
+      return active.isContentEditable === true;
     };
+
+    const focusInput = () => {
+      if (!inputRef.current) return;
+      if (printing) return;
+      if (document.activeElement === inputRef.current) return;
+      if (isInteractiveFocus()) return;
+      inputRef.current.focus();
+    };
+
     focusInput();
     const interval = setInterval(focusInput, 400);
-    const handler = () => focusInput();
+    const handler = (event: MouseEvent) => {
+      // Clicks em botoes/inputs ja atualizam o foco; so refocar em cliques
+      // em area "vazia" da pagina.
+      const target = event.target as HTMLElement | null;
+      if (target && target.closest("input, textarea, button, select, a, [contenteditable='true']")) {
+        return;
+      }
+      focusInput();
+    };
     window.addEventListener("click", handler);
     return () => {
       clearInterval(interval);
@@ -187,6 +207,28 @@ export default function ConferenciaVendaPage() {
     }
   };
 
+  // Submit do formulario de entrada manual (fallback caso o leitor USB
+  // nao esteja funcionando). Dispara o mesmo fluxo do bipe: se for codigo
+  // novo, carrega a venda; se for o mesmo ja carregado, imprime.
+  const handleManualSubmit = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const value = manualCode.trim();
+      if (!value) {
+        toast.info("Digite o numero ou QR da venda antes de buscar.");
+        return;
+      }
+      setManualCode("");
+      // Devolve o foco ao input invisivel apos usar o manual, assim o
+      // leitor USB volta a funcionar imediatamente apos a busca manual.
+      window.setTimeout(() => {
+        inputRef.current?.focus();
+      }, 0);
+      await handleScan(value);
+    },
+    [handleScan, manualCode]
+  );
+
   // Primeiro item_id da venda (todos os itens de um mesmo anuncio compartilham
   // o mesmo item_id; packs com itens diferentes tem varios — mostramos o
   // primeiro e deixamos o usuario trocar pelo thumbnail lateral se quiser).
@@ -227,40 +269,81 @@ export default function ConferenciaVendaPage() {
       />
 
       <div className="space-y-4">
-        {/* Cabecalho com instrucao e estado do scanner. */}
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card px-4 py-4 shadow-sm sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <ScanLine className="h-5 w-5" />
+        {/* Cabecalho com instrucao, estado do scanner e entrada manual (fallback
+            para quando o leitor USB nao estiver funcionando). */}
+        <header className="space-y-3 rounded-2xl border border-border/60 bg-card px-4 py-4 shadow-sm sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <ScanLine className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
+                  Conferencia de Venda
+                </h1>
+                <p className="text-xs text-muted-foreground sm:text-sm">
+                  Bipe o QR da etiqueta. Bipe novamente apos 5s para imprimir.
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">
-                Conferencia de Venda
-              </h1>
-              <p className="text-xs text-muted-foreground sm:text-sm">
-                Bipe o QR da etiqueta. Bipe novamente apos 5s para imprimir.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em]">
-            <span
-              className={cn(
-                "inline-flex h-2.5 w-2.5 rounded-full",
-                loading
-                  ? "animate-pulse bg-amber-500"
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em]">
+              <span
+                className={cn(
+                  "inline-flex h-2.5 w-2.5 rounded-full",
+                  loading
+                    ? "animate-pulse bg-amber-500"
+                    : result
+                      ? "bg-emerald-500"
+                      : "bg-slate-400"
+                )}
+              />
+              <span className="text-muted-foreground">
+                {loading
+                  ? "Lendo..."
                   : result
-                    ? "bg-emerald-500"
-                    : "bg-slate-400"
-              )}
-            />
-            <span className="text-muted-foreground">
-              {loading
-                ? "Lendo..."
-                : result
-                  ? "Venda carregada"
-                  : "Aguardando scan"}
-            </span>
+                    ? "Venda carregada"
+                    : "Aguardando scan"}
+              </span>
+            </div>
           </div>
+
+          {/* Fallback manual: campo visivel para digitar o codigo da venda
+              quando o leitor USB/QR nao estiver funcionando. */}
+          <form
+            onSubmit={handleManualSubmit}
+            className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3"
+          >
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <Keyboard className="h-3.5 w-3.5" />
+              Entrada manual
+            </div>
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                ref={manualInputRef}
+                value={manualCode}
+                onChange={(e) => setManualCode(e.target.value)}
+                placeholder="Digite o QR da venda (numero da venda ou order_id)"
+                className="h-10 pl-9 text-sm"
+                autoComplete="off"
+                spellCheck={false}
+                inputMode="text"
+              />
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!manualCode.trim() || loading || printing}
+              className="h-10 gap-2"
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Search className="h-4 w-4" />
+              )}
+              Buscar
+            </Button>
+          </form>
         </header>
 
         {error && !result && (
