@@ -755,9 +755,12 @@ export default function MercadoLivrePage() {
     autoSync: true,
     autoSyncIntervalMs: 120000,
     ordersScope: "operational",
-    ordersLimit: 300,
+    // Página grande (limite do servidor) + auto-load contínuo em background
+    // para que toda a base operacional fique disponível sem o usuário ver
+    // o progresso de carregamento.
+    ordersLimit: 5000,
     ordersView: "dashboard",
-    autoLoadAllPages: false,
+    autoLoadAllPages: true,
   });
 
   const [connecting, setConnecting] = useState(false);
@@ -1828,26 +1831,11 @@ export default function MercadoLivrePage() {
           </div>
 
           {isOperationalListIncomplete && (
-            <div className="mt-3 flex flex-wrap items-center gap-3 rounded-2xl border border-[#d9e7ff] bg-[#f4f8ff] px-4 py-3 text-sm text-[#4f658e]">
-              <Loader2 className="h-4 w-4 animate-spin text-[#3483fa]" />
-              <span>
-                Carregando o restante da base operacional em páginas leves para manter o grid
-                responsivo.{" "}
-                {shouldShowPartialBucketProgress
-                  ? `${visibleBucketOrderCount} de ${selectedBucketTotalCount} pedido(s) do bucket atual já foram carregados.`
-                  : `${ordersPagination.loaded} de ${ordersPagination.total} pedido(s) operacional(is) já foram carregados.`}
-              </span>
-              {ordersPagination.has_more && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-full border-[#c8dafc] bg-white text-[#2968c8] hover:bg-[#eef4ff]"
-                  onClick={() => void loadMoreOrders()}
-                  disabled={ordersPagination.loading_more}
-                >
-                  Carregar mais agora
-                </Button>
-              )}
+            // Indicador discreto: o auto-load contínuo cuida do resto sem
+            // poluir a UI com banner grande de progresso.
+            <div className="mt-2 inline-flex items-center gap-2 text-xs text-[#8a8a8a]">
+              <Loader2 className="h-3 w-3 animate-spin text-[#3483fa]" />
+              <span>Atualizando base ({ordersPagination.loaded}/{ordersPagination.total})</span>
             </div>
           )}
         </div>

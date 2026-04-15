@@ -545,7 +545,7 @@ export function useMercadoLivreData(
       }
 
       void loadMoreOrders({ background: true });
-    }, 250);
+    }, 50);
 
     return () => {
       window.clearTimeout(timeoutId);

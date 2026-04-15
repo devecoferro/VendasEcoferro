@@ -15,7 +15,10 @@ const DELIVERED_STATUSES = new Set(["delivered"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
 const ORDERS_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PAGINATION_LIMIT = 300;
-const MAX_PAGINATION_LIMIT = 1000;
+// Dashboard view envia rows enxutas — 5000 por página ainda fica leve
+// (~1-2MB JSON) e permite ao cliente terminar a base inteira em poucas
+// chamadas, sem o usuário ver progresso.
+const MAX_PAGINATION_LIMIT = 5000;
 const CLIENT_RAW_DATA_KEYS = [
   "status",
   "payments",
