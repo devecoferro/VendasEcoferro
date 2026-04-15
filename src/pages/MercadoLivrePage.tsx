@@ -118,6 +118,7 @@ const SHIPMENT_FILTERS: Array<{ key: ShipmentBucket; label: string }> = [
   { key: "upcoming", label: "Próximos dias" },
   { key: "in_transit", label: "Em trânsito" },
   { key: "finalized", label: "Finalizadas" },
+  { key: "cancelled", label: "Canceladas" },
 ];
 
 type QuickSalesStatusFilter =
@@ -1264,11 +1265,11 @@ export default function MercadoLivrePage() {
         );
         return accumulator;
       },
-      { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
+      { today: 0, upcoming: 0, in_transit: 0, finalized: 0, cancelled: 0 }
     );
 
     // Se temos contagens LIVE do ML (pack-deduplicated), usar DIRETO.
-    // Todos os 4 chips vêm do ML — zero cálculo local.
+    // Todos os chips vêm do ML — zero cálculo local.
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
       return {
@@ -1276,6 +1277,7 @@ export default function MercadoLivrePage() {
         upcoming: liveCounts.upcoming,
         in_transit: liveCounts.in_transit,
         finalized: liveCounts.finalized,
+        cancelled: liveCounts.cancelled ?? 0,
       };
     }
 

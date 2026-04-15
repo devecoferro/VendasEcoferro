@@ -4,7 +4,12 @@
   MLOrder,
 } from "@/services/mercadoLivreService";
 
-export type ShipmentBucket = "today" | "upcoming" | "in_transit" | "finalized";
+export type ShipmentBucket =
+  | "today"
+  | "upcoming"
+  | "in_transit"
+  | "finalized"
+  | "cancelled";
 export type SortOption =
   | "sale_date_desc"
   | "sale_date_asc"
@@ -110,6 +115,7 @@ export const SHIPMENT_BUCKET_LABELS: Record<ShipmentBucket, string> = {
   upcoming: "Próximos dias",
   in_transit: "Em trânsito",
   finalized: "Finalizadas",
+  cancelled: "Canceladas",
 };
 
 export const DEFAULT_ML_FILTERS: MercadoLivreFilters = {
@@ -941,11 +947,10 @@ export function getOperationalSummaryLabel(
   activeBucket: ShipmentBucket
 ): string {
   if (summaryKey === "fulfillment") {
-    return activeBucket === "in_transit"
-      ? "Em trânsito"
-      : activeBucket === "finalized"
-        ? "Finalizadas"
-        : "No centro de distribuição";
+    if (activeBucket === "in_transit") return "Em trânsito";
+    if (activeBucket === "finalized") return "Finalizadas";
+    if (activeBucket === "cancelled") return "Canceladas";
+    return "No centro de distribuição";
   }
 
   const labels: Record<Exclude<OperationalSummaryKey, "fulfillment">, string> = {
@@ -974,7 +979,9 @@ export function matchesOperationalSummaryRow(
     case "ready":
       return isOrderReadyToPrintLabel(order);
     case "fulfillment":
-      return getDepositInfo(order).isFulfillment && activeBucket !== "finalized"
+      return getDepositInfo(order).isFulfillment &&
+        activeBucket !== "finalized" &&
+        activeBucket !== "cancelled"
         ? !isOrderFinalException(order)
         : getDepositInfo(order).isFulfillment;
     default:

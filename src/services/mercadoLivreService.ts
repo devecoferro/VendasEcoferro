@@ -55,7 +55,12 @@ export interface MLOrdersResponse {
   pagination: MLOrdersPagination;
 }
 
-export type MLOperationalBucket = "today" | "upcoming" | "in_transit" | "finalized";
+export type MLOperationalBucket =
+  | "today"
+  | "upcoming"
+  | "in_transit"
+  | "finalized"
+  | "cancelled";
 
 export interface MLDashboardSummaryRow {
   key: string;
@@ -170,6 +175,7 @@ export interface MLLiveChipCounts {
   upcoming: number;
   in_transit: number;
   finalized: number;
+  cancelled: number;
 }
 
 export interface MLDashboardResponse {

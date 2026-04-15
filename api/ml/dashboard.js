@@ -17,7 +17,7 @@ import { buildPrivateSellerCenterPostSaleAudit } from "./_lib/private-seller-cen
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
-const OPERATIONAL_BUCKETS = ["today", "upcoming", "in_transit", "finalized"];
+const OPERATIONAL_BUCKETS = ["today", "upcoming", "in_transit", "finalized", "cancelled"];
 const NATIVE_TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup",
   "in_warehouse",
@@ -564,8 +564,14 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "finalized";
   }
 
-  // Finalizadas: cancelled, returned
-  if (status === "cancelled" || status === "returned") {
+  // Canceladas ganham aba propria ("Canceladas") no frontend — sem o filtro
+  // de data que limita "Finalizadas" ao dia atual.
+  if (status === "cancelled") {
+    return "cancelled";
+  }
+
+  // Devolvidas ficam em Finalizadas (pos-venda concluido).
+  if (status === "returned") {
     return "finalized";
   }
 
@@ -633,7 +639,11 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "finalized";
   }
 
-  if (status === "cancelled" || status === "returned") {
+  if (status === "cancelled") {
+    return "cancelled";
+  }
+
+  if (status === "returned") {
     return "finalized";
   }
 
@@ -757,7 +767,9 @@ function buildFulfillmentSummaryRows(orders, activeBucket) {
       ? "Em transito"
       : activeBucket === "finalized"
         ? "Finalizadas"
-        : "No centro de distribuicao";
+        : activeBucket === "cancelled"
+          ? "Canceladas"
+          : "No centro de distribuicao";
 
   return [{ key: "fulfillment", label, count: orders.length }];
 }
@@ -786,6 +798,7 @@ function buildEmptyDepositEntry(info) {
       upcoming: [],
       in_transit: [],
       finalized: [],
+      cancelled: [],
     },
     _orders: [],
   };
@@ -805,6 +818,7 @@ function buildEmptyBucketCounts() {
     upcoming: 0,
     in_transit: 0,
     finalized: 0,
+    cancelled: 0,
   };
 }
 
@@ -814,6 +828,7 @@ function cloneBucketCounts(source = {}) {
     upcoming: Number(source.upcoming || 0),
     in_transit: Number(source.in_transit || 0),
     finalized: Number(source.finalized || 0),
+    cancelled: Number(source.cancelled || 0),
   };
 }
 
@@ -823,6 +838,7 @@ function buildEmptyBucketOrderIds() {
     upcoming: [],
     in_transit: [],
     finalized: [],
+    cancelled: [],
   };
 }
 
@@ -832,6 +848,7 @@ function cloneBucketOrderIds(source = {}) {
     upcoming: Array.isArray(source.upcoming) ? [...source.upcoming] : [],
     in_transit: Array.isArray(source.in_transit) ? [...source.in_transit] : [],
     finalized: Array.isArray(source.finalized) ? [...source.finalized] : [],
+    cancelled: Array.isArray(source.cancelled) ? [...source.cancelled] : [],
   };
 }
 
@@ -1372,6 +1389,7 @@ async function fetchMLLiveChipCounts(connection) {
     let upcoming = 0;
     let inTransit = 0;
     let finalized = 0;
+    let cancelled = 0;
 
     // Pending → sempre "upcoming"
     upcoming += pendingPacks.size;
@@ -1425,7 +1443,18 @@ async function fetchMLLiveChipCounts(connection) {
       // Finalized = 0 se falhar
     }
 
-    const result = { today, upcoming, in_transit: inTransit, finalized };
+    // Canceladas → contagem total de pedidos com status=cancelled desde o
+    // piso de visibilidade. Sem filtro de data "last_updated", pra que o chip
+    // reflita todas as vendas canceladas visiveis no app.
+    try {
+      const cUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.status=cancelled&limit=1`;
+      const cR = await fetch(cUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+      cancelled = cR.paging?.total || 0;
+    } catch {
+      // Cancelled = 0 se falhar — frontend cai no fallback local.
+    }
+
+    const result = { today, upcoming, in_transit: inTransit, finalized, cancelled };
     liveChipCache = { data: result, expiresAt: Date.now() + ML_LIVE_CACHE_TTL_MS };
     return result;
   } catch (err) {
@@ -1630,6 +1659,16 @@ export async function buildDashboardPayload(options = {}) {
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.finalized.includes(order.id)),
                   todayKey
                 ),
+          cancelled:
+            deposit.logistic_type === "fulfillment"
+              ? buildFulfillmentSummaryRows(
+                  deposit._orders.filter((order) => deposit.order_ids_by_bucket.cancelled.includes(order.id)),
+                  "cancelled"
+                )
+              : buildCrossDockingSummaryRows(
+                  deposit._orders.filter((order) => deposit.order_ids_by_bucket.cancelled.includes(order.id)),
+                  todayKey
+                ),
         };
 
         const totalCount = Object.values(deposit.counts).reduce(
@@ -1695,6 +1734,7 @@ export async function buildDashboardPayload(options = {}) {
         upcoming: validCounts.reduce((sum, c) => sum + (c.upcoming || 0), 0),
         in_transit: validCounts.reduce((sum, c) => sum + (c.in_transit || 0), 0),
         finalized: validCounts.reduce((sum, c) => sum + (c.finalized || 0), 0),
+        cancelled: validCounts.reduce((sum, c) => sum + (c.cancelled || 0), 0),
       };
     }
   } catch {
