@@ -353,6 +353,16 @@ export function getDepositInfo(order: MLOrder): OrderDepositInfo {
 export function buildDepositOptions(orders: MLOrder[]): DepositOptionPresentation[] {
   const optionsMap = new Map<string, DepositOptionPresentation>();
 
+  // "Vendas sem deposito" sempre presente (espelha o Seller Center, que mostra
+  // a opcao mesmo quando nao ha pedidos sem deposito no filtro atual).
+  optionsMap.set("without-deposit", {
+    key: "without-deposit",
+    label: "Vendas sem deposito",
+    displayLabel: "Vendas sem depósito",
+    isFulfillment: false,
+    kind: "without-deposit",
+  });
+
   for (const order of orders) {
     const deposit = getDepositInfo(order);
 
