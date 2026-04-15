@@ -4,7 +4,7 @@
 // Objetivo: reduzir erros de separacao exibindo as fotos do anuncio e os
 // detalhes do item pra conferencia visual antes da impressao.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ChevronLeft,
@@ -38,6 +38,35 @@ import {
 
 // Cooldown pra evitar que o 2o bipe acidental (mesmo codigo) dispare reimpressao.
 const REPRINT_COOLDOWN_MS = 5000;
+
+/**
+ * Upgrade da URL da foto do anuncio pra maior resolucao disponivel no CDN
+ * do Mercado Livre, pra o lightbox exibir a imagem em qualidade HD (~1200px+).
+ *
+ * Convencoes do ML CDN (http2.mlstatic.com):
+ * - Sufixos `-I/D/C/O/F/S.jpg` = versoes reduzidas (~90 a ~500px)
+ * - Sufixo `-V.jpg` = original max (1200px+, melhor qualidade)
+ * - Prefixo `D_NQ_NP_2X_` no path = variante retina/HD (o dobro da resolucao)
+ *
+ * Estrategia: troca o sufixo de tamanho por `-F.jpg` (versao 1200px no 2X)
+ * e injeta `_2X_` no path quando ausente. Se a URL nao seguir o padrao
+ * do ML, devolve sem alterar — o `onError` do <img> volta pra URL original.
+ */
+function getHighResImageUrl(url: string | null | undefined): string {
+  if (!url) return "";
+  let out = url;
+
+  // Troca sufixo de tamanho (-I/-D/-C/-O/-F/-S/-N.jpg) por -F.jpg. No ML,
+  // o -F combinado com _2X_ devolve a maior versao compactada disponivel.
+  out = out.replace(/-[IDCOFSN]\.jpg$/i, "-F.jpg");
+
+  // Injeta _2X_ no path se ainda nao estiver presente (retina/HD).
+  if (/D_NQ_NP_(?!2X_)/.test(out)) {
+    out = out.replace(/D_NQ_NP_/, "D_NQ_NP_2X_");
+  }
+
+  return out;
+}
 
 /**
  * Coleta as fontes de PDF para impressao: etiqueta ML (1 pagina) +
@@ -294,7 +323,13 @@ export default function ConferenciaVendaPage() {
   );
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const currentItemId = selectedItemId || allItemIds[0] || null;
-  const currentPictures = currentItemId ? result?.pictures?.[currentItemId] || [] : [];
+  // Memoizado pra manter a mesma referencia entre renders — evita disparar
+  // o efeito de preload (lightbox) a cada re-render quando o array de fotos
+  // e' estavel. Dep do `result` pq `pictures` muda quando o backend devolve.
+  const currentPictures = useMemo(
+    () => (currentItemId ? result?.pictures?.[currentItemId] || [] : []),
+    [currentItemId, result?.pictures]
+  );
   const currentItemInfo = currentItemId ? result?.items?.[currentItemId] : null;
 
   // Reseta a selecao de item e fecha lightbox quando uma nova venda e' carregada.
@@ -362,6 +397,32 @@ export default function ConferenciaVendaPage() {
 
   const lightboxImage =
     lightboxIndex !== null ? currentPictures[lightboxIndex] || null : null;
+  // URL em alta resolucao pra exibir no lightbox — a imagem de fallback
+  // fica como placeholder enquanto a HD carrega (via onLoad/onError).
+  const lightboxImageHD = getHighResImageUrl(lightboxImage);
+  const [hdImageReady, setHdImageReady] = useState(false);
+
+  // Reset flag de HD carregado sempre que o index muda, pra nao mostrar
+  // a foto anterior em HD enquanto a proxima ainda esta baixando.
+  useEffect(() => {
+    setHdImageReady(false);
+  }, [lightboxIndex]);
+
+  // Preload da imagem anterior e proxima em HD pra navegacao instantanea.
+  useEffect(() => {
+    if (lightboxIndex === null || currentPictures.length <= 1) return;
+    const preloadUrls = [
+      currentPictures[(lightboxIndex + 1) % currentPictures.length],
+      currentPictures[(lightboxIndex - 1 + currentPictures.length) % currentPictures.length],
+    ];
+    preloadUrls.forEach((rawUrl) => {
+      if (!rawUrl) return;
+      const hd = getHighResImageUrl(rawUrl);
+      // Criar Image fora do DOM apenas dispara o download pra cache do browser.
+      const img = new Image();
+      img.src = hd;
+    });
+  }, [lightboxIndex, currentPictures]);
 
   return (
     <AppLayout>
@@ -659,13 +720,16 @@ export default function ConferenciaVendaPage() {
       </div>
 
       {/* Lightbox para ampliar a foto do anuncio. Fecha clicando no fundo,
-          no X, ou com ESC. Navega com <- -> ou clicando nas setas/metades. */}
+          no X, ou com ESC. Navega com <- -> ou clicando nas setas/metades.
+          O lightbox ocupa 100% da tela (fixed inset-0) e a imagem usa
+          toda a viewport disponivel para facilitar a conferencia visual
+          de pecas. */}
       {lightboxIndex !== null && lightboxImage && (
         <div
           role="dialog"
           aria-modal="true"
           aria-label="Foto ampliada do anuncio"
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/92 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm"
           onClick={closeLightbox}
         >
           {/* Contador superior esquerdo */}
@@ -719,18 +783,50 @@ export default function ConferenciaVendaPage() {
             </button>
           )}
 
-          {/* Imagem + zonas de clique (esquerda/direita) para navegacao por mouse. */}
+          {/* Imagem + zonas de clique (esquerda/direita) para navegacao por mouse.
+              Uso a mesma URL + HD sobreposta: a versao baixa (~500px, que ja
+              veio cacheada da coluna esquerda) aparece imediatamente como
+              placeholder; quando o HD (~1200px+) termina de baixar, a opacidade
+              troca para exibir a versao em alta resolucao. Zero delay visivel
+              para o operador, e conferencia em resolucao que mostra detalhes
+              de parafuso/solda/textura sem ambiguidade. */}
           <div
-            className="relative flex max-h-full max-w-full items-center justify-center"
+            className="relative flex h-full w-full items-center justify-center"
             onClick={(event) => event.stopPropagation()}
           >
+            {/* Low-res placeholder — sempre visivel ate o HD estar pronto. */}
             <img
               src={lightboxImage}
+              alt=""
+              aria-hidden="true"
+              className={cn(
+                "absolute inset-0 m-auto max-h-[100vh] max-w-[100vw] select-none object-contain transition-opacity duration-200",
+                hdImageReady ? "opacity-0" : "opacity-100"
+              )}
+              draggable={false}
+            />
+            {/* HD — substitui a low-res assim que termina de carregar. */}
+            <img
+              key={lightboxImageHD}
+              src={lightboxImageHD || lightboxImage}
               alt={`Foto ${lightboxIndex + 1} do anuncio${
                 currentItemInfo?.title ? ` — ${currentItemInfo.title}` : ""
               }`}
-              className="max-h-[88vh] max-w-[90vw] select-none object-contain"
+              className={cn(
+                "relative max-h-[100vh] max-w-[100vw] select-none object-contain transition-opacity duration-200",
+                hdImageReady ? "opacity-100" : "opacity-0"
+              )}
               draggable={false}
+              onLoad={() => setHdImageReady(true)}
+              onError={(event) => {
+                // Se a URL HD nao existir no CDN (raro), cai pra URL original
+                // e marca como "pronto" pra exibir a low-res em tela cheia.
+                const target = event.target as HTMLImageElement;
+                if (target.src !== lightboxImage) {
+                  target.src = lightboxImage || "";
+                }
+                setHdImageReady(true);
+              }}
             />
             {currentPictures.length > 1 && (
               <>
