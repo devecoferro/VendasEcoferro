@@ -1514,6 +1514,154 @@ async function fetchMLLiveChipCounts(connection) {
   }
 }
 
+/**
+ * Variante detalhada de fetchMLLiveChipCounts — retorna também as listas
+ * de order IDs classificadas em cada bucket pelo ML. Usada sob demanda na
+ * analise de divergencia (/api/ml/diagnostics?action=orders-diff) para
+ * identificar EXATAMENTE quais pedidos estao em buckets diferentes entre
+ * ML e app. Sem cache (operacao cara e rara).
+ *
+ * Retorna: {
+ *   counts: { today, upcoming, in_transit, finalized, cancelled },
+ *   order_ids_by_bucket: { today: Set<string>, upcoming: Set<string>, ... }
+ * }
+ */
+export async function fetchMLLiveChipBucketsDetailed(connection) {
+  try {
+    const validConnection = await ensureValidAccessToken(connection);
+    if (!validConnection?.access_token) return null;
+    const token = validConnection.access_token;
+    const sellerId = String(validConnection.seller_id);
+    const todayKey = getCalendarKey(new Date());
+
+    const buckets = {
+      today: new Set(),
+      upcoming: new Set(),
+      in_transit: new Set(),
+      finalized: new Set(),
+      cancelled: new Set(),
+    };
+
+    const addOrderIds = (bucket, orderIds) => {
+      if (!Array.isArray(orderIds)) return;
+      for (const id of orderIds) {
+        if (id != null) buckets[bucket].add(String(id));
+      }
+    };
+
+    const [pendingOrders, rtsOrders, shippedOrders] = await Promise.all([
+      fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
+      fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
+      fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
+    ]);
+
+    const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
+    const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
+    const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
+
+    const allShippingIds = new Set();
+    for (const [, pack] of rtsPacks) {
+      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
+    }
+    for (const [, pack] of shippedPacks) {
+      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
+    }
+    const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
+
+    // Pending → upcoming
+    for (const [, pack] of pendingPacks) {
+      addOrderIds("upcoming", pack.order_ids);
+    }
+
+    // Ready to ship → hoje/upcoming dependendo do substatus
+    for (const [, pack] of rtsPacks) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      if (!shipment) {
+        addOrderIds("upcoming", pack.order_ids);
+        continue;
+      }
+      if (shipment.status !== "ready_to_ship") continue;
+      const sub = shipment.substatus;
+      if (TODAY_SUBSTATUSES.has(sub)) {
+        addOrderIds("today", pack.order_ids);
+      } else if (TRANSITION_SUBSTATUSES.has(sub)) {
+        // nao conta em nenhum chip
+      } else {
+        addOrderIds("upcoming", pack.order_ids);
+      }
+    }
+
+    // Shipped → trânsito (janela de 2 dias) ou upcoming
+    const nowMs = Date.now();
+    const msPerDay = 86400000;
+    for (const [, pack] of shippedPacks) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      if (!shipment) continue;
+      if (shipment.status !== "shipped") continue;
+      const sub = shipment.substatus;
+      if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
+        addOrderIds("upcoming", pack.order_ids);
+      } else if (
+        TRANSIT_SHIPPED_SUBSTATUSES.has(sub) ||
+        sub === "soon_deliver" ||
+        sub === "in_transit"
+      ) {
+        if (!shipment.dateShipped) continue;
+        const shippedAt = new Date(shipment.dateShipped).getTime();
+        if (Number.isNaN(shippedAt)) continue;
+        const ageDays = (nowMs - shippedAt) / msPerDay;
+        if (ageDays <= TRANSIT_MAX_DAYS) {
+          addOrderIds("in_transit", pack.order_ids);
+        }
+      }
+    }
+
+    // Finalizadas: busca IDs reais (not_delivered de hoje)
+    try {
+      const todayISO = todayKey + "T00:00:00.000-03:00";
+      const ndUrl =
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+        `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`;
+      const ndR = await fetch(ndUrl, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+      const results = Array.isArray(ndR.results) ? ndR.results : [];
+      for (const order of results) {
+        if (order?.id) buckets.finalized.add(String(order.id));
+      }
+    } catch {
+      // deixa vazio se falhar
+    }
+
+    // Canceladas: busca IDs reais (cancelled a partir do piso)
+    try {
+      const cancelFromIso = `${MIN_CANCELLED_DATE_FROM}T00:00:00.000-03:00`;
+      const cUrl =
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+        `&order.status=cancelled&order.date_created.from=${encodeURIComponent(cancelFromIso)}&limit=50`;
+      const cR = await fetch(cUrl, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+      const results = Array.isArray(cR.results) ? cR.results : [];
+      for (const order of results) {
+        if (order?.id) buckets.cancelled.add(String(order.id));
+      }
+    } catch {
+      // deixa vazio se falhar
+    }
+
+    return {
+      counts: {
+        today: buckets.today.size,
+        upcoming: buckets.upcoming.size,
+        in_transit: buckets.in_transit.size,
+        finalized: buckets.finalized.size,
+        cancelled: buckets.cancelled.size,
+      },
+      order_ids_by_bucket: buckets,
+    };
+  } catch (err) {
+    console.error("[fetchMLLiveChipBucketsDetailed] Error:", err.message);
+    return null;
+  }
+}
+
 export async function buildDashboardPayload(options = {}) {
   const allowCache = options.allowCache !== false;
 

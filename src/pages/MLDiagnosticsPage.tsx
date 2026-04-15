@@ -9,9 +9,11 @@ import { toast } from "sonner";
 import {
   AlertCircle,
   Check,
+  Heart,
   Loader2,
   RefreshCw,
   Save,
+  Search,
   Wifi,
   WifiOff,
   XCircle,
@@ -21,9 +23,13 @@ import {
   CHIP_BUCKET_ORDER,
   fetchChipDiff,
   fetchChipDriftHistory,
+  fetchOrdersDivergence,
+  triggerAutoHeal,
+  type AutoHealResponse,
   type ChipBucketCounts,
   type ChipCountDiff,
   type ChipDriftHistoryEntry,
+  type OrdersDivergenceResponse,
 } from "@/services/mlDiagnosticsService";
 
 const DEFAULT_INTERVAL_SECONDS = 30;
@@ -136,6 +142,12 @@ export default function MLDiagnosticsPage() {
   const [history, setHistory] = useState<ChipDriftHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  const [healing, setHealing] = useState(false);
+  const [healResult, setHealResult] = useState<AutoHealResponse | null>(null);
+
+  const [ordersDiff, setOrdersDiff] = useState<OrdersDivergenceResponse | null>(null);
+  const [ordersDiffLoading, setOrdersDiffLoading] = useState(false);
+
   const intervalRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -225,6 +237,59 @@ export default function MLDiagnosticsPage() {
       setSaving(false);
     }
   }, [runVerify, loadHistory]);
+
+  const handleAutoHeal = useCallback(async () => {
+    try {
+      setHealing(true);
+      setHealResult(null);
+      toast.info("Forçando refresh dos pedidos ativos...");
+      const heal = await triggerAutoHeal({ tolerance });
+      setHealResult(heal);
+      if (heal.after) setResult(heal.after);
+      if (heal.healed) {
+        toast.success(
+          heal.reason === "ALREADY_IN_SYNC"
+            ? "Já estava sincronizado."
+            : `Drift corrigido (${heal.refreshed_orders} pedidos refreshed)`
+        );
+      } else if (heal.reason === "ML_API_UNAVAILABLE") {
+        toast.error("ML API indisponível — não foi possível verificar");
+      } else if (heal.reason === "PARTIALLY_HEALED") {
+        toast.warning(
+          `Drift reduzido mas não zerou (${heal.before.max_abs_diff}→${heal.after?.max_abs_diff ?? "?"})`
+        );
+      } else {
+        toast.error(
+          `Drift persistente após refresh — provável bug de classificação (investigar pedidos divergentes)`
+        );
+      }
+      await loadHistory();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Auto-heal falhou");
+    } finally {
+      setHealing(false);
+    }
+  }, [tolerance, loadHistory]);
+
+  const handleLoadOrdersDiff = useCallback(async () => {
+    try {
+      setOrdersDiffLoading(true);
+      toast.info("Analisando pedidos divergentes — pode levar até 20s...");
+      const diff = await fetchOrdersDivergence({ fresh: true, limit: 500 });
+      setOrdersDiff(diff);
+      if (diff.total_divergent === 0) {
+        toast.success("Nenhum pedido divergente encontrado.");
+      } else {
+        toast.info(
+          `${diff.total_divergent} pedido(s) divergente(s) em ${diff.patterns.length} padrão(ões).`
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Falha ao analisar");
+    } finally {
+      setOrdersDiffLoading(false);
+    }
+  }, []);
 
   const ts = result?.timestamp || null;
 
@@ -383,20 +448,54 @@ export default function MLDiagnosticsPage() {
                     {ts ? formatTimestamp(ts) : "—"} · max |diff| = {result.max_abs_diff}
                   </CardDescription>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5"
-                  onClick={handleSaveSnapshot}
-                  disabled={saving || result.status === "ML_API_UNAVAILABLE"}
-                >
-                  {saving ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" />
-                  )}
-                  Salvar snapshot
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={handleSaveSnapshot}
+                    disabled={saving || result.status === "ML_API_UNAVAILABLE"}
+                  >
+                    {saving ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5" />
+                    )}
+                    Salvar snapshot
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                    onClick={handleAutoHeal}
+                    disabled={healing || result.status === "ML_API_UNAVAILABLE"}
+                    title="Força refresh dos pedidos ativos e re-verifica — corrige drift de timing"
+                  >
+                    {healing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Heart className="h-3.5 w-3.5" />
+                    )}
+                    Forçar auto-heal
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 border-amber-300 text-amber-700 hover:bg-amber-50"
+                    onClick={handleLoadOrdersDiff}
+                    disabled={
+                      ordersDiffLoading || result.status === "ML_API_UNAVAILABLE"
+                    }
+                    title="Lista os pedidos específicos que estão em buckets diferentes entre ML e app (lento, ~10-20s)"
+                  >
+                    {ordersDiffLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Search className="h-3.5 w-3.5" />
+                    )}
+                    Ver pedidos divergentes
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             {Array.isArray(result.breakdown_by_deposit) &&
@@ -446,6 +545,171 @@ export default function MLDiagnosticsPage() {
                 </div>
               </CardContent>
             ) : null}
+          </Card>
+        ) : null}
+
+        {/* ─── Resultado do Auto-Heal ─── */}
+        {healResult ? (
+          <Card
+            className={
+              healResult.healed
+                ? "border-emerald-300 bg-emerald-50"
+                : healResult.reason === "PARTIALLY_HEALED"
+                  ? "border-amber-300 bg-amber-50"
+                  : "border-red-300 bg-red-50"
+            }
+          >
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">
+                Auto-heal: {
+                  healResult.reason === "ALREADY_IN_SYNC" ? "Já sincronizado" :
+                  healResult.reason === "RESOLVED_AFTER_REFRESH" ? "Drift resolvido" :
+                  healResult.reason === "PARTIALLY_HEALED" ? "Parcialmente corrigido" :
+                  healResult.reason === "PERSISTENT_CLASSIFICATION_BUG" ? "Drift persistente (bug de classificação)" :
+                  "ML API indisponível"
+                }
+              </CardTitle>
+              <CardDescription>
+                {healResult.refreshed_orders > 0
+                  ? `${healResult.refreshed_orders} pedidos re-fetched do ML. `
+                  : ""}
+                max |diff|: {healResult.before.max_abs_diff}
+                {healResult.after ? ` → ${healResult.after.max_abs_diff}` : ""}
+                {healResult.reason === "PERSISTENT_CLASSIFICATION_BUG" ? (
+                  <span className="mt-1 block font-medium text-red-700">
+                    Próximo passo: clique em "Ver pedidos divergentes" para
+                    identificar exatamente quais pedidos estão em buckets
+                    errados. Provável bug em classifyCrossDockingOrder ou classifyFulfillmentOrder.
+                  </span>
+                ) : null}
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
+
+        {/* ─── Pedidos Divergentes ─── */}
+        {ordersDiff ? (
+          <Card className="border-[#e5e5e5]">
+            <CardHeader className="pb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base">
+                    Pedidos divergentes ({ordersDiff.total_divergent})
+                  </CardTitle>
+                  <CardDescription>
+                    {ordersDiff.ml_connections_succeeded}/{ordersDiff.ml_connections_queried}{" "}
+                    conexão(ões) ML respondendo ·{" "}
+                    {formatTimestamp(ordersDiff.timestamp)}
+                    {ordersDiff.truncated ? " · lista truncada (500 primeiros)" : ""}
+                  </CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={handleLoadOrdersDiff}
+                  disabled={ordersDiffLoading}
+                >
+                  {ordersDiffLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  Re-analisar
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {ordersDiff.error ? (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                  {ordersDiff.error}
+                </div>
+              ) : ordersDiff.total_divergent === 0 ? (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                  Nenhum pedido divergente — app e ML classificam todos da mesma forma.
+                </div>
+              ) : (
+                <>
+                  {/* Padrões de misclassificação */}
+                  {ordersDiff.patterns.length > 0 ? (
+                    <div>
+                      <div className="mb-2 text-[11px] uppercase tracking-wide text-[#888]">
+                        Padrões de divergência (app → ML)
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {ordersDiff.patterns.map((p) => (
+                          <Badge
+                            key={p.pattern}
+                            className="border border-amber-300 bg-amber-50 text-amber-800"
+                          >
+                            {p.pattern}: {p.count}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Tabela de pedidos */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] border-separate border-spacing-0 text-sm">
+                      <thead>
+                        <tr className="text-left text-[11px] uppercase tracking-wide text-[#888]">
+                          <th className="border-b border-[#eee] pb-2 pr-3">Order ID</th>
+                          <th className="border-b border-[#eee] pb-2 pr-3">App diz</th>
+                          <th className="border-b border-[#eee] pb-2 pr-3">ML diz</th>
+                          <th className="border-b border-[#eee] pb-2">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ordersDiff.divergences.slice(0, 100).map((d) => (
+                          <tr
+                            key={d.order_id}
+                            className="border-b border-[#f4f4f4]"
+                          >
+                            <td className="py-2 pr-3 font-mono text-[#333]">
+                              {d.order_id}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {d.app_bucket ? (
+                                <Badge className="border border-[#d0d7de] bg-[#f6f8fa] text-[#24292f]">
+                                  {CHIP_BUCKET_LABELS[d.app_bucket]}
+                                </Badge>
+                              ) : (
+                                <span className="text-[#999]">não encontrado</span>
+                              )}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {d.ml_bucket ? (
+                                <Badge className="border border-[#cde0ff] bg-[#eef4ff] text-[#2968c8]">
+                                  {CHIP_BUCKET_LABELS[d.ml_bucket]}
+                                </Badge>
+                              ) : (
+                                <span className="text-[#999]">não encontrado</span>
+                              )}
+                            </td>
+                            <td className="py-2">
+                              <a
+                                href={`https://www.mercadolivre.com.br/vendas/${d.order_id}/detalhe`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#2968c8] hover:underline"
+                              >
+                                Ver no ML
+                              </a>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {ordersDiff.divergences.length > 100 ? (
+                      <div className="mt-2 text-[11px] text-[#888]">
+                        Mostrando 100 de {ordersDiff.divergences.length} divergências.
+                      </div>
+                    ) : null}
+                  </div>
+                </>
+              )}
+            </CardContent>
           </Card>
         ) : null}
 

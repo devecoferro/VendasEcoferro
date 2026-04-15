@@ -68,6 +68,45 @@ export interface ChipDriftHistoryResponse {
   count: number;
 }
 
+export type ChipBucketName = keyof ChipBucketCounts;
+
+export interface OrderDivergence {
+  order_id: string;
+  ml_bucket: ChipBucketName | null;
+  app_bucket: ChipBucketName | null;
+}
+
+export interface OrdersDivergencePattern {
+  pattern: string; // "app_bucket→ml_bucket" ex: "upcoming→today"
+  count: number;
+}
+
+export interface OrdersDivergenceResponse {
+  timestamp: string;
+  error?: string;
+  ml_connections_queried: number;
+  ml_connections_succeeded: number;
+  total_divergent: number;
+  patterns: OrdersDivergencePattern[];
+  divergences: OrderDivergence[];
+  truncated: boolean;
+}
+
+export type AutoHealReason =
+  | "ALREADY_IN_SYNC"
+  | "RESOLVED_AFTER_REFRESH"
+  | "PARTIALLY_HEALED"
+  | "PERSISTENT_CLASSIFICATION_BUG"
+  | "ML_API_UNAVAILABLE";
+
+export interface AutoHealResponse {
+  healed: boolean;
+  reason: AutoHealReason;
+  refreshed_orders: number;
+  before: ChipCountDiff;
+  after: ChipCountDiff | null;
+}
+
 export interface FetchChipDiffParams {
   tolerance?: number;
   includeBreakdown?: boolean;
@@ -77,11 +116,11 @@ export interface FetchChipDiffParams {
 }
 
 function buildDiagnosticsUrl(
-  action: "verify" | "history",
+  action: "verify" | "history" | "orders-diff" | "heal",
   params?: Record<string, string | number | boolean | null | undefined>
 ): string {
   const query = new URLSearchParams();
-  if (action === "history") query.set("action", "history");
+  if (action !== "verify") query.set("action", action);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       if (value == null || value === "" || value === false) continue;
@@ -130,6 +169,53 @@ export async function fetchChipDriftHistory(
     );
   }
   return (await response.json()) as ChipDriftHistoryResponse;
+}
+
+/**
+ * Analise order-level: retorna EXATAMENTE quais pedidos estao em buckets
+ * diferentes entre ML e app. Operacao cara (~10-20s) — usar sob demanda.
+ */
+export async function fetchOrdersDivergence(
+  params: { fresh?: boolean; limit?: number } = {}
+): Promise<OrdersDivergenceResponse> {
+  const url = buildDiagnosticsUrl("orders-diff", {
+    fresh: params.fresh === false ? undefined : "true",
+    limit: params.limit,
+  });
+  const response = await fetch(url, { credentials: "include" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    throw new Error(
+      payload?.error || `Failed to fetch orders divergence (HTTP ${response.status})`
+    );
+  }
+  return (await response.json()) as OrdersDivergenceResponse;
+}
+
+/**
+ * Dispara auto-heal: forca refresh dos pedidos ativos em todas as conexoes
+ * e re-verifica. Se o drift era timing, auto-corrige; se persistir, e bug
+ * de classificacao.
+ */
+export async function triggerAutoHeal(
+  params: { tolerance?: number } = {}
+): Promise<AutoHealResponse> {
+  const url = buildDiagnosticsUrl("heal", { tolerance: params.tolerance });
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    throw new Error(
+      payload?.error || `Auto-heal failed (HTTP ${response.status})`
+    );
+  }
+  return (await response.json()) as AutoHealResponse;
 }
 
 export const CHIP_BUCKET_LABELS: Record<keyof ChipBucketCounts, string> = {

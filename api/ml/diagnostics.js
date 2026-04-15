@@ -1,4 +1,10 @@
-import { buildDashboardPayload } from "./dashboard.js";
+import {
+  buildDashboardPayload,
+  fetchMLLiveChipBucketsDetailed,
+  invalidateDashboardCache,
+} from "./dashboard.js";
+import { runActiveOrdersRefresh } from "./sync.js";
+import { listConnections } from "../_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { db } from "../_lib/db.js";
 
@@ -158,6 +164,203 @@ export async function computeChipCountsDiff(options = {}) {
 }
 
 /**
+ * Analise order-level de divergencia entre ML e app. Identifica EXATAMENTE
+ * quais pedidos estao em buckets diferentes — util quando `computeChipCountsDiff`
+ * reporta drift persistente e precisa-se saber onde esta o bug.
+ *
+ * Operacao cara (~10-20 ML API calls + buildDashboardPayload completo).
+ * Chamar apenas sob demanda, nao em polling.
+ *
+ * Retorna:
+ *  - divergences: lista de { order_id, ml_bucket, app_bucket }
+ *  - patterns:    top padroes de misclassificacao (ex: "upcoming→today" × 5)
+ *  - total_divergent: total de pedidos divergentes
+ */
+export async function computeOrdersDivergence(options = {}) {
+  const { fresh = true, limit = 500 } = options;
+  const timestamp = new Date().toISOString();
+
+  const connections = listConnections().filter((c) => c?.id);
+  if (connections.length === 0) {
+    return {
+      timestamp,
+      error: "Nenhuma conexao ML configurada",
+      ml_connections_queried: 0,
+      ml_connections_succeeded: 0,
+      total_divergent: 0,
+      patterns: [],
+      divergences: [],
+      truncated: false,
+    };
+  }
+
+  // ─── Lado ML ─────────────────────────────────────────
+  // Busca a classificacao real do ML para cada order_id
+  const mlResults = await Promise.all(
+    connections.map((c) =>
+      fetchMLLiveChipBucketsDetailed(c).catch(() => null)
+    )
+  );
+
+  const mlBucketOfOrder = new Map();
+  for (const result of mlResults) {
+    if (!result?.order_ids_by_bucket) continue;
+    for (const bucket of CHIP_BUCKETS) {
+      const ids = result.order_ids_by_bucket[bucket];
+      if (!ids) continue;
+      const iter = ids instanceof Set ? ids.values() : ids;
+      for (const id of iter) {
+        const str = String(id);
+        // Se ja marcado em outro bucket (improvavel), mantem o primeiro
+        if (!mlBucketOfOrder.has(str)) mlBucketOfOrder.set(str, bucket);
+      }
+    }
+  }
+
+  // ─── Lado App ────────────────────────────────────────
+  // Lê a classificacao interna do payload do dashboard
+  const payload = await buildDashboardPayload({ allowCache: !fresh });
+  const appBucketOfOrder = new Map();
+  const deposits = Array.isArray(payload.deposits) ? payload.deposits : [];
+  for (const deposit of deposits) {
+    const idsByBucket =
+      deposit.internal_operational_order_ids_by_bucket ||
+      deposit.order_ids_by_bucket ||
+      {};
+    for (const bucket of CHIP_BUCKETS) {
+      const ids = idsByBucket[bucket];
+      if (!Array.isArray(ids)) continue;
+      for (const id of ids) {
+        const str = String(id);
+        if (!appBucketOfOrder.has(str)) appBucketOfOrder.set(str, bucket);
+      }
+    }
+  }
+
+  // ─── Diff por order_id ───────────────────────────────
+  const allIds = new Set([
+    ...mlBucketOfOrder.keys(),
+    ...appBucketOfOrder.keys(),
+  ]);
+  const divergences = [];
+  for (const orderId of allIds) {
+    const mlBucket = mlBucketOfOrder.get(orderId) || null;
+    const appBucket = appBucketOfOrder.get(orderId) || null;
+    if (mlBucket !== appBucket) {
+      divergences.push({
+        order_id: orderId,
+        ml_bucket: mlBucket,
+        app_bucket: appBucket,
+      });
+    }
+  }
+
+  // Ordena: primeiro os que o ML classifica em today (mais urgente), depois outros
+  const bucketPriority = {
+    today: 0,
+    upcoming: 1,
+    in_transit: 2,
+    finalized: 3,
+    cancelled: 4,
+    null: 5,
+  };
+  divergences.sort((a, b) => {
+    const pa = bucketPriority[a.ml_bucket ?? "null"] ?? 99;
+    const pb = bucketPriority[b.ml_bucket ?? "null"] ?? 99;
+    if (pa !== pb) return pa - pb;
+    return a.order_id.localeCompare(b.order_id);
+  });
+
+  // Padroes de misclassificacao (ex: app_bucket=upcoming → ml_bucket=today tem N casos)
+  const patternCounts = new Map();
+  for (const d of divergences) {
+    const key = `${d.app_bucket || "missing"}→${d.ml_bucket || "missing"}`;
+    patternCounts.set(key, (patternCounts.get(key) || 0) + 1);
+  }
+  const patterns = Array.from(patternCounts.entries())
+    .map(([pattern, count]) => ({ pattern, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    timestamp,
+    ml_connections_queried: connections.length,
+    ml_connections_succeeded: mlResults.filter(Boolean).length,
+    total_divergent: divergences.length,
+    patterns,
+    divergences: divergences.slice(0, limit),
+    truncated: divergences.length > limit,
+  };
+}
+
+/**
+ * Auto-heal: quando drift e detectado, tenta corrigir forcando um
+ * `runActiveOrdersRefresh` (puxa dados frescos do ML para todas as conexoes),
+ * invalida o cache do dashboard e re-verifica.
+ *
+ * Retorna { healed, reason, refreshed_orders, before, after }:
+ *   - healed=true  + reason=RESOLVED_AFTER_REFRESH → era so timing (dados stale)
+ *   - healed=true  + reason=ALREADY_IN_SYNC        → nao havia drift
+ *   - healed=false + reason=PARTIALLY_HEALED       → diff diminuiu mas nao zerou
+ *   - healed=false + reason=PERSISTENT_CLASSIFICATION_BUG → diff igual/pior (bug de codigo)
+ *   - healed=false + reason=ML_API_UNAVAILABLE     → nao foi possivel verificar
+ */
+export async function autoHealDrift(options = {}) {
+  const { tolerance = DEFAULT_TOLERANCE } = options;
+
+  const before = await computeChipCountsDiff({
+    tolerance,
+    includeBreakdown: false,
+    fresh: true,
+  });
+
+  if (before.status === "ML_API_UNAVAILABLE") {
+    return { healed: false, reason: "ML_API_UNAVAILABLE", refreshed_orders: 0, before, after: null };
+  }
+  if (before.status === "IN_SYNC") {
+    return { healed: true, reason: "ALREADY_IN_SYNC", refreshed_orders: 0, before, after: null };
+  }
+
+  const connections = listConnections().filter((c) => c?.id);
+  let refreshed = 0;
+  for (const connection of connections) {
+    try {
+      const r = await runActiveOrdersRefresh({ connectionId: connection.id });
+      refreshed += r?.totalRefreshed || 0;
+    } catch (err) {
+      // best-effort — segue tentando outras conexoes
+      console.error(
+        "[autoHealDrift] Active refresh falhou",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  invalidateDashboardCache();
+
+  const after = await computeChipCountsDiff({
+    tolerance,
+    includeBreakdown: false,
+    fresh: true,
+  });
+
+  if (after.status === "ML_API_UNAVAILABLE") {
+    return { healed: false, reason: "ML_API_UNAVAILABLE", refreshed_orders: refreshed, before, after };
+  }
+
+  const healed = after.status === "IN_SYNC";
+  let reason;
+  if (healed) {
+    reason = "RESOLVED_AFTER_REFRESH";
+  } else if (after.max_abs_diff < before.max_abs_diff) {
+    reason = "PARTIALLY_HEALED";
+  } else {
+    reason = "PERSISTENT_CLASSIFICATION_BUG";
+  }
+
+  return { healed, reason, refreshed_orders: refreshed, before, after };
+}
+
+/**
  * Persists a diff snapshot into ml_chip_drift_history.
  * Silent on failure (best-effort telemetry).
  */
@@ -236,7 +439,9 @@ export function pruneChipDriftHistory(daysToKeep = 30) {
 }
 
 export default async function handler(request, response) {
-  if (request.method !== "GET") {
+  const method = (request.method || "GET").toUpperCase();
+  // heal aceita POST (dispara acao), demais sao GET
+  if (method !== "GET" && method !== "POST") {
     return response.status(405).json({ error: "Method not allowed" });
   }
 
@@ -249,6 +454,40 @@ export default async function handler(request, response) {
       const limit = Number(request.query?.limit || 50);
       const history = getChipDriftHistory(limit);
       return response.status(200).json({ history, count: history.length });
+    }
+
+    if (action === "orders-diff") {
+      // Analise order-level: lenta (~10-20s), usar sob demanda
+      const limit = Math.max(1, Math.min(2000, Number(request.query?.limit || 500)));
+      const fresh = request.query?.fresh == null ? true : parseBoolean(request.query?.fresh);
+      const divergence = await computeOrdersDivergence({ fresh, limit });
+      return response.status(200).json(divergence);
+    }
+
+    if (action === "heal") {
+      // Acao que modifica estado (force refresh) — exige POST
+      if (method !== "POST") {
+        return response.status(405).json({ error: "Use POST para action=heal" });
+      }
+      const tolerance = Number(request.query?.tolerance || DEFAULT_TOLERANCE);
+      const result = await autoHealDrift({ tolerance });
+      // Persiste sempre os dois snapshots (before/after) pra rastreamento
+      try {
+        if (result.before && result.before.status !== "ML_API_UNAVAILABLE") {
+          saveChipDriftSnapshot(result.before, "heal_before");
+        }
+        if (result.after && result.after.status !== "ML_API_UNAVAILABLE") {
+          const afterSource = result.healed
+            ? "heal_resolved"
+            : result.reason === "PARTIALLY_HEALED"
+              ? "heal_partial"
+              : "heal_persistent";
+          saveChipDriftSnapshot(result.after, afterSource);
+        }
+      } catch {
+        // best-effort
+      }
+      return response.status(200).json(result);
     }
 
     const tolerance = Number(request.query?.tolerance || DEFAULT_TOLERANCE);

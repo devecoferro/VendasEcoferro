@@ -21,6 +21,7 @@ import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlDiagnosticsHandler, {
   computeChipCountsDiff,
+  autoHealDrift,
   saveChipDriftSnapshot,
   pruneChipDriftHistory,
 } from "../api/ml/diagnostics.js";
@@ -373,6 +374,9 @@ const ACTIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 // rapido, entao 15min deixaria o painel sempre em atraso.
 const CHIP_DRIFT_SNAPSHOT_INTERVAL_MS = 30 * 1000; // 30 segundos
 const CHIP_DRIFT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos (baseline IN_SYNC)
+// Auto-heal cooldown: se drift persiste, nao adianta re-disparar active refresh
+// a cada 30s — gasta ML API atoa. Cooldown de 3min entre auto-heals.
+const AUTO_HEAL_COOLDOWN_MS = 3 * 60 * 1000;
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
@@ -385,6 +389,7 @@ let chipDriftPruneIntervalId = null;
 let chipDriftSnapshotRunning = false;
 let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapshot gravado
 let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
+let lastAutoHealAt = 0; // epoch ms do ultimo auto-heal disparado
 
 async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
@@ -453,9 +458,11 @@ async function autoRefreshActiveOrders() {
 //   (a) status muda (IN_SYNC <-> DRIFT_DETECTED),
 //   (b) max_abs_diff muda,
 //   (c) se passaram 5 min desde o ultimo heartbeat (baseline).
-// Assim a deteccao e quase tempo real, mas a tabela fica enxuta
-// (~300 linhas/dia em estado IN_SYNC estavel, mais eventos de drift).
-// Silencioso em caso de falha (telemetria e best-effort).
+// Quando drift e detectado, dispara autoHealDrift() — forca refresh dos
+// pedidos ativos e re-verifica. Se o drift era so timing (dados stale),
+// auto-corrige. Se persistir, e bug de classificacao (alerta de severidade).
+// Throttle de auto-heal: so roda 1x a cada AUTO_HEAL_COOLDOWN_MS para nao
+// sobrecarregar a ML API caso o bug seja persistente.
 async function autoChipDriftSnapshot() {
   if (chipDriftSnapshotRunning) return;
 
@@ -472,41 +479,84 @@ async function autoChipDriftSnapshot() {
 
     if (result.status === "ML_API_UNAVAILABLE") return;
 
-    // Persistencia inteligente: grava so quando muda algo, ou heartbeat
+    // Auto-heal: se drift detectado e nao rodamos heal recentemente, dispara
     const now = Date.now();
+    let finalResult = result;
+    let healOutcome = null;
+    if (
+      result.status === "DRIFT_DETECTED" &&
+      now - lastAutoHealAt >= AUTO_HEAL_COOLDOWN_MS
+    ) {
+      lastAutoHealAt = now;
+      log.info(
+        `Chip drift detectado — tentando auto-heal (max_abs_diff=${result.max_abs_diff})`
+      );
+      try {
+        const heal = await autoHealDrift({ tolerance: 2 });
+        healOutcome = heal;
+        // Usa o "after" como resultado final a ser persistido
+        if (heal.after) finalResult = heal.after;
+        if (heal.healed) {
+          log.info(
+            `Auto-heal SUCESSO: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? 0})`
+          );
+        } else {
+          log.warn(
+            `Auto-heal FALHOU: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? result.max_abs_diff}) — provavel bug de classificacao, investigar em /ml-diagnostics`
+          );
+        }
+      } catch (healErr) {
+        log.error(
+          "Auto-heal falhou",
+          healErr instanceof Error ? healErr : new Error(String(healErr))
+        );
+      }
+    }
+
+    // Persistencia inteligente: grava so quando muda algo, ou heartbeat
     const statusChanged =
-      !lastPersistedChipDrift || lastPersistedChipDrift.status !== result.status;
+      !lastPersistedChipDrift || lastPersistedChipDrift.status !== finalResult.status;
     const diffChanged =
       !lastPersistedChipDrift ||
-      lastPersistedChipDrift.max_abs_diff !== result.max_abs_diff;
+      lastPersistedChipDrift.max_abs_diff !== finalResult.max_abs_diff;
     const isHeartbeat =
       now - lastChipDriftHeartbeatAt >= CHIP_DRIFT_HEARTBEAT_INTERVAL_MS;
-    const shouldPersist = statusChanged || diffChanged || isHeartbeat;
+    const shouldPersist = statusChanged || diffChanged || isHeartbeat || healOutcome != null;
 
     if (!shouldPersist) return;
 
-    const source = statusChanged
-      ? "cron_status_change"
-      : diffChanged
-        ? "cron_diff_change"
-        : "cron_heartbeat";
-    const saved = saveChipDriftSnapshot(result, source);
+    let source;
+    if (healOutcome) {
+      source = healOutcome.healed
+        ? "cron_auto_healed"
+        : healOutcome.reason === "PARTIALLY_HEALED"
+          ? "cron_partial_heal"
+          : "cron_persistent_drift";
+    } else if (statusChanged) {
+      source = "cron_status_change";
+    } else if (diffChanged) {
+      source = "cron_diff_change";
+    } else {
+      source = "cron_heartbeat";
+    }
+
+    const saved = saveChipDriftSnapshot(finalResult, source);
     if (!saved) return;
 
     lastPersistedChipDrift = {
-      status: result.status,
-      max_abs_diff: result.max_abs_diff,
+      status: finalResult.status,
+      max_abs_diff: finalResult.max_abs_diff,
     };
     if (isHeartbeat) lastChipDriftHeartbeatAt = now;
 
-    if (statusChanged || diffChanged) {
-      if (result.status === "DRIFT_DETECTED") {
+    if ((statusChanged || diffChanged) && !healOutcome) {
+      if (finalResult.status === "DRIFT_DETECTED") {
         log.warn(
-          `Chip drift detectado (${source}): max_abs_diff=${result.max_abs_diff} diff=${JSON.stringify(result.diff)}`
+          `Chip drift detectado (${source}): max_abs_diff=${finalResult.max_abs_diff} diff=${JSON.stringify(finalResult.diff)}`
         );
       } else {
         log.info(
-          `Chip drift voltou a IN_SYNC (max_abs_diff=${result.max_abs_diff})`
+          `Chip drift voltou a IN_SYNC (max_abs_diff=${finalResult.max_abs_diff})`
         );
       }
     }
