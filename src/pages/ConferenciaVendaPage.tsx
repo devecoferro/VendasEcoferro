@@ -6,7 +6,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Keyboard, Loader2, Printer, ScanLine, Search } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Keyboard,
+  Loader2,
+  Printer,
+  ScanLine,
+  Search,
+  X,
+  ZoomIn,
+} from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,6 +64,10 @@ export default function ConferenciaVendaPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MLConferenciaResponse | null>(null);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
+  // Lightbox para ampliar a foto do anuncio. null = fechado; numero = indice
+  // da foto aberta. Navegacao por teclado (<- ->), clique nas setas ou nas
+  // metades esquerda/direita da propria imagem.
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   // Mantem o input escondido focado: o leitor USB e' um HID que "digita"
   // no elemento com foco atual. Refoca ao clicar em qualquer lugar da pagina.
@@ -71,6 +86,7 @@ export default function ConferenciaVendaPage() {
     const focusInput = () => {
       if (!inputRef.current) return;
       if (printing) return;
+      if (lightboxIndex !== null) return; // Nao roubar foco enquanto o lightbox esta aberto.
       if (document.activeElement === inputRef.current) return;
       if (isInteractiveFocus()) return;
       inputRef.current.focus();
@@ -92,7 +108,7 @@ export default function ConferenciaVendaPage() {
       clearInterval(interval);
       window.removeEventListener("click", handler);
     };
-  }, [printing]);
+  }, [printing, lightboxIndex]);
 
   const handlePrint = useCallback(async (order: MLConferenciaResponse["order"]) => {
     setPrinting(true);
@@ -244,13 +260,71 @@ export default function ConferenciaVendaPage() {
   const currentPictures = currentItemId ? result?.pictures?.[currentItemId] || [] : [];
   const currentItemInfo = currentItemId ? result?.items?.[currentItemId] : null;
 
-  // Reseta a selecao de item quando uma nova venda e' carregada.
+  // Reseta a selecao de item e fecha lightbox quando uma nova venda e' carregada.
   useEffect(() => {
     setSelectedItemId(null);
+    setLightboxIndex(null);
   }, [result?.order?.order_id]);
 
   const mainImage = currentPictures[activeImageIndex] || currentPictures[0] || null;
   const saleData = result ? mapMLOrderToSaleData(result.order) : null;
+
+  // ─── Lightbox (ampliar imagem do anuncio) ─────────────────────────
+  const openLightbox = useCallback(
+    (idx: number) => {
+      if (idx < 0 || idx >= currentPictures.length) return;
+      setLightboxIndex(idx);
+      // Tira o foco do input invisivel para nao competir com as setas.
+      inputRef.current?.blur();
+    },
+    [currentPictures.length]
+  );
+
+  const closeLightbox = useCallback(() => {
+    setLightboxIndex((idx) => {
+      if (idx !== null) {
+        // Sincroniza a foto principal com a ultima vista no lightbox.
+        setActiveImageIndex(idx);
+      }
+      return null;
+    });
+  }, []);
+
+  const showPrevImage = useCallback(() => {
+    setLightboxIndex((idx) => {
+      if (idx === null || currentPictures.length === 0) return idx;
+      return (idx - 1 + currentPictures.length) % currentPictures.length;
+    });
+  }, [currentPictures.length]);
+
+  const showNextImage = useCallback(() => {
+    setLightboxIndex((idx) => {
+      if (idx === null || currentPictures.length === 0) return idx;
+      return (idx + 1) % currentPictures.length;
+    });
+  }, [currentPictures.length]);
+
+  // Navegacao por teclado enquanto o lightbox esta aberto.
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeLightbox();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        showPrevImage();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        showNextImage();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxIndex, closeLightbox, showPrevImage, showNextImage]);
+
+  const lightboxImage =
+    lightboxIndex !== null ? currentPictures[lightboxIndex] || null : null;
 
   return (
     <AppLayout>
@@ -418,13 +492,26 @@ export default function ConferenciaVendaPage() {
               )}
 
               {mainImage ? (
-                <div className="overflow-hidden rounded-xl border border-border bg-white">
+                <button
+                  type="button"
+                  onClick={() => openLightbox(activeImageIndex)}
+                  className="group relative block w-full overflow-hidden rounded-xl border border-border bg-white transition-all hover:border-primary/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label="Ampliar foto do anuncio"
+                  title="Clique para ampliar (use as setas ← → para navegar)"
+                >
                   <img
                     src={mainImage}
                     alt={currentItemInfo?.title || "Foto de referencia"}
-                    className="h-64 w-full object-contain"
+                    className="h-64 w-full object-contain transition-transform duration-200 group-hover:scale-[1.03]"
                   />
-                </div>
+                  {/* Overlay que aparece no hover com o icone de "ampliar". */}
+                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 group-hover:bg-black/35 group-hover:opacity-100">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3 py-1.5 text-xs font-semibold text-[#333] shadow-md">
+                      <ZoomIn className="h-4 w-4" />
+                      Ampliar
+                    </span>
+                  </span>
+                </button>
               ) : (
                 <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-xs text-muted-foreground">
                   {result.has_ml_connection
@@ -439,19 +526,39 @@ export default function ConferenciaVendaPage() {
                     <button
                       key={url}
                       type="button"
-                      onClick={() => setActiveImageIndex(idx)}
+                      // 1 clique: seleciona; 2 cliques: abre lightbox. Double
+                      // click tem delay — usamos Ctrl+Click ou o hover indicator
+                      // para a versao mais rapida. Aqui: selecionar ativa foto
+                      // principal; clique na principal abre lightbox.
+                      onClick={() => {
+                        if (idx === activeImageIndex) {
+                          openLightbox(idx);
+                        } else {
+                          setActiveImageIndex(idx);
+                        }
+                      }}
                       className={cn(
-                        "overflow-hidden rounded-md border bg-white transition-all",
+                        "group relative overflow-hidden rounded-md border bg-white transition-all",
                         idx === activeImageIndex
                           ? "border-primary ring-2 ring-primary/40"
                           : "border-border hover:border-primary/60"
                       )}
+                      title={
+                        idx === activeImageIndex
+                          ? "Clique para ampliar"
+                          : "Clique para ver nesta area principal"
+                      }
                     >
                       <img
                         src={url}
                         alt={`Foto ${idx + 1}`}
                         className="aspect-square w-full object-contain"
                       />
+                      {idx === activeImageIndex && (
+                        <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-150 group-hover:bg-black/40 group-hover:opacity-100">
+                          <ZoomIn className="h-4 w-4 text-white" />
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -498,6 +605,109 @@ export default function ConferenciaVendaPage() {
           </div>
         )}
       </div>
+
+      {/* Lightbox para ampliar a foto do anuncio. Fecha clicando no fundo,
+          no X, ou com ESC. Navega com <- -> ou clicando nas setas/metades. */}
+      {lightboxIndex !== null && lightboxImage && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Foto ampliada do anuncio"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/92 p-4 backdrop-blur-sm"
+          onClick={closeLightbox}
+        >
+          {/* Contador superior esquerdo */}
+          <div className="pointer-events-none absolute left-4 top-4 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white">
+            {lightboxIndex + 1} / {currentPictures.length}
+          </div>
+
+          {/* Botao fechar superior direito */}
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              closeLightbox();
+            }}
+            className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/25"
+            aria-label="Fechar (Esc)"
+            title="Fechar (Esc)"
+          >
+            <X className="h-5 w-5" />
+          </button>
+
+          {/* Seta anterior */}
+          {currentPictures.length > 1 && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                showPrevImage();
+              }}
+              className="absolute left-4 top-1/2 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/25"
+              aria-label="Imagem anterior (seta esquerda)"
+              title="Anterior (←)"
+            >
+              <ChevronLeft className="h-6 w-6" />
+            </button>
+          )}
+
+          {/* Seta proxima */}
+          {currentPictures.length > 1 && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                showNextImage();
+              }}
+              className="absolute right-4 top-1/2 inline-flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/25"
+              aria-label="Proxima imagem (seta direita)"
+              title="Proxima (→)"
+            >
+              <ChevronRight className="h-6 w-6" />
+            </button>
+          )}
+
+          {/* Imagem + zonas de clique (esquerda/direita) para navegacao por mouse. */}
+          <div
+            className="relative flex max-h-full max-w-full items-center justify-center"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={lightboxImage}
+              alt={`Foto ${lightboxIndex + 1} do anuncio${
+                currentItemInfo?.title ? ` — ${currentItemInfo.title}` : ""
+              }`}
+              className="max-h-[88vh] max-w-[90vw] select-none object-contain"
+              draggable={false}
+            />
+            {currentPictures.length > 1 && (
+              <>
+                {/* Clique na metade esquerda da imagem = anterior. */}
+                <button
+                  type="button"
+                  onClick={showPrevImage}
+                  className="absolute left-0 top-0 h-full w-1/2 cursor-w-resize bg-transparent focus:outline-none"
+                  aria-label="Clique na esquerda para imagem anterior"
+                  tabIndex={-1}
+                />
+                {/* Clique na metade direita da imagem = proxima. */}
+                <button
+                  type="button"
+                  onClick={showNextImage}
+                  className="absolute right-0 top-0 h-full w-1/2 cursor-e-resize bg-transparent focus:outline-none"
+                  aria-label="Clique na direita para proxima imagem"
+                  tabIndex={-1}
+                />
+              </>
+            )}
+          </div>
+
+          {/* Dica de atalhos inferior */}
+          <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-white/10 px-4 py-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-white/80">
+            ← → navegar · Esc fechar
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 }
