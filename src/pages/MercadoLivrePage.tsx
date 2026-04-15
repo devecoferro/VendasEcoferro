@@ -1963,15 +1963,29 @@ export default function MercadoLivrePage() {
               </div>
             </div>
 
-            <Button
-              className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
-              disabled={!canGenerateBatchLabels}
-              onClick={() => handleGenerateLabels(readyOrders)}
-            >
-              {isOperationalListFullyLoaded
-                ? `Etiquetas Ecoferro (${readyOrders.length})`
-                : `Carregando base completa (${readyOrders.length})`}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
+                disabled={!canGenerateBatchLabels || bulkPrintingMl}
+                onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
+              >
+                {bulkPrintingMl ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Printer className="mr-2 h-4 w-4" />
+                )}
+                Imprimir etiqueta ML + DANFe ({readyOrders.length})
+              </Button>
+              <Button
+                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
+                disabled={!canGenerateBatchLabels}
+                onClick={() => handleGenerateLabels(readyOrders)}
+              >
+                {isOperationalListFullyLoaded
+                  ? `Etiquetas Ecoferro (${readyOrders.length})`
+                  : `Carregando base completa (${readyOrders.length})`}
+              </Button>
+            </div>
           </div>
 
           {!isOperationalListFullyLoaded && (
