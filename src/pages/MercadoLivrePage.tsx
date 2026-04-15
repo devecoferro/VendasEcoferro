@@ -625,12 +625,12 @@ function VirtualizedOrderList({
                     <div className="min-w-0 flex-1">
                       <p className="text-[20px] font-semibold leading-tight text-[#ff6d1b] sm:text-[24px] lg:text-[28px] lg:leading-none">
                         {isOrderInvoicePending(order)
-                          ? "Pronta para emitir NF-e de venda"
+                          ? "Pronta para emitir NF-e"
                           : shipment.title}
                       </p>
                       <p className="mt-2 text-[13px] text-[#666666] sm:mt-3 sm:text-[15px]">
                         {isOrderInvoicePending(order)
-                          ? "Logo poderá imprimir a etiqueta de envio"
+                          ? "Pagamento aprovado e expedição liberada para gerar etiqueta."
                           : shipment.description}
                       </p>
                       <div className="mt-3 flex flex-wrap gap-1.5 sm:mt-4 sm:gap-2">
@@ -768,6 +768,7 @@ export default function MercadoLivrePage() {
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
+  const [bulkGeneratingNFe, setBulkGeneratingNFe] = useState(false);
   // Estados per-order para os botoes "Gerar NF-e" e "Etiqueta ML + DANFe"
   // no card — evitam o spinner global dos botoes em lote e deixam claro
   // qual pedido especifico esta sendo processado.
@@ -1117,6 +1118,56 @@ export default function MercadoLivrePage() {
     [refresh]
   );
 
+  // Emite NF-e em lote para os pedidos selecionados que ainda nao tem
+  // NF-e anexada. Processa em serie (ML trava se forem feitas em paralelo)
+  // e contabiliza sucessos/falhas pra um unico toast de resumo no final.
+  const handleGenerateNFeBulk = useCallback(
+    async (ordersToGenerate: MLOrder[]) => {
+      const targets = ordersToGenerate.filter(isOrderInvoicePending);
+      if (targets.length === 0) {
+        toast.info("Nenhum pedido pendente de NF-e na selecao.");
+        return;
+      }
+
+      setBulkGeneratingNFe(true);
+      let okCount = 0;
+      let skipped = 0;
+      let failed = 0;
+      try {
+        for (const order of targets) {
+          try {
+            const payload = await generateMLNFe(order.order_id);
+            if (payload.action === "generate_failed") {
+              failed += 1;
+            } else if (payload.action === "blocked") {
+              skipped += 1;
+            } else {
+              okCount += 1;
+            }
+          } catch {
+            failed += 1;
+          }
+        }
+        const parts: string[] = [];
+        if (okCount > 0) parts.push(`${okCount} NF-e emitida(s)`);
+        if (skipped > 0) parts.push(`${skipped} bloqueada(s)`);
+        if (failed > 0) parts.push(`${failed} com erro`);
+        const summary = parts.length > 0 ? parts.join(" • ") : "Nenhuma alteracao";
+        if (failed > 0 && okCount === 0) {
+          toast.error(summary);
+        } else if (okCount > 0) {
+          toast.success(summary);
+        } else {
+          toast.info(summary);
+        }
+        void refresh();
+      } finally {
+        setBulkGeneratingNFe(false);
+      }
+    },
+    [refresh]
+  );
+
   // Imprime etiqueta ML + DANFe de um unico pedido direto do card. Mantem
   // o spinner local (per-order) alem do estado global de bulk para nao
   // travar outros botoes do banner enquanto um card individual imprime.
@@ -1337,6 +1388,12 @@ export default function MercadoLivrePage() {
     () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
     [filteredOperationalOrders]
   );
+  // Pedidos que ainda precisam ter NF-e emitida — alimentam o botao
+  // "Gerar NF-e" em lote no banner.
+  const invoicePendingOrders = useMemo(
+    () => filteredOperationalOrders.filter(isOrderInvoicePending),
+    [filteredOperationalOrders]
+  );
   // Pedidos elegiveis que o usuario marcou — fonte de verdade dos botoes
   // do banner. Os botoes so agem sobre o que esta selecionado (nao sobre
   // "todos elegiveis automaticamente"), evitando disparos acidentais.
@@ -1345,6 +1402,11 @@ export default function MercadoLivrePage() {
     [readyOrders, selectedOrderIds]
   );
   const selectedReadyCount = selectedReadyOrders.length;
+  const selectedInvoicePendingOrders = useMemo(
+    () => invoicePendingOrders.filter((order) => selectedOrderIds.has(order.id)),
+    [invoicePendingOrders, selectedOrderIds]
+  );
+  const selectedInvoicePendingCount = selectedInvoicePendingOrders.length;
 
   const isOperationalListIncomplete =
     ordersPagination.loading_more ||
@@ -1981,7 +2043,27 @@ export default function MercadoLivrePage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center">
+              <Button
+                className="h-9 w-full rounded-md bg-[#ff6d1b] px-3 text-[12px] font-semibold text-white hover:bg-[#e65c10] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] sm:text-[13px] lg:w-auto lg:px-3.5"
+                disabled={selectedInvoicePendingCount === 0 || bulkGeneratingNFe}
+                onClick={() => handleGenerateNFeBulk(selectedInvoicePendingOrders)}
+                title={
+                  selectedInvoicePendingCount > 0
+                    ? "Emitir NF-e dos pedidos selecionados que estao pendentes"
+                    : "Selecione pedidos com NF-e pendente para habilitar"
+                }
+              >
+                {bulkGeneratingNFe ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Receipt className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                <span className="truncate">
+                  Gerar NF-e
+                  {selectedInvoicePendingCount > 0 ? ` (${selectedInvoicePendingCount})` : ""}
+                </span>
+              </Button>
               <Button
                 className="h-9 w-full rounded-md bg-[#fff159] px-3 text-[12px] font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60 sm:text-[13px] lg:w-auto lg:px-3.5"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
