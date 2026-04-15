@@ -1201,3 +1201,56 @@ export function getMLNFeFileUrl(
 
   return `/api/nfe/file?${params.toString()}`;
 }
+
+export interface MLConferenciaItemInfo {
+  title: string | null;
+  permalink: string | null;
+}
+
+export interface MLConferenciaResponse {
+  order: MLOrder;
+  pictures: Record<string, string[]>;
+  items: Record<string, MLConferenciaItemInfo>;
+  has_ml_connection: boolean;
+}
+
+/**
+ * Busca uma venda pelo codigo lido no leitor USB (QR/barcode).
+ *
+ * O codigo e' normalmente o `sale_number` (QR impresso pelo proprio sistema
+ * via SaleCardPreview), mas tambem aceita `order_id` puro. Retorna tambem
+ * as fotos do anuncio ML e o permalink, pra mostrar referencia visual na
+ * tela de conferencia e reduzir erros de separacao de pedidos.
+ */
+export async function getConferenciaSale(code: string): Promise<MLConferenciaResponse> {
+  const normalizedCode = code.trim();
+  if (!normalizedCode) {
+    throw new Error("Codigo invalido.");
+  }
+
+  const { response, data } = await fetchJsonWithTimeout<
+    MLConferenciaResponse & { error?: string }
+  >(
+    `/api/ml/conferencia?code=${encodeURIComponent(normalizedCode)}`,
+    {},
+    "Timeout ao buscar a venda para conferencia.",
+    ML_DASHBOARD_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      await parseErrorMessage(response, data?.error || "Falha ao buscar a venda.")
+    );
+  }
+
+  if (!data?.order) {
+    throw new Error("Venda nao encontrada.");
+  }
+
+  return {
+    order: data.order,
+    pictures: data.pictures || {},
+    items: data.items || {},
+    has_ml_connection: Boolean(data.has_ml_connection),
+  };
+}

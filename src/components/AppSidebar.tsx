@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
+  ScanLine,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -32,6 +33,7 @@ interface SidebarContentProps {
 const baseNavItems: SidebarNavItem[] = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/review", icon: ClipboardCheck, label: "Conferencia" },
+  { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda" },
   { to: "/history", icon: History, label: "Historico" },
   { to: "/stock", icon: Package, label: "Estoque" },
   {

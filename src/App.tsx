@@ -21,6 +21,7 @@ const MLReconnectPage = lazy(() => import("./pages/MLReconnectPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
 const StockPage = lazy(() => import("./pages/StockPage"));
+const ConferenciaVendaPage = lazy(() => import("./pages/ConferenciaVendaPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -55,6 +56,7 @@ const App = () => (
                   <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
                   <Route path="/mercado-livre/reconnect" element={<MLReconnectPage />} />
                   <Route path="/stock" element={<StockPage />} />
+                  <Route path="/conferencia-venda" element={<ConferenciaVendaPage />} />
                 </Route>
 
                 <Route element={<ProtectedRoute requireAdmin />}>

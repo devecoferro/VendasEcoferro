@@ -12,6 +12,7 @@ interface AppLayoutProps {
 const ROUTE_TITLES: Array<{ match: RegExp; title: string }> = [
   { match: /^\/$/, title: "Dashboard" },
   { match: /^\/review/, title: "Conferencia" },
+  { match: /^\/conferencia-venda/, title: "Conferencia Venda" },
   { match: /^\/history/, title: "Historico" },
   { match: /^\/mercado-livre-fantom/, title: "Fantom" },
   { match: /^\/mercado-livre/, title: "EcoFerro" },
