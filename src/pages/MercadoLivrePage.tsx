@@ -1941,7 +1941,7 @@ export default function MercadoLivrePage() {
               onClick={() => handleGenerateLabels(readyOrders)}
             >
               {isOperationalListFullyLoaded
-                ? `Gerar Etiquetas (${readyOrders.length})`
+                ? `Etiquetas Ecoferro (${readyOrders.length})`
                 : `Carregando base completa (${readyOrders.length})`}
             </Button>
           </div>
