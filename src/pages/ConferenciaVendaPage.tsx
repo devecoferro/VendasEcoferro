@@ -649,7 +649,10 @@ export default function ConferenciaVendaPage() {
                 </Button>
               </div>
 
-              {saleData && <SaleCardPreview sale={saleData} />}
+              {/* hideProductImage: a thumbnail do produto no card da etiqueta
+                  seria redundante aqui — a foto grande do anuncio ML ja esta
+                  sendo exibida na coluna esquerda. */}
+              {saleData && <SaleCardPreview sale={saleData} hideProductImage />}
             </section>
           </div>
         )}

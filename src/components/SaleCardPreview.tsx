@@ -10,6 +10,10 @@ interface SaleCardPreviewProps {
   // "embedded": sem wrapper externo — use quando o preview ja esta dentro
   // de outro card (ex: MercadoLivrePage) pra evitar padding/borda duplicados.
   mode?: "default" | "print" | "embedded";
+  // Oculta o bloco da thumbnail do produto no card da etiqueta. Usado na
+  // ConferenciaVendaPage, onde a foto grande do anuncio ja e' exibida
+  // lado-a-lado na coluna esquerda — a thumbnail seria redundante.
+  hideProductImage?: boolean;
 }
 
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
@@ -190,6 +194,7 @@ function ObservationBlock({ text }: { text: string }) {
 export function SaleCardPreview({
   sale,
   mode = "default",
+  hideProductImage = false,
 }: SaleCardPreviewProps) {
   const productImageSrc = sale.productImageData || sale.productImageUrl;
   const isPrintMode = mode === "print";
@@ -235,15 +240,22 @@ export function SaleCardPreview({
                 key={`${item.sku || item.itemTitle}-${index}`}
                 className="flex flex-col md:flex-row"
               >
-                <div className="p-3 sm:p-4 md:w-[24%] md:pr-2">
-                  <ProductImageBlock
-                    src={rowImageSrc}
-                    alt={item.itemTitle || sale.productName || "Produto"}
-                    compact={hasGroupedItems}
-                  />
-                </div>
+                {!hideProductImage && (
+                  <div className="p-3 sm:p-4 md:w-[24%] md:pr-2">
+                    <ProductImageBlock
+                      src={rowImageSrc}
+                      alt={item.itemTitle || sale.productName || "Produto"}
+                      compact={hasGroupedItems}
+                    />
+                  </div>
+                )}
 
-                <div className="flex-1 p-3 sm:p-4 md:pl-2 md:pr-4">
+                <div
+                  className={cn(
+                    "flex-1 p-3 sm:p-4 md:pr-4",
+                    hideProductImage ? "md:pl-4" : "md:pl-2"
+                  )}
+                >
                   <div className="space-y-2.5">
                     <p className="text-[18px] font-bold leading-none text-slate-800">
                       SKU: {item.sku || "-"}
