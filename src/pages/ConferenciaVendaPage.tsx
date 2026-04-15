@@ -30,25 +30,61 @@ import {
   mapMLOrderToSaleData,
   type MLConferenciaResponse,
 } from "@/services/mercadoLivreService";
-import { mergeLabelPdfs, openPdfBlobForPrint } from "@/services/pdfMergeService";
+import {
+  mergeLabelPdfs,
+  openPdfBlobForPrint,
+  type MergeSource,
+} from "@/services/pdfMergeService";
 
 // Cooldown pra evitar que o 2o bipe acidental (mesmo codigo) dispare reimpressao.
 const REPRINT_COOLDOWN_MS = 5000;
 
-async function collectLabelUrlForOrder(orderId: string): Promise<string | null> {
+/**
+ * Coleta as fontes de PDF para impressao: etiqueta ML (1 pagina) +
+ * DANFe (1 pagina) quando ambas estao disponiveis em URLs separadas.
+ *
+ * Se so existe a etiqueta ML completa (PDF unificado do ML), retorna 1 fonte
+ * com as 2 primeiras paginas (etiqueta + DANFe embutida), descartando a
+ * 3a+ que costuma ser comprovante/autorizacao/picking list.
+ */
+async function collectLabelSourcesForOrder(orderId: string): Promise<MergeSource[]> {
   try {
     const docs = await getMLOrderDocuments(orderId);
-    return (
+    const sources: MergeSource[] = [];
+
+    const shippingUrl =
       docs?.shipping_label_external?.print_url ||
       docs?.shipping_label_external?.download_url ||
       docs?.shipping_label_external?.view_url ||
+      null;
+
+    const danfeUrl =
       docs?.invoice_nfe_document?.danfe_print_url ||
       docs?.invoice_nfe_document?.danfe_download_url ||
       docs?.invoice_nfe_document?.danfe_view_url ||
-      null
-    );
+      null;
+
+    // Caso ideal: etiqueta e DANFe em URLs separadas — 1 pagina de cada,
+    // evita paginas intermediarias indesejadas no PDF do ML (ex: "Identificacao Produto").
+    if (shippingUrl && danfeUrl) {
+      sources.push({ url: shippingUrl, maxPages: 1 });
+      sources.push({ url: danfeUrl, maxPages: 1 });
+      return sources;
+    }
+
+    // Fallback: so tem a etiqueta ML unificada — pega ate 2 paginas (etiqueta + DANFe).
+    if (shippingUrl) {
+      sources.push({ url: shippingUrl, maxPages: 2 });
+      return sources;
+    }
+
+    // Ultimo fallback: so tem DANFe.
+    if (danfeUrl) {
+      sources.push({ url: danfeUrl, maxPages: 1 });
+    }
+    return sources;
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -128,17 +164,18 @@ export default function ConferenciaVendaPage() {
         );
       }
 
-      const labelUrl = await collectLabelUrlForOrder(order.order_id);
-      if (!labelUrl) {
+      const sources = await collectLabelSourcesForOrder(order.order_id);
+      if (sources.length === 0) {
         toast.error(
           "Nenhuma etiqueta/DANFe disponivel para esta venda. Verifique o Mercado Livre."
         );
         return;
       }
 
-      // Mantem apenas as 2 primeiras paginas (etiqueta + DANFe); a 3a
-      // e' comprovante que nao precisa imprimir.
-      const merged = await mergeLabelPdfs([labelUrl], { maxPagesPerSource: 2 });
+      // Quando etiqueta e DANFe vem em URLs separadas, cada fonte entra com
+      // 1 pagina so — evita paginas intermediarias indesejadas do PDF unificado
+      // (ex: "Identificacao Produto" que o ML insere entre etiqueta e DANFe).
+      const merged = await mergeLabelPdfs(sources);
       if (merged.includedSources === 0) {
         toast.error("Falha ao ler o PDF da etiqueta.");
         return;
