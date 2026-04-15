@@ -2026,7 +2026,12 @@ export default function MercadoLivrePage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {selectedOrderIds.size > 0 && (
+            {selectedOrderIds.size > 0 &&
+              !(
+                readyOrders.length > 0 &&
+                selectedOrderIds.size === readyOrders.length &&
+                readyOrders.every((o) => selectedOrderIds.has(o.id))
+              ) && (
               <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#d9e7ff] bg-[#eef4ff] px-4 py-3 shadow-sm">
                 <div className="text-sm font-medium text-[#22304a]">
                   {selectedOrderIds.size} pedido(s) selecionado(s)
