@@ -654,13 +654,17 @@ function VirtualizedOrderList({
                       const isGeneratingNFe = generatingNFeForOrderId === order.order_id;
                       const isPrintingLabel = printingLabelForOrderId === order.order_id;
 
-                      // Layout em 2 grupos: acoes secundarias (visualizacao/referencia)
-                      // ficam compactas acima/esquerda; acoes primarias (emitir/imprimir)
-                      // ficam maiores/direita para destacar a hierarquia.
+                      // Layout em 2 grupos (espelhando o banner "Etiquetas
+                      // Disponivel para impressao"): Documentos fica no grupo
+                      // secundario (outline); as 3 acoes de geracao (Gerar
+                      // NF-e laranja, Etiqueta ML + DANFe amarela, Etiqueta
+                      // Ecoferro verde) ficam no grupo primario com shadows
+                      // coloridos pra reforcar a hierarquia e manter a
+                      // consistencia visual com o banner.
                       return (
-                        <div className="flex flex-col gap-2.5 lg:max-w-[640px] lg:flex-row lg:items-center lg:justify-end lg:gap-3">
-                          {/* Acoes secundarias — visualizar documentos e imprimir etiqueta interna. */}
-                          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+                        <div className="flex flex-col gap-2.5 lg:max-w-[820px] lg:flex-row lg:items-center lg:justify-end lg:gap-3">
+                          {/* Acao secundaria — visualizar documentos anexados ao pedido. */}
+                          <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
                             <Button
                               variant="outline"
                               className="h-10 w-full rounded-lg border-[#d9e7ff] text-[13px] text-[#2968c8] hover:bg-[#eef4ff] sm:w-auto sm:text-sm"
@@ -668,15 +672,6 @@ function VirtualizedOrderList({
                             >
                               <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
                               Documentos
-                            </Button>
-                            <Button
-                              variant="outline"
-                              className="h-10 w-full rounded-lg border-[#ffe1c4] text-[13px] text-[#b86900] hover:bg-[#fff5df] sm:w-auto sm:text-sm"
-                              onClick={() => onPrintInternalLabel(order)}
-                              title="Etiqueta interna com logo Ecoferro"
-                            >
-                              <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
-                              Etiqueta Ecoferro
                             </Button>
                           </div>
 
@@ -686,8 +681,9 @@ function VirtualizedOrderList({
                             className="hidden h-8 w-px bg-[#e5e5e5] lg:inline-block"
                           />
 
-                          {/* Acoes primarias — emitir NF-e e imprimir etiqueta ML + DANFe. */}
-                          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
+                          {/* Acoes primarias — emitir NF-e, imprimir etiqueta ML + DANFe,
+                              imprimir etiqueta interna Ecoferro (mesma paleta do banner). */}
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-2 lg:flex lg:flex-wrap lg:items-center lg:gap-2.5">
                             {/* Gerar NF-e: so clicavel quando o pedido esta aguardando emissao da NF-e. */}
                             <Button
                               disabled={!nfeEligible || isGeneratingNFe}
@@ -723,6 +719,17 @@ function VirtualizedOrderList({
                                 <Printer className="mr-1.5 h-4 w-4 sm:mr-2" />
                               )}
                               <span className="truncate">Etiqueta ML + DANFe</span>
+                            </Button>
+                            {/* Etiqueta Ecoferro: mesma paleta verde usada no botao em lote
+                                do banner, reforcando que e' a mesma acao (etiqueta interna
+                                com logo/posicao Ecoferro) aplicada a um pedido individual. */}
+                            <Button
+                              className="h-11 w-full rounded-lg bg-[#22c55e] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(34,197,94,0.28)] transition hover:bg-[#16a34a] hover:shadow-[0_2px_6px_rgba(34,197,94,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
+                              onClick={() => onPrintInternalLabel(order)}
+                              title="Etiqueta interna com logo Ecoferro"
+                            >
+                              <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
+                              Etiqueta Ecoferro
                             </Button>
                           </div>
                         </div>
