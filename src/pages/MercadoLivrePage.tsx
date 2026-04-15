@@ -1888,9 +1888,9 @@ export default function MercadoLivrePage() {
           )}
         </div>
 
-        <div className="rounded-[18px] border border-[#e6e6e6] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-3">
+        <div className="rounded-[14px] border border-[#e6e6e6] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-center gap-2.5">
               {(() => {
                 const allReadySelected =
                   readyOrders.length > 0 &&
@@ -1917,17 +1917,17 @@ export default function MercadoLivrePage() {
                         ? "Desmarcar todos elegíveis"
                         : "Selecionar todos elegíveis"
                     }
-                    className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition ${
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition ${
                       allReadySelected || someReadySelected
                         ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
                         : "border border-[#c8d3e0] bg-white text-transparent hover:border-[#3483fa]"
                     }`}
                   >
-                    <Check className="h-4 w-4" />
+                    <Check className="h-3.5 w-3.5" />
                   </button>
                 );
               })()}
-              <div className="text-[15px] text-[#333333]">
+              <div className="text-[13px] text-[#333333]">
                 <span className="font-semibold">
                   Etiquetas Disponível para impressão
                   {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
@@ -1937,19 +1937,19 @@ export default function MercadoLivrePage() {
 
             <div className="flex flex-wrap items-center gap-2">
               <Button
-                className="h-11 rounded-lg bg-[#fff159] px-5 text-sm font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60"
+                className="h-9 rounded-md bg-[#fff159] px-3.5 text-[13px] font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
                 onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
               >
                 {bulkPrintingMl ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Printer className="mr-2 h-4 w-4" />
+                  <Printer className="mr-1.5 h-3.5 w-3.5" />
                 )}
                 Imprimir etiqueta ML + DANFe ({readyOrders.length})
               </Button>
               <Button
-                className="h-11 rounded-lg bg-[#22c55e] px-5 text-sm font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60"
+                className="h-9 rounded-md bg-[#22c55e] px-3.5 text-[13px] font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60"
                 disabled={!canGenerateBatchLabels}
                 onClick={() => handleGenerateLabels(readyOrders)}
               >
