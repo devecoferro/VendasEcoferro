@@ -654,84 +654,74 @@ function VirtualizedOrderList({
                       const isGeneratingNFe = generatingNFeForOrderId === order.order_id;
                       const isPrintingLabel = printingLabelForOrderId === order.order_id;
 
-                      // Layout em 2 grupos (espelhando o banner "Etiquetas
-                      // Disponivel para impressao"): Documentos fica no grupo
-                      // secundario (outline); as 3 acoes de geracao (Gerar
-                      // NF-e laranja, Etiqueta ML + DANFe amarela, Etiqueta
-                      // Ecoferro verde) ficam no grupo primario com shadows
-                      // coloridos pra reforcar a hierarquia e manter a
-                      // consistencia visual com o banner.
+                      // Sequencia de botoes (esquerda -> direita) na mesma
+                      // ordem do banner de acoes em lote no topo da pagina:
+                      //   [Gerar NF-e laranja] [Etiqueta ML + DANFe amarelo]
+                      //   [Etiqueta Ecoferro verde] [Documentos azul outline]
+                      // Todos no mesmo grupo horizontal pra manter a leitura
+                      // continua — o operador repete o mesmo fluxo visual
+                      // seja no banner em lote, seja no card individual.
                       return (
-                        <div className="flex flex-col gap-2.5 lg:max-w-[820px] lg:flex-row lg:items-center lg:justify-end lg:gap-3">
-                          {/* Acao secundaria — visualizar documentos anexados ao pedido. */}
-                          <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2">
-                            <Button
-                              variant="outline"
-                              className="h-10 w-full rounded-lg border-[#d9e7ff] text-[13px] text-[#2968c8] hover:bg-[#eef4ff] sm:w-auto sm:text-sm"
-                              onClick={() => onOpenDocuments(order)}
-                            >
-                              <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
-                              Documentos
-                            </Button>
-                          </div>
-
-                          {/* Separador vertical visivel apenas no desktop, reforcando a hierarquia. */}
-                          <span
-                            aria-hidden="true"
-                            className="hidden h-8 w-px bg-[#e5e5e5] lg:inline-block"
-                          />
-
-                          {/* Acoes primarias — emitir NF-e, imprimir etiqueta ML + DANFe,
-                              imprimir etiqueta interna Ecoferro (mesma paleta do banner). */}
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-2 lg:flex lg:flex-wrap lg:items-center lg:gap-2.5">
-                            {/* Gerar NF-e: so clicavel quando o pedido esta aguardando emissao da NF-e. */}
-                            <Button
-                              disabled={!nfeEligible || isGeneratingNFe}
-                              className="h-11 w-full rounded-lg bg-[#ff6d1b] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(255,109,27,0.28)] transition hover:bg-[#e65c10] hover:shadow-[0_2px_6px_rgba(255,109,27,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
-                              onClick={() => onGenerateNFe(order)}
-                              title={
-                                nfeEligible
-                                  ? "Solicitar emissao da NF-e de venda"
-                                  : "NF-e ja emitida ou pedido ainda nao elegivel"
-                              }
-                            >
-                              {isGeneratingNFe ? (
-                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
-                              ) : (
-                                <Receipt className="mr-1.5 h-4 w-4 sm:mr-2" />
-                              )}
-                              Gerar NF-e
-                            </Button>
-                            {/* Imprimir etiqueta ML + DANFe: so clicavel quando o pedido esta pronto para impressao. */}
-                            <Button
-                              disabled={!labelEligible || isPrintingLabel}
-                              className="h-11 w-full rounded-lg bg-[#fff159] px-4 text-[14px] font-semibold text-[#333333] shadow-[0_1px_3px_rgba(255,241,89,0.6)] transition hover:bg-[#ffe924] hover:shadow-[0_2px_6px_rgba(255,241,89,0.8)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
-                              onClick={() => onPrintMlLabel(order)}
-                              title={
-                                labelEligible
-                                  ? "Imprimir etiqueta ML + DANFe"
-                                  : "Aguardando emissao da NF-e para liberar a impressao"
-                              }
-                            >
-                              {isPrintingLabel ? (
-                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
-                              ) : (
-                                <Printer className="mr-1.5 h-4 w-4 sm:mr-2" />
-                              )}
-                              <span className="truncate">Etiqueta ML + DANFe</span>
-                            </Button>
-                            {/* Etiqueta Ecoferro: mesma paleta verde usada no botao em lote
-                                do banner, reforcando que e' a mesma acao (etiqueta interna
-                                com logo/posicao Ecoferro) aplicada a um pedido individual. */}
-                            <Button
-                              className="h-11 w-full rounded-lg bg-[#22c55e] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(34,197,94,0.28)] transition hover:bg-[#16a34a] hover:shadow-[0_2px_6px_rgba(34,197,94,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
-                              onClick={() => onPrintInternalLabel(order)}
-                              title="Etiqueta interna com logo Ecoferro"
-                            >
-                              <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
-                              Etiqueta Ecoferro
-                            </Button>
-                          </div>
+                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-2 lg:flex-nowrap lg:justify-end lg:gap-2.5">
+                          {/* Gerar NF-e: so clicavel quando o pedido esta aguardando emissao da NF-e. */}
+                          <Button
+                            disabled={!nfeEligible || isGeneratingNFe}
+                            className="h-11 w-full rounded-lg bg-[#ff6d1b] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(255,109,27,0.28)] transition hover:bg-[#e65c10] hover:shadow-[0_2px_6px_rgba(255,109,27,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
+                            onClick={() => onGenerateNFe(order)}
+                            title={
+                              nfeEligible
+                                ? "Solicitar emissao da NF-e de venda"
+                                : "NF-e ja emitida ou pedido ainda nao elegivel"
+                            }
+                          >
+                            {isGeneratingNFe ? (
+                              <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
+                            ) : (
+                              <Receipt className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            )}
+                            Gerar NF-e
+                          </Button>
+                          {/* Imprimir etiqueta ML + DANFe: so clicavel quando o pedido esta pronto para impressao. */}
+                          <Button
+                            disabled={!labelEligible || isPrintingLabel}
+                            className="h-11 w-full rounded-lg bg-[#fff159] px-4 text-[14px] font-semibold text-[#333333] shadow-[0_1px_3px_rgba(255,241,89,0.6)] transition hover:bg-[#ffe924] hover:shadow-[0_2px_6px_rgba(255,241,89,0.8)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
+                            onClick={() => onPrintMlLabel(order)}
+                            title={
+                              labelEligible
+                                ? "Imprimir etiqueta ML + DANFe"
+                                : "Aguardando emissao da NF-e para liberar a impressao"
+                            }
+                          >
+                            {isPrintingLabel ? (
+                              <Loader2 className="mr-1.5 h-4 w-4 animate-spin sm:mr-2" />
+                            ) : (
+                              <Printer className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            )}
+                            <span className="truncate">Etiqueta ML + DANFe</span>
+                          </Button>
+                          {/* Etiqueta Ecoferro: mesma paleta verde do botao em lote do
+                              banner (cor/shadow/peso), reforcando que e' a mesma acao
+                              (etiqueta interna com logo Ecoferro) aplicada a um pedido. */}
+                          <Button
+                            className="h-11 w-full rounded-lg bg-[#22c55e] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(34,197,94,0.28)] transition hover:bg-[#16a34a] hover:shadow-[0_2px_6px_rgba(34,197,94,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
+                            onClick={() => onPrintInternalLabel(order)}
+                            title="Etiqueta interna com logo Ecoferro"
+                          >
+                            <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            Etiqueta Ecoferro
+                          </Button>
+                          {/* Documentos: acao secundaria (outline) — apenas visualiza
+                              documentos do pedido, nao gera nada novo. Fica ao lado
+                              dos botoes de geracao pra acesso rapido sem competir
+                              visualmente com eles. */}
+                          <Button
+                            variant="outline"
+                            className="h-11 w-full rounded-lg border-[#d9e7ff] bg-white px-4 text-[13px] font-semibold text-[#2968c8] hover:bg-[#eef4ff] sm:w-auto sm:text-sm"
+                            onClick={() => onOpenDocuments(order)}
+                          >
+                            <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
+                            Documentos
+                          </Button>
                         </div>
                       );
                     })()}
