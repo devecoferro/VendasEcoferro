@@ -178,6 +178,17 @@ export interface MLLiveChipCounts {
   cancelled: number;
 }
 
+// Listas de order_ids classificadas pelo ML Seller Center — alimentam a
+// lista de cards abaixo do chip selecionado, pareando com os números de
+// ml_live_chip_counts (mesma fonte de verdade).
+export interface MLLiveChipOrderIdsByBucket {
+  today: string[];
+  upcoming: string[];
+  in_transit: string[];
+  finalized: string[];
+  cancelled: string[];
+}
+
 export interface MLDashboardResponse {
   backend_secure: boolean;
   generated_at: string;
@@ -187,6 +198,7 @@ export interface MLDashboardResponse {
   operational_queues?: MLDashboardOperationalQueues;
   deposits: MLDashboardDeposit[];
   ml_live_chip_counts?: MLLiveChipCounts;
+  ml_live_chip_order_ids_by_bucket?: MLLiveChipOrderIdsByBucket;
 }
 
 export interface MLPrivateSellerCenterSnapshotTask {
@@ -854,6 +866,7 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     operational_queues?: MLDashboardOperationalQueues;
     deposits?: MLDashboardDeposit[];
     ml_live_chip_counts?: MLLiveChipCounts;
+    ml_live_chip_order_ids_by_bucket?: MLLiveChipOrderIdsByBucket;
     error?: string;
   }>(
     "/api/ml/dashboard",
@@ -876,6 +889,7 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     operational_queues: data?.operational_queues,
     deposits: Array.isArray(data?.deposits) ? data.deposits : [],
     ml_live_chip_counts: data?.ml_live_chip_counts,
+    ml_live_chip_order_ids_by_bucket: data?.ml_live_chip_order_ids_by_bucket,
   };
 }
 

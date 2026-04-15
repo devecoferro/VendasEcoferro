@@ -1327,14 +1327,50 @@ export default function MercadoLivrePage() {
     return localCounts;
   }, [selectedDashboardDeposits, dashboard]);
 
+  // IDs dos pedidos que compõem a lista abaixo do chip selecionado.
+  //
+  // FONTE DE VERDADE: ml_live_chip_order_ids_by_bucket (ML Seller Center).
+  // Quando o backend consegue a classificação LIVE do ML, esses IDs alimentam
+  // tanto o NÚMERO do chip (ml_live_chip_counts) quanto a LISTA exibida —
+  // mantendo paridade 1:1 com o ML Seller Center.
+  //
+  // FALLBACK LOCAL: se o ML API falhar/timeout, cai na classificação interna
+  // por depósito. Nesse modo, o número do chip e a lista também caem juntos
+  // para o fallback local, então continuam coerentes entre si (apenas podem
+  // divergir do ML Seller Center até a próxima sincronização).
+  //
+  // FILTRO POR DEPÓSITO: quando o usuário seleciona depósitos específicos,
+  // intersectamos os IDs ML com o escopo local do depósito. Os counts dos
+  // chips continuam globais (ML não filtra por depósito) — esse comportamento
+  // é o mesmo do /ml-diagnostics, onde counts são globais e breakdown
+  // local filtra.
   const operationalOrderIds = useMemo(() => {
+    const liveIds = dashboard?.ml_live_chip_order_ids_by_bucket?.[shipmentFilter];
+
+    if (Array.isArray(liveIds) && liveIds.length > 0) {
+      const ids = new Set<string>(liveIds);
+      // Se houver filtro de depósito ativo, restringimos aos pedidos que
+      // também estão no escopo local desse depósito.
+      if (selectedDepositFilters.length > 0) {
+        const scope = new Set<string>();
+        for (const deposit of selectedDashboardDeposits) {
+          for (const id of getDashboardBucketOrderIds(deposit, shipmentFilter)) {
+            scope.add(id);
+          }
+        }
+        return new Set<string>([...ids].filter((id) => scope.has(id)));
+      }
+      return ids;
+    }
+
+    // Fallback: soma dos IDs locais classificados por depósito
     const ids = new Set<string>();
     for (const deposit of selectedDashboardDeposits) {
       const bucketIds = getDashboardBucketOrderIds(deposit, shipmentFilter);
       for (const id of bucketIds) ids.add(id);
     }
     return ids;
-  }, [selectedDashboardDeposits, shipmentFilter]);
+  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter]);
 
   const bucketOrders = useMemo(() => {
     if (operationalOrderIds.size === 0) return [];

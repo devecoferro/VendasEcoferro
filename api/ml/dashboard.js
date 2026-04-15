@@ -72,7 +72,7 @@ const CROSS_DOCKING_TRANSIT_SUBSTATUSES = new Set([
 ]);
 const CROSS_DOCKING_UPCOMING_SUBSTATUSES = new Set(["in_packing_list", "in_hub"]);
 const OPERATIONAL_TIMEZONE = "America/Sao_Paulo";
-const DASHBOARD_CACHE_TTL_MS = 30 * 1000; // 30 segundos — fetchMLLiveChipCounts faz ~10 API calls
+const DASHBOARD_CACHE_TTL_MS = 30 * 1000; // 30s — fetchMLLiveChipBucketsDetailed faz ~10 API calls
 const SELLER_CENTER_MIRROR_SOURCE =
   "internal_operational_baseline+public_entities_tracked_separately";
 const SELLER_CENTER_FINALIZED_STATUS_KEYWORDS = [
@@ -115,7 +115,7 @@ let dashboardCache = null;
 
 export function invalidateDashboardCache() {
   dashboardCache = null;
-  liveChipCache = null;
+  liveChipDetailedCache.clear();
 }
 
 function normalizeState(value, fallback = "none") {
@@ -1248,8 +1248,13 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
 
 const ML_LIVE_PAGE_LIMIT = 50;
 const ML_LIVE_MAX_PAGES = 15;
-const ML_LIVE_CACHE_TTL_MS = 60 * 1000; // 60s — chip counts mudam devagar
-let liveChipCache = null;
+// Cache da classificação LIVE detalhada (counts + order_ids), keyed por
+// connection.id para suportar multi-conexão sem colisão. TTL = 50s.
+// O cache geral do payload do dashboard (DASHBOARD_CACHE_TTL_MS, 30s) é o
+// principal consumidor; esse cache interno absorve chamadas paralelas e o
+// hit do endpoint /ml-diagnostics logo após o dashboard.
+const liveChipDetailedCache = new Map();
+const ML_LIVE_DETAILED_CACHE_TTL_MS = 50 * 1000;
 
 // Substatuses que o ML Seller Center classifica como "Envios de hoje".
 // Substatuses que o ML Seller Center classifica como "Envios de hoje":
@@ -1380,146 +1385,23 @@ async function fetchShipmentDetails(token, shippingIds, concurrency = 20) {
   return map;
 }
 
-async function fetchMLLiveChipCounts(connection) {
-  // Cache de 60s para evitar chamadas API repetidas
-  if (liveChipCache && liveChipCache.expiresAt > Date.now()) {
-    return liveChipCache.data;
-  }
-
-  try {
-    const validConnection = await ensureValidAccessToken(connection);
-    if (!validConnection?.access_token) return null;
-    const token = validConnection.access_token;
-    const sellerId = String(validConnection.seller_id);
-    const todayKey = getCalendarKey(new Date());
-
-    // 1. Buscar todos os pedidos ativos em paralelo (orders/search)
-    const [pendingOrders, rtsOrders, shippedOrders] = await Promise.all([
-      fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
-      fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
-      fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
-    ]);
-
-    // 2. Agrupar por pack (como ML conta)
-    const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
-    const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
-    const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
-
-    // 3. Coletar TODOS os shipping_ids únicos de rts + shipped
-    const allShippingIds = new Set();
-    for (const [, pack] of rtsPacks) {
-      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
-    }
-    for (const [, pack] of shippedPacks) {
-      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
-    }
-
-    // 4. Buscar substatus REAL via /shipments/{id} API (em paralelo)
-    const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
-
-    // (sem debug logs em produção)
-
-    // 5. Classificar cada pack com base no substatus REAL
-    let today = 0;
-    let upcoming = 0;
-    let inTransit = 0;
-    let finalized = 0;
-    let cancelled = 0;
-
-    // Pending → sempre "upcoming"
-    upcoming += pendingPacks.size;
-
-    // Ready to ship → classificar pelo substatus REAL do shipment:
-    for (const [, pack] of rtsPacks) {
-      const shipment = shipmentMap.get(String(pack.shipping_id));
-      if (!shipment) {
-        upcoming++;
-        continue;
-      }
-
-      // Se o shipment REAL já foi cancelado/entregue/shipped, não contar
-      if (shipment.status !== "ready_to_ship") continue;
-
-      const sub = shipment.substatus;
-      if (TODAY_SUBSTATUSES.has(sub)) {
-        today++;
-      } else if (TRANSITION_SUBSTATUSES.has(sub)) {
-        // picked_up/authorized_by_carrier → não conta em nenhum chip
-      } else {
-        upcoming++;
-      }
-    }
-
-    // Shipped → classificar pelo substatus REAL:
-    // Aplica o filtro TRANSIT_MAX_DAYS (2 dias). ML Seller Center só mostra
-    // em "Em trânsito" envios recentes — shipped com substatus ativo mas
-    // com date_shipped > 2 dias são pendências antigas, não trânsito.
-    const nowMs = Date.now();
-    const msPerDay = 86400000;
-    for (const [, pack] of shippedPacks) {
-      const shipment = shipmentMap.get(String(pack.shipping_id));
-      if (!shipment) continue;
-
-      // Se o shipment REAL não é mais shipped, não contar
-      if (shipment.status !== "shipped") continue;
-
-      const sub = shipment.substatus;
-      if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
-        upcoming++;
-      } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(sub) || sub === "soon_deliver" || sub === "in_transit") {
-        // Filtro de idade: só conta envios shipped nos últimos TRANSIT_MAX_DAYS.
-        if (!shipment.dateShipped) continue;
-        const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (Number.isNaN(shippedAt)) continue;
-        const ageDays = (nowMs - shippedAt) / msPerDay;
-        if (ageDays <= TRANSIT_MAX_DAYS) {
-          inTransit++;
-        }
-      }
-      // delivered, returned_to_sender, etc → não conta (status final)
-    }
-
-    // Finalizadas → not_delivered (entrega tentada mas falhou)
-    // cancelled vai pra "Gerenciar Pós-venda", delivered sai do painel
-    try {
-      const todayISO = todayKey + "T00:00:00.000-03:00";
-      const ndUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=1`;
-      const ndR = await fetch(ndUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
-      finalized = ndR.paging?.total || 0;
-    } catch {
-      // Finalized = 0 se falhar
-    }
-
-    // Canceladas → contagem de pedidos com status=cancelled criados a partir
-    // do piso de sincronização (MIN_CANCELLED_DATE_FROM). O app só opera com
-    // vendas de 01/04/2026 em diante, então cancelados anteriores não devem
-    // contar no chip.
-    try {
-      const cancelFromIso = `${MIN_CANCELLED_DATE_FROM}T00:00:00.000-03:00`;
-      const cUrl =
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-        `&order.status=cancelled&order.date_created.from=${encodeURIComponent(cancelFromIso)}&limit=1`;
-      const cR = await fetch(cUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
-      cancelled = cR.paging?.total || 0;
-    } catch {
-      // Cancelled = 0 se falhar — frontend cai no fallback local.
-    }
-
-    const result = { today, upcoming, in_transit: inTransit, finalized, cancelled };
-    liveChipCache = { data: result, expiresAt: Date.now() + ML_LIVE_CACHE_TTL_MS };
-    return result;
-  } catch (err) {
-    console.error("[fetchMLLiveChipCounts] Error:", err.message);
-    return null;
-  }
-}
-
 /**
- * Variante detalhada de fetchMLLiveChipCounts — retorna também as listas
- * de order IDs classificadas em cada bucket pelo ML. Usada sob demanda na
- * analise de divergencia (/api/ml/diagnostics?action=orders-diff) para
- * identificar EXATAMENTE quais pedidos estao em buckets diferentes entre
- * ML e app. Sem cache (operacao cara e rara).
+ * Classificação LIVE detalhada dos chips — fonte de verdade do ML Seller Center.
+ *
+ * Busca todos os pedidos ativos da API ML (pending, ready_to_ship, shipped),
+ * agrupa por pack (como o ML conta), e classifica em buckets usando o
+ * substatus REAL do shipment (via /shipments/{id}).
+ *
+ * Retorna counts E os order_ids por bucket — para que o frontend possa
+ * usar a MESMA fonte tanto para o número do chip quanto para a lista de
+ * cards abaixo. Sem essa paridade, chip e lista divergem (chip mostra 12
+ * mas a lista tem 8 cards por usar classificação local diferente).
+ *
+ * Também usado pelo /api/ml/diagnostics?action=orders-diff para identificar
+ * EXATAMENTE quais pedidos estão em buckets diferentes entre ML e app.
+ *
+ * Cache: 50s por connection.id (liveChipDetailedCache). Reseta via
+ * invalidateDashboardCache() quando auto-heal corre.
  *
  * Retorna: {
  *   counts: { today, upcoming, in_transit, finalized, cancelled },
@@ -1528,6 +1410,15 @@ async function fetchMLLiveChipCounts(connection) {
  */
 export async function fetchMLLiveChipBucketsDetailed(connection) {
   try {
+    // Cache por conexão — 50s. Evita refazer o batch de ML API calls
+    // (pending + ready_to_ship + shipped + N shipments + finalized + cancelled)
+    // quando dashboard e diagnostics chamam em sequência próxima.
+    const cacheKey = String(connection?.id || connection?.seller_id || "default");
+    const cached = liveChipDetailedCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+
     const validConnection = await ensureValidAccessToken(connection);
     if (!validConnection?.access_token) return null;
     const token = validConnection.access_token;
@@ -1646,7 +1537,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       // deixa vazio se falhar
     }
 
-    return {
+    const result = {
       counts: {
         today: buckets.today.size,
         upcoming: buckets.upcoming.size,
@@ -1656,6 +1547,11 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       },
       order_ids_by_bucket: buckets,
     };
+    liveChipDetailedCache.set(cacheKey, {
+      data: result,
+      expiresAt: Date.now() + ML_LIVE_DETAILED_CACHE_TTL_MS,
+    });
+    return result;
   } catch (err) {
     console.error("[fetchMLLiveChipBucketsDetailed] Error:", err.message);
     return null;
@@ -1918,26 +1814,60 @@ export async function buildDashboardPayload(options = {}) {
     postSaleOverview
   );
 
-  // ─── Contagens LIVE dos chips (pack-deduplicated, ML = fonte de verdade) ───
-  // Busca todos os pedidos ativos de TODAS as conexões, agrupa por pack,
-  // e retorna os 4 números exatos: { today, upcoming, in_transit, finalized }.
+  // ─── Classificação LIVE dos chips (ML = fonte de verdade) ───
+  // Busca a classificação detalhada (counts + order_ids por bucket) de TODAS
+  // as conexões e agrega num único mapa global.
+  //
+  // Expõe DOIS campos correlatos no payload:
+  //   - ml_live_chip_counts:              { today, upcoming, in_transit, finalized, cancelled }
+  //   - ml_live_chip_order_ids_by_bucket: mesmos buckets, listas de order_ids
+  //
+  // O frontend usa os counts direto nos chips e os IDs para filtrar a lista
+  // de pedidos abaixo do chip selecionado — garantindo que número do chip E
+  // os cards listados sigam a mesma fonte de verdade (ML Seller Center).
   let mlLiveChipCounts = null;
+  let mlLiveChipOrderIds = null;
   try {
     const allConnections = listConnections().filter((c) => c?.id);
-    const countsPromises = allConnections.map((c) => fetchMLLiveChipCounts(c).catch(() => null));
-    const allCounts = await Promise.all(countsPromises);
-    const validCounts = allCounts.filter(Boolean);
-    if (validCounts.length > 0) {
+    const detailedPromises = allConnections.map((c) =>
+      fetchMLLiveChipBucketsDetailed(c).catch(() => null)
+    );
+    const detailedResults = (await Promise.all(detailedPromises)).filter(Boolean);
+    if (detailedResults.length > 0) {
+      const mergedIds = {
+        today: new Set(),
+        upcoming: new Set(),
+        in_transit: new Set(),
+        finalized: new Set(),
+        cancelled: new Set(),
+      };
+      for (const result of detailedResults) {
+        const ids = result.order_ids_by_bucket || {};
+        for (const bucket of Object.keys(mergedIds)) {
+          const src = ids[bucket];
+          if (!src) continue;
+          const iter = src instanceof Set ? src.values() : src;
+          for (const id of iter) mergedIds[bucket].add(String(id));
+        }
+      }
       mlLiveChipCounts = {
-        today: validCounts.reduce((sum, c) => sum + (c.today || 0), 0),
-        upcoming: validCounts.reduce((sum, c) => sum + (c.upcoming || 0), 0),
-        in_transit: validCounts.reduce((sum, c) => sum + (c.in_transit || 0), 0),
-        finalized: validCounts.reduce((sum, c) => sum + (c.finalized || 0), 0),
-        cancelled: validCounts.reduce((sum, c) => sum + (c.cancelled || 0), 0),
+        today: mergedIds.today.size,
+        upcoming: mergedIds.upcoming.size,
+        in_transit: mergedIds.in_transit.size,
+        finalized: mergedIds.finalized.size,
+        cancelled: mergedIds.cancelled.size,
+      };
+      mlLiveChipOrderIds = {
+        today: Array.from(mergedIds.today),
+        upcoming: Array.from(mergedIds.upcoming),
+        in_transit: Array.from(mergedIds.in_transit),
+        finalized: Array.from(mergedIds.finalized),
+        cancelled: Array.from(mergedIds.cancelled),
       };
     }
   } catch {
     mlLiveChipCounts = null;
+    mlLiveChipOrderIds = null;
   }
 
   const payload = {
@@ -1949,9 +1879,13 @@ export async function buildDashboardPayload(options = {}) {
     operational_queues: operationalQueues,
     deposits,
     // Contagens LIVE dos chips — ML API como fonte de verdade.
-    // Pack-deduplicated, classificado por substatus local.
+    // Pack-deduplicated, classificado por substatus real do ML.
     // Se null, o frontend usa counts dos deposits (fallback local).
     ml_live_chip_counts: mlLiveChipCounts,
+    // Listas de order_ids classificadas pelo ML (mesma fonte dos counts).
+    // Frontend usa para filtrar a lista de pedidos abaixo do chip selecionado,
+    // evitando divergência entre o número do chip e os cards exibidos.
+    ml_live_chip_order_ids_by_bucket: mlLiveChipOrderIds,
   };
 
   if (allowCache) {
