@@ -539,10 +539,13 @@ export default function ConferenciaVendaPage() {
                   aria-label="Ampliar foto do anuncio"
                   title="Clique para ampliar (use as setas ← → para navegar)"
                 >
+                  {/* aspect-[4/3] escala a altura com a largura da coluna —
+                      fica ~450px de altura em 600px de coluna, aproximando
+                      o tamanho mostrado no mockup sem hardcode frágil. */}
                   <img
                     src={mainImage}
                     alt={currentItemInfo?.title || "Foto de referencia"}
-                    className="h-72 w-full object-contain transition-transform duration-200 group-hover:scale-[1.03] sm:h-80 lg:h-[360px]"
+                    className="aspect-[4/3] w-full object-contain transition-transform duration-200 group-hover:scale-[1.03]"
                   />
                   {/* Overlay que aparece no hover com o icone de "ampliar". */}
                   <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 group-hover:bg-black/35 group-hover:opacity-100">
@@ -553,7 +556,7 @@ export default function ConferenciaVendaPage() {
                   </span>
                 </button>
               ) : (
-                <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-xs text-muted-foreground sm:h-80 lg:h-[360px]">
+                <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-xs text-muted-foreground">
                   {result.has_ml_connection
                     ? "Sem fotos cadastradas no anuncio."
                     : "Conecte ao Mercado Livre para ver fotos."}
