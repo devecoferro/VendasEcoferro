@@ -485,8 +485,11 @@ export default function ConferenciaVendaPage() {
         )}
 
         {result && (
-          <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-            {/* Coluna esquerda: thumbnails das fotos de referencia do anuncio ML. */}
+          // Duas colunas de larguras equivalentes no desktop — a esquerda
+          // exibe a foto do anuncio em tamanho grande pra conferencia visual,
+          // a direita traz os dados da venda e QR codes pra impressao.
+          <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+            {/* Coluna esquerda: foto grande + thumbnails do anuncio ML. */}
             <aside className="space-y-3 rounded-2xl border border-border/60 bg-card p-3 shadow-sm sm:p-4">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -539,7 +542,7 @@ export default function ConferenciaVendaPage() {
                   <img
                     src={mainImage}
                     alt={currentItemInfo?.title || "Foto de referencia"}
-                    className="h-64 w-full object-contain transition-transform duration-200 group-hover:scale-[1.03]"
+                    className="h-72 w-full object-contain transition-transform duration-200 group-hover:scale-[1.03] sm:h-80 lg:h-[360px]"
                   />
                   {/* Overlay que aparece no hover com o icone de "ampliar". */}
                   <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all duration-200 group-hover:bg-black/35 group-hover:opacity-100">
@@ -550,7 +553,7 @@ export default function ConferenciaVendaPage() {
                   </span>
                 </button>
               ) : (
-                <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-xs text-muted-foreground">
+                <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-xs text-muted-foreground sm:h-80 lg:h-[360px]">
                   {result.has_ml_connection
                     ? "Sem fotos cadastradas no anuncio."
                     : "Conecte ao Mercado Livre para ver fotos."}
@@ -558,7 +561,9 @@ export default function ConferenciaVendaPage() {
               )}
 
               {currentPictures.length > 1 && (
-                <div className="grid grid-cols-4 gap-1.5">
+                // 4 thumbnails em linha — a coluna agora e' mais larga,
+                // entao cada thumbnail fica confortavelmente maior.
+                <div className="grid grid-cols-4 gap-2">
                   {currentPictures.slice(0, 8).map((url, idx) => (
                     <button
                       key={url}
@@ -602,7 +607,7 @@ export default function ConferenciaVendaPage() {
               )}
 
               {currentItemInfo?.title && (
-                <p className="text-[11px] leading-[1.4] text-muted-foreground">
+                <p className="text-[12px] leading-[1.45] text-muted-foreground">
                   <span className="font-semibold text-foreground">
                     Titulo no anuncio:
                   </span>{" "}
@@ -611,7 +616,8 @@ export default function ConferenciaVendaPage() {
               )}
             </aside>
 
-            {/* Coluna direita: dados da venda + acao de imprimir. */}
+            {/* Coluna direita: header da venda (numero + botao imprimir) + card
+                completo da venda com QR codes. */}
             <section className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/60 bg-card px-4 py-3 shadow-sm">
                 <div>
@@ -622,11 +628,14 @@ export default function ConferenciaVendaPage() {
                     #{result.order.sale_number || result.order.order_id}
                   </p>
                 </div>
+                {/* Botao amarelo no estilo ML (mesma paleta do "Imprimir
+                    etiqueta ML + DANFe" do MercadoLivrePage) pra manter
+                    consistencia visual entre os fluxos de impressao. */}
                 <Button
                   type="button"
                   onClick={() => handlePrint(result.order)}
                   disabled={printing}
-                  className="gap-2"
+                  className="h-10 gap-2 rounded-lg bg-[#fff159] px-4 text-[14px] font-semibold text-[#333333] shadow-[0_1px_3px_rgba(255,241,89,0.6)] transition hover:bg-[#ffe924] hover:shadow-[0_2px_6px_rgba(255,241,89,0.8)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none"
                 >
                   {printing ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
