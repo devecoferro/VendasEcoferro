@@ -57,8 +57,11 @@ export function AppLayout({ children }: AppLayoutProps) {
           </Sheet>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl px-4 py-4 sm:px-5 sm:py-5 lg:px-8 lg:py-8">
+        {/* Scroll nativo do navegador — sidebar fica sticky e uma unica barra
+            de rolagem aparece no canto direito (comportamento web padrao,
+            evita scroll aninhado dentro de listas virtualizadas). */}
+        <main className="flex-1">
+          <div className="mx-auto w-full max-w-[1600px] px-4 py-4 sm:px-6 sm:py-6 lg:px-10 lg:py-8">
             {children}
           </div>
         </main>

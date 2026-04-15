@@ -2,7 +2,7 @@
 import { useNavigate } from "react-router-dom";
 import { useCallback } from "react";
 import { useEffect } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -516,10 +516,31 @@ function VirtualizedOrderList({
   onPrintInternalLabel: (order: MLOrder) => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  // Offset do container em relacao ao topo do documento — o windowVirtualizer
+  // usa pra calcular o inicio da area virtualizada, ja que o scroll agora e
+  // do proprio body (nao de um div interno). Observa mudancas no layout
+  // (filtros abrem/fecham) pra recalcular sem gap visual.
+  const [scrollMargin, setScrollMargin] = useState(0);
 
-  const virtualizer = useVirtualizer({
+  useEffect(() => {
+    if (!parentRef.current) return;
+    const measure = () => {
+      if (parentRef.current) {
+        setScrollMargin(parentRef.current.getBoundingClientRect().top + window.scrollY);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(document.body);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  const virtualizer = useWindowVirtualizer({
     count: orders.length,
-    getScrollElement: () => parentRef.current,
     // Preview da etiqueta fica sempre visivel — altura estimada inclui o
     // cabecalho + secao NF-e + SaleCardPreview (~280px p/ 1 item, +140px
     // por item extra). measureElement corrige qualquer divergencia real.
@@ -530,13 +551,11 @@ function VirtualizedOrderList({
       return 320 + previewHeight;
     },
     overscan: 3,
+    scrollMargin,
   });
 
   return (
-    <div
-      ref={parentRef}
-      className="h-[calc(100vh-260px)] min-h-[360px] overflow-auto sm:h-[calc(100vh-320px)] lg:h-[calc(100vh-380px)]"
-    >
+    <div ref={parentRef}>
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -560,7 +579,7 @@ function VirtualizedOrderList({
                 top: 0,
                 left: 0,
                 width: "100%",
-                transform: `translateY(${virtualRow.start}px)`,
+                transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               }}
             >
               <article className="mb-3 overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:mb-4">
@@ -1194,13 +1213,14 @@ export default function MercadoLivrePage() {
     () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
     [filteredOperationalOrders]
   );
-  // Conta quantos pedidos elegiveis estao atualmente selecionados — usado
-  // no titulo do banner "Etiquetas Disponivel para impressao (N)", que
-  // aparece apenas quando o usuario comeca a marcar pedidos.
-  const selectedReadyCount = useMemo(
-    () => readyOrders.reduce((total, order) => total + (selectedOrderIds.has(order.id) ? 1 : 0), 0),
+  // Pedidos elegiveis que o usuario marcou — fonte de verdade dos botoes
+  // do banner. Os botoes so agem sobre o que esta selecionado (nao sobre
+  // "todos elegiveis automaticamente"), evitando disparos acidentais.
+  const selectedReadyOrders = useMemo(
+    () => readyOrders.filter((order) => selectedOrderIds.has(order.id)),
     [readyOrders, selectedOrderIds]
   );
+  const selectedReadyCount = selectedReadyOrders.length;
 
   const isOperationalListIncomplete =
     ordersPagination.loading_more ||
@@ -1220,7 +1240,8 @@ export default function MercadoLivrePage() {
     permittedOrders.length > 0 &&
     isOperationalListIncomplete &&
     !hasClientSideOperationalFilters;
-  const canGenerateBatchLabels = readyOrders.length > 0 && isOperationalListFullyLoaded;
+  const canGenerateBatchLabels =
+    selectedReadyCount > 0 && isOperationalListFullyLoaded;
 
   const hasOperationalSummaryWithoutVisibleOrders = useMemo(
     () =>
@@ -1842,7 +1863,7 @@ export default function MercadoLivrePage() {
               <Button
                 className="h-9 w-full rounded-md bg-[#fff159] px-3 text-[12px] font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60 sm:text-[13px] lg:w-auto lg:px-3.5"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
-                onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
+                onClick={() => handlePrintMlLabelsAndNFeBulk(selectedReadyOrders)}
               >
                 {bulkPrintingMl ? (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -1850,18 +1871,19 @@ export default function MercadoLivrePage() {
                   <Printer className="mr-1.5 h-3.5 w-3.5" />
                 )}
                 <span className="truncate">
-                  Imprimir etiqueta ML + DANFe ({readyOrders.length})
+                  Imprimir etiqueta ML + DANFe
+                  {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
                 </span>
               </Button>
               <Button
                 className="h-9 w-full rounded-md bg-[#22c55e] px-3 text-[12px] font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60 sm:text-[13px] lg:w-auto lg:px-3.5"
                 disabled={!canGenerateBatchLabels}
-                onClick={() => handleGenerateLabels(readyOrders)}
+                onClick={() => handleGenerateLabels(selectedReadyOrders)}
               >
                 <span className="truncate">
                   {isOperationalListFullyLoaded
-                    ? `Etiquetas Ecoferro (${readyOrders.length})`
-                    : `Carregando base completa (${readyOrders.length})`}
+                    ? `Etiquetas Ecoferro${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`
+                    : `Carregando base completa${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`}
                 </span>
               </Button>
             </div>
