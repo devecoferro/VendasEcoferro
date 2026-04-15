@@ -726,10 +726,15 @@ export async function runMercadoLivreSync({
 //
 // After this runs, local DB has current data for all active orders,
 // making local classification match ML Seller Center exactly.
+// Caps generosos pra cobrir pedidos "presos" antigos (NF-e nunca emitida,
+// etiqueta nunca impressa) que continuam aparecendo em "Próximos dias" no ML
+// Seller Center. Sem isso, sort=date_desc deixa os mais antigos fora do scroll.
+// 50 páginas × 50 = 2500 pedidos por status — folga grande sem custo perceptível
+// pois ML quebra cedo quando a página retorna < limit.
 const ACTIVE_REFRESH_SHIPPING_STATUSES = [
-  { status: "pending", maxPages: 5 },
-  { status: "ready_to_ship", maxPages: 15 },
-  { status: "shipped", maxPages: 5 },
+  { status: "pending", maxPages: 50 },
+  { status: "ready_to_ship", maxPages: 50 },
+  { status: "shipped", maxPages: 10 },
 ];
 // Pedidos recém-entregues/cancelados: atualiza no DB local para limpar
 // dados stale (ex: pedido que era shipped/out_for_delivery mas agora
