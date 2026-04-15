@@ -365,9 +365,14 @@ app.use((req, res) => {
 // Usa updated_from para fazer sync incremental (apenas pedidos alterados).
 const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
 const ACTIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
-// Drift snapshot: tira um retrato da divergencia entre ML e app a cada 15min.
-// Fica persistido em ml_chip_drift_history para analise historica (Camada 4).
-const CHIP_DRIFT_SNAPSHOT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
+// Drift snapshot: verifica divergencia ML vs app a cada 30s (mesmo cadencia
+// do cache do dashboard — sem overhead extra). Persiste em
+// ml_chip_drift_history apenas quando algo muda (status ou max_abs_diff)
+// ou como heartbeat a cada 5min — mantem o historico enxuto mas com
+// deteccao praticamente em tempo real. ML muda status de pedidos muito
+// rapido, entao 15min deixaria o painel sempre em atraso.
+const CHIP_DRIFT_SNAPSHOT_INTERVAL_MS = 30 * 1000; // 30 segundos
+const CHIP_DRIFT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos (baseline IN_SYNC)
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
@@ -378,6 +383,8 @@ let activeRefreshIntervalId = null;
 let chipDriftSnapshotIntervalId = null;
 let chipDriftPruneIntervalId = null;
 let chipDriftSnapshotRunning = false;
+let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapshot gravado
+let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
 
 async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
@@ -440,10 +447,14 @@ async function autoRefreshActiveOrders() {
 }
 
 // ─── Chip Drift Snapshot ──────────────────────────────────────────
-// A cada 15 minutos, tira um snapshot do diff entre ML Seller Center
-// (ml_live_chip_counts) e a classificacao interna (internal_operational_counts
-// somados entre depositos). Persiste em ml_chip_drift_history — permite
-// analise historica de quando os chips divergiram e por quanto.
+// A cada 30s verifica o diff entre ML Seller Center (ml_live_chip_counts)
+// e a classificacao interna (internal_operational_counts somados entre
+// depositos). Persiste em ml_chip_drift_history APENAS quando:
+//   (a) status muda (IN_SYNC <-> DRIFT_DETECTED),
+//   (b) max_abs_diff muda,
+//   (c) se passaram 5 min desde o ultimo heartbeat (baseline).
+// Assim a deteccao e quase tempo real, mas a tabela fica enxuta
+// (~300 linhas/dia em estado IN_SYNC estavel, mais eventos de drift).
 // Silencioso em caso de falha (telemetria e best-effort).
 async function autoChipDriftSnapshot() {
   if (chipDriftSnapshotRunning) return;
@@ -461,11 +472,43 @@ async function autoChipDriftSnapshot() {
 
     if (result.status === "ML_API_UNAVAILABLE") return;
 
-    const saved = saveChipDriftSnapshot(result, "cron_15min");
-    if (saved && result.status === "DRIFT_DETECTED") {
-      log.warn(
-        `Chip drift detectado: max_abs_diff=${result.max_abs_diff} diff=${JSON.stringify(result.diff)}`
-      );
+    // Persistencia inteligente: grava so quando muda algo, ou heartbeat
+    const now = Date.now();
+    const statusChanged =
+      !lastPersistedChipDrift || lastPersistedChipDrift.status !== result.status;
+    const diffChanged =
+      !lastPersistedChipDrift ||
+      lastPersistedChipDrift.max_abs_diff !== result.max_abs_diff;
+    const isHeartbeat =
+      now - lastChipDriftHeartbeatAt >= CHIP_DRIFT_HEARTBEAT_INTERVAL_MS;
+    const shouldPersist = statusChanged || diffChanged || isHeartbeat;
+
+    if (!shouldPersist) return;
+
+    const source = statusChanged
+      ? "cron_status_change"
+      : diffChanged
+        ? "cron_diff_change"
+        : "cron_heartbeat";
+    const saved = saveChipDriftSnapshot(result, source);
+    if (!saved) return;
+
+    lastPersistedChipDrift = {
+      status: result.status,
+      max_abs_diff: result.max_abs_diff,
+    };
+    if (isHeartbeat) lastChipDriftHeartbeatAt = now;
+
+    if (statusChanged || diffChanged) {
+      if (result.status === "DRIFT_DETECTED") {
+        log.warn(
+          `Chip drift detectado (${source}): max_abs_diff=${result.max_abs_diff} diff=${JSON.stringify(result.diff)}`
+        );
+      } else {
+        log.info(
+          `Chip drift voltou a IN_SYNC (max_abs_diff=${result.max_abs_diff})`
+        );
+      }
     }
   } catch (error) {
     log.error(
@@ -594,9 +637,10 @@ app.listen(APP_PORT, APP_HOST, () => {
     // Primeiro active refresh 60s apos boot (depois do primeiro incremental sync)
     setTimeout(autoRefreshActiveOrders, 60_000);
 
-    // Chip drift snapshot: captura divergencias app vs ML a cada 15 min
+    // Chip drift snapshot: verifica divergencias app vs ML a cada 30s,
+    // persiste so em mudancas ou heartbeat de 5min
     log.info(
-      `Chip drift snapshot iniciado (intervalo: ${CHIP_DRIFT_SNAPSHOT_INTERVAL_MS / 60000}min)`
+      `Chip drift snapshot iniciado (intervalo: ${CHIP_DRIFT_SNAPSHOT_INTERVAL_MS / 1000}s, heartbeat: ${CHIP_DRIFT_HEARTBEAT_INTERVAL_MS / 60000}min)`
     );
     chipDriftSnapshotIntervalId = setInterval(
       autoChipDriftSnapshot,

@@ -35,7 +35,9 @@ import { resolveAdminCredentials } from "./_lib/admin-credentials.mjs";
 
 const DEFAULT_BASE_URL =
   process.env.ECOFERRO_CAPTURE_BASE_URL || "https://vendas.ecoferro.com.br";
-const DEFAULT_INTERVAL_SECONDS = 60;
+// 30s = cadencia do cache do dashboard e do cron do servidor.
+// ML muda status de pedidos com frequencia, intervalos maiores ficam em atraso.
+const DEFAULT_INTERVAL_SECONDS = 30;
 const DEFAULT_THRESHOLD = 2;
 
 function parseArgs(argv) {
@@ -100,7 +102,7 @@ Usage:
 Flags:
   --watch                    Poll continuously (default: one-shot)
   --once                     Single check and exit (default)
-  --interval=N               Seconds between polls in watch mode (default: 60)
+  --interval=N               Seconds between polls in watch mode (default: 30)
   --threshold=N              Alert threshold for |diff| (default: 2)
   --log-file=PATH            Append JSONL logs to this file
   --save                     Persist each snapshot to ml_chip_drift_history

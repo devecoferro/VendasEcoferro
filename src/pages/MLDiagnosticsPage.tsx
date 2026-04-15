@@ -456,7 +456,7 @@ export default function MLDiagnosticsPage() {
               <div>
                 <CardTitle className="text-base">Histórico de drift</CardTitle>
                 <CardDescription>
-                  Snapshots persistidos (cron 15 min + saves manuais). Retenção: 30 dias.
+                  Snapshots persistidos (cron 30s — grava em mudanças + heartbeat 5min + saves manuais). Retenção: 30 dias.
                 </CardDescription>
               </div>
               <Button
