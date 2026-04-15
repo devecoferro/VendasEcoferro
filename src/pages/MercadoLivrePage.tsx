@@ -1291,6 +1291,13 @@ export default function MercadoLivrePage() {
     () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
     [filteredOperationalOrders]
   );
+  // Conta quantos pedidos elegiveis estao atualmente selecionados — usado
+  // no titulo do banner "Etiquetas Disponivel para impressao (N)", que
+  // aparece apenas quando o usuario comeca a marcar pedidos.
+  const selectedReadyCount = useMemo(
+    () => readyOrders.reduce((total, order) => total + (selectedOrderIds.has(order.id) ? 1 : 0), 0),
+    [readyOrders, selectedOrderIds]
+  );
 
   const isOperationalListIncomplete =
     ordersPagination.loading_more ||
@@ -1921,14 +1928,16 @@ export default function MercadoLivrePage() {
                 );
               })()}
               <div className="text-[15px] text-[#333333]">
-                <span className="font-semibold">{readyOrders.length} elegível(is)</span>
-                <span className="ml-2 text-[#666666]">para impressão real de etiquetas</span>
+                <span className="font-semibold">
+                  Etiquetas Disponível para impressão
+                  {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
+                </span>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <Button
-                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
+                className="h-11 rounded-lg bg-[#fff159] px-5 text-sm font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
                 onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
               >
@@ -1940,7 +1949,7 @@ export default function MercadoLivrePage() {
                 Imprimir etiqueta ML + DANFe ({readyOrders.length})
               </Button>
               <Button
-                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
+                className="h-11 rounded-lg bg-[#22c55e] px-5 text-sm font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60"
                 disabled={!canGenerateBatchLabels}
                 onClick={() => handleGenerateLabels(readyOrders)}
               >
