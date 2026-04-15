@@ -673,9 +673,24 @@ function classifyNativeMercadoLivreOrder(order) {
       }
 
       if (CROSS_DOCKING_NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
-        // NFe ja emitida -> sai do bloqueio "invoice_pending" e vai para "today".
-        if (substatus === "invoice_pending" && hasEmittedInvoice(order)) {
-          return "today";
+        // invoice_pending: vendedor ainda precisa emitir NF-e.
+        // ML mantém em "Próximos dias" independente do SLA — o pedido
+        // só vai para "Envios de hoje" DEPOIS que a NF-e é emitida
+        // e o substatus muda para ready_for_pickup ou packed.
+        // Se a NFe ja foi emitida no nosso sistema (mas o ML ainda nao
+        // refletiu o substatus), tratamos como "packed": usa SLA.
+        if (substatus === "invoice_pending") {
+          if (hasEmittedInvoice(order)) {
+            // NFe emitida localmente — usa SLA como se fosse "packed"
+            const dates = getOperationalDates(order);
+            if (dates.operationalDueDateKey) {
+              return isSameOrPastCalendarDay(dates.operationalDueDateKey, getCalendarKey(new Date()))
+                ? "today"
+                : "upcoming";
+            }
+            return "today";
+          }
+          return "upcoming";
         }
         return "upcoming";
       }
@@ -712,9 +727,24 @@ function classifyNativeMercadoLivreOrder(order) {
     }
 
     if (NATIVE_UPCOMING_READY_TO_SHIP_SUBSTATUSES.has(substatus)) {
-      // NFe ja emitida -> sai do bloqueio "invoice_pending" e vai para "today".
-      if (substatus === "invoice_pending" && hasEmittedInvoice(order)) {
-        return "today";
+      // invoice_pending: vendedor ainda precisa emitir NF-e.
+      // ML mantém em "Próximos dias" independente do SLA — o pedido
+      // só vai para "Envios de hoje" DEPOIS que a NF-e é emitida
+      // e o substatus muda para ready_for_pickup ou packed.
+      // Se a NFe ja foi emitida no nosso sistema (mas o ML ainda nao
+      // refletiu o substatus), tratamos como "packed": usa SLA.
+      if (substatus === "invoice_pending") {
+        if (hasEmittedInvoice(order)) {
+          // NFe emitida localmente — usa SLA como se fosse "packed"
+          const dates = getOperationalDates(order);
+          if (dates.operationalDueDateKey) {
+            return isSameOrPastCalendarDay(dates.operationalDueDateKey, getCalendarKey(new Date()))
+              ? "today"
+              : "upcoming";
+          }
+          return "today";
+        }
+        return "upcoming";
       }
       return "upcoming";
     }
