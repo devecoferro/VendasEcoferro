@@ -61,6 +61,7 @@ import {
   startMLOAuth,
 } from "@/services/mercadoLivreService";
 import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
+import { mergeLabelPdfs, openPdfBlobForPrint } from "@/services/pdfMergeService";
 import {
   BUYER_TYPE_FILTER_OPTIONS,
   DELIVERY_FILTER_OPTIONS,
@@ -1051,44 +1052,71 @@ export default function MercadoLivrePage() {
         return;
       }
       setBulkPrintingMl(true);
-      let opened = 0;
-      let failed = 0;
+      const labelUrls: string[] = [];
+      let missingDocs = 0;
       try {
+        // Coleta todas as URLs de etiqueta (o PDF do ML ja traz etiqueta +
+        // DANFe nas primeiras 2 paginas; a 3a e' comprovante/autorizacao
+        // que o operador nao imprime).
         for (const order of ordersToPrint) {
           try {
             const docs = await getMLOrderDocuments(order.order_id);
             const labelUrl =
               docs?.shipping_label_external?.print_url ||
-              docs?.shipping_label_external?.label_url ||
-              null;
-            const danfeUrl =
+              docs?.shipping_label_external?.download_url ||
+              docs?.shipping_label_external?.view_url ||
               docs?.invoice_nfe_document?.danfe_print_url ||
-              docs?.invoice_nfe_document?.invoice_url ||
+              docs?.invoice_nfe_document?.danfe_download_url ||
+              docs?.invoice_nfe_document?.danfe_view_url ||
               null;
 
             if (labelUrl) {
-              window.open(labelUrl, "_blank", "noopener,noreferrer");
-              opened += 1;
-            }
-            if (danfeUrl) {
-              window.open(danfeUrl, "_blank", "noopener,noreferrer");
-              opened += 1;
-            }
-            if (!labelUrl && !danfeUrl) {
-              failed += 1;
+              labelUrls.push(labelUrl);
+            } else {
+              missingDocs += 1;
             }
           } catch {
-            failed += 1;
+            missingDocs += 1;
           }
         }
-        if (opened > 0) {
-          toast.success(`${opened} documento(s) abertos para impressao.`);
+
+        if (labelUrls.length === 0) {
+          toast.warning("Nenhum pedido tem etiqueta/DANFe disponivel para impressao.");
+          return;
         }
-        if (failed > 0) {
+
+        // Baixa cada PDF, mantem apenas as 2 primeiras paginas de cada e
+        // concatena num arquivo unico.
+        const result = await mergeLabelPdfs(labelUrls, { maxPagesPerSource: 2 });
+
+        if (result.includedSources === 0) {
+          toast.error("Falha ao ler os PDFs das etiquetas.");
+          return;
+        }
+
+        openPdfBlobForPrint(
+          result.mergedPdf,
+          `etiquetas-ml-${new Date().toISOString().slice(0, 10)}.pdf`
+        );
+
+        toast.success(
+          `${result.includedSources} etiqueta(s) unidas em um unico arquivo.`
+        );
+
+        if (result.errors.length > 0) {
           toast.warning(
-            `${failed} pedido(s) sem etiqueta/NF-e disponivel para impressao.`
+            `${result.errors.length} PDF(s) nao foram processados (problemas de rede ou formato).`
           );
         }
+        if (missingDocs > 0) {
+          toast.warning(
+            `${missingDocs} pedido(s) sem etiqueta/DANFe disponivel.`
+          );
+        }
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Falha ao gerar etiquetas em lote."
+        );
       } finally {
         setBulkPrintingMl(false);
       }
