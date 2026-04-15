@@ -5,7 +5,11 @@ import { type SaleData } from "@/types/sales";
 
 interface SaleCardPreviewProps {
   sale: SaleData;
-  mode?: "default" | "print";
+  // "default": wrapper com glass-card + padding (HistoryPage, ReviewPage).
+  // "print": dimensoes fixas em mm para impressao.
+  // "embedded": sem wrapper externo — use quando o preview ja esta dentro
+  // de outro card (ex: MercadoLivrePage) pra evitar padding/borda duplicados.
+  mode?: "default" | "print" | "embedded";
 }
 
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
@@ -209,7 +213,7 @@ export function SaleCardPreview({
     <div className={cn(mode === "default" && "glass-card animate-fade-in p-4")}>
       <div
         className={cn(
-          "overflow-hidden rounded-[18px] border border-slate-300 bg-white shadow-sm",
+          "overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:rounded-2xl",
           isPrintMode && "mx-auto"
         )}
         style={
@@ -231,7 +235,7 @@ export function SaleCardPreview({
                 key={`${item.sku || item.itemTitle}-${index}`}
                 className="flex flex-col md:flex-row"
               >
-                <div className="p-4 md:w-[24%] md:pr-2">
+                <div className="p-3 sm:p-4 md:w-[24%] md:pr-2">
                   <ProductImageBlock
                     src={rowImageSrc}
                     alt={item.itemTitle || sale.productName || "Produto"}
@@ -239,7 +243,7 @@ export function SaleCardPreview({
                   />
                 </div>
 
-                <div className="flex-1 p-4 md:pl-2 md:pr-4">
+                <div className="flex-1 p-3 sm:p-4 md:pl-2 md:pr-4">
                   <div className="space-y-2.5">
                     <p className="text-[18px] font-bold leading-none text-slate-800">
                       SKU: {item.sku || "-"}
@@ -300,7 +304,7 @@ export function SaleCardPreview({
                   </div>
                 </div>
 
-                <div className="border-t border-slate-200 p-4 md:w-[18%] md:border-l md:border-t-0">
+                <div className="border-t border-slate-200 p-3 sm:p-4 md:w-[18%] md:border-l md:border-t-0">
                   <QRCodePreview
                     value={item.sku || ""}
                     label="QR PECA"

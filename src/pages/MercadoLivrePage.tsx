@@ -535,8 +535,7 @@ function VirtualizedOrderList({
   return (
     <div
       ref={parentRef}
-      className="overflow-auto"
-      style={{ height: "calc(100vh - 380px)", minHeight: 400 }}
+      className="h-[calc(100vh-260px)] min-h-[360px] overflow-auto sm:h-[calc(100vh-320px)] lg:h-[calc(100vh-380px)]"
     >
       <div
         style={{
@@ -564,44 +563,44 @@ function VirtualizedOrderList({
                 transform: `translateY(${virtualRow.start}px)`,
               }}
             >
-              <article className="mb-4 overflow-hidden rounded-[18px] border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-                <div className="border-b border-[#ededed] px-5 py-4">
-                  <div className="flex flex-wrap items-center gap-3 text-[14px] text-[#666666]">
+              <article className="mb-3 overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:mb-4">
+                <div className="border-b border-[#ededed] px-3 py-3 sm:px-5 sm:py-4">
+                  <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#666666] sm:gap-3 sm:text-[14px]">
                     <Checkbox
                       checked={selectedOrderIds.has(order.id)}
                       onCheckedChange={() => onToggleSelect(order.id)}
                       aria-label={`Selecionar pedido ${order.sale_number}`}
                     />
-                    <span className="inline-flex h-7 items-center rounded-full bg-[#fff159] px-2.5 text-[13px] font-semibold text-[#333333]">
+                    <span className="inline-flex h-6 items-center rounded-full bg-[#fff159] px-2 text-[12px] font-semibold text-[#333333] sm:h-7 sm:px-2.5 sm:text-[13px]">
                       ML
                     </span>
                     {deposit.hasDeposit && (
-                      <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a]">
+                      <span className="inline-flex items-center rounded-full bg-[#f0f0f0] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.02em] text-[#7a7a7a] sm:px-3 sm:py-1 sm:text-[12px]">
                         {deposit.displayLabel}
                       </span>
                     )}
-                    <span className="text-[15px] font-semibold text-[#6a6a6a]">
+                    <span className="text-[14px] font-semibold text-[#6a6a6a] sm:text-[15px]">
                       #{order.sale_number}
                     </span>
-                    <span>|</span>
-                    <span>{formatSaleMoment(order.sale_date)}</span>
+                    <span className="hidden sm:inline">|</span>
+                    <span className="w-full sm:w-auto">{formatSaleMoment(order.sale_date)}</span>
                   </div>
                 </div>
 
-                <div className="px-5 py-6">
-                  <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                <div className="px-3 py-4 sm:px-5 sm:py-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-5">
                     <div className="min-w-0 flex-1">
-                      <p className="text-[29px] font-semibold leading-none text-[#ff6d1b]">
+                      <p className="text-[20px] font-semibold leading-tight text-[#ff6d1b] sm:text-[24px] lg:text-[28px] lg:leading-none">
                         {isOrderInvoicePending(order)
                           ? "Pronta para emitir NF-e de venda"
                           : shipment.title}
                       </p>
-                      <p className="mt-3 text-[15px] text-[#666666]">
+                      <p className="mt-2 text-[13px] text-[#666666] sm:mt-3 sm:text-[15px]">
                         {isOrderInvoicePending(order)
                           ? "Logo poderá imprimir a etiqueta de envio"
                           : shipment.description}
                       </p>
-                      <div className="mt-4 flex flex-wrap gap-2">
+                      <div className="mt-3 flex flex-wrap gap-1.5 sm:mt-4 sm:gap-2">
                         <Badge variant="outline">
                           {buyerType === "business" ? "Negócio" : "Pessoa"}
                         </Badge>
@@ -616,30 +615,30 @@ function VirtualizedOrderList({
                         )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-3">
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
                       <Button
                         variant="outline"
-                        className="h-10 rounded-lg border-[#d9e7ff] text-[#2968c8] hover:bg-[#eef4ff]"
+                        className="h-9 w-full rounded-lg border-[#d9e7ff] text-[13px] text-[#2968c8] hover:bg-[#eef4ff] sm:h-10 sm:w-auto sm:text-sm"
                         onClick={() => onOpenDocuments(order)}
                       >
-                        <FileText className="mr-2 h-4 w-4" />
+                        <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
                         Documentos
                       </Button>
                       <Button
                         variant="outline"
-                        className="h-10 rounded-lg border-[#ffe1c4] text-[#b86900] hover:bg-[#fff5df]"
+                        className="h-9 w-full rounded-lg border-[#ffe1c4] text-[13px] text-[#b86900] hover:bg-[#fff5df] sm:h-10 sm:w-auto sm:text-sm"
                         onClick={() => onPrintInternalLabel(order)}
                         title="Etiqueta interna com logo Ecoferro"
                       >
-                        <Tag className="mr-2 h-4 w-4" />
+                        <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
                         Etiqueta Ecoferro
                       </Button>
                     </div>
                   </div>
                 </div>
 
-                <div className="px-5 pb-5">
-                  <SaleCardPreview sale={mapMLOrderToSaleData(order)} />
+                <div className="px-2 pb-3 sm:px-5 sm:pb-5">
+                  <SaleCardPreview sale={mapMLOrderToSaleData(order)} mode="embedded" />
                 </div>
               </article>
             </div>
@@ -1792,8 +1791,8 @@ export default function MercadoLivrePage() {
           )}
         </div>
 
-        <div className="rounded-[14px] border border-[#e6e6e6] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+        <div className="rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-3">
+          <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
             <div className="flex items-center gap-2.5">
               {(() => {
                 const allReadySelected =
@@ -1821,7 +1820,7 @@ export default function MercadoLivrePage() {
                         ? "Desmarcar todos elegíveis"
                         : "Selecionar todos elegíveis"
                     }
-                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition ${
+                    className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition ${
                       allReadySelected || someReadySelected
                         ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
                         : "border border-[#c8d3e0] bg-white text-transparent hover:border-[#3483fa]"
@@ -1831,7 +1830,7 @@ export default function MercadoLivrePage() {
                   </button>
                 );
               })()}
-              <div className="text-[13px] text-[#333333]">
+              <div className="min-w-0 text-[13px] text-[#333333]">
                 <span className="font-semibold">
                   Etiquetas Disponível para impressão
                   {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
@@ -1839,9 +1838,9 @@ export default function MercadoLivrePage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center">
               <Button
-                className="h-9 rounded-md bg-[#fff159] px-3.5 text-[13px] font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60"
+                className="h-9 w-full rounded-md bg-[#fff159] px-3 text-[12px] font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60 sm:text-[13px] lg:w-auto lg:px-3.5"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
                 onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
               >
@@ -1850,16 +1849,20 @@ export default function MercadoLivrePage() {
                 ) : (
                   <Printer className="mr-1.5 h-3.5 w-3.5" />
                 )}
-                Imprimir etiqueta ML + DANFe ({readyOrders.length})
+                <span className="truncate">
+                  Imprimir etiqueta ML + DANFe ({readyOrders.length})
+                </span>
               </Button>
               <Button
-                className="h-9 rounded-md bg-[#22c55e] px-3.5 text-[13px] font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60"
+                className="h-9 w-full rounded-md bg-[#22c55e] px-3 text-[12px] font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60 sm:text-[13px] lg:w-auto lg:px-3.5"
                 disabled={!canGenerateBatchLabels}
                 onClick={() => handleGenerateLabels(readyOrders)}
               >
-                {isOperationalListFullyLoaded
-                  ? `Etiquetas Ecoferro (${readyOrders.length})`
-                  : `Carregando base completa (${readyOrders.length})`}
+                <span className="truncate">
+                  {isOperationalListFullyLoaded
+                    ? `Etiquetas Ecoferro (${readyOrders.length})`
+                    : `Carregando base completa (${readyOrders.length})`}
+                </span>
               </Button>
             </div>
           </div>
