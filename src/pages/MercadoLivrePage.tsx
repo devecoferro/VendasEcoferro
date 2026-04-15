@@ -60,7 +60,7 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
-import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
+import { exportSalePdf } from "@/services/pdfExportService";
 import {
   mergeLabelPdfs,
   openPdfBlobForPrint,
@@ -975,10 +975,6 @@ export default function MercadoLivrePage() {
     });
   }, []);
 
-  const handleClearSelection = useCallback(() => {
-    setSelectedOrderIds(new Set());
-  }, []);
-
   const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
     try {
       await exportSalePdf(mapMLOrderToSaleData(order));
@@ -990,27 +986,6 @@ export default function MercadoLivrePage() {
       );
     }
   }, []);
-
-  const handlePrintInternalLabelsEcoferroBulk = useCallback(
-    async (ordersToPrint: MLOrder[]) => {
-      if (ordersToPrint.length === 0) {
-        toast.info("Selecione pelo menos um pedido.");
-        return;
-      }
-      try {
-        const sales = ordersToPrint.map(mapMLOrderToSaleData);
-        await exportBatchPdf(sales);
-        toast.success(`${sales.length} etiqueta(s) Ecoferro geradas em lote.`);
-      } catch (caughtError) {
-        toast.error(
-          caughtError instanceof Error
-            ? caughtError.message
-            : "Falha ao gerar as etiquetas internas em lote."
-        );
-      }
-    },
-    []
-  );
 
   const handlePrintMlLabelsAndNFeBulk = useCallback(
     async (ordersToPrint: MLOrder[]) => {
@@ -2186,61 +2161,12 @@ export default function MercadoLivrePage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {selectedOrderIds.size > 0 &&
-              !(
-                readyOrders.length > 0 &&
-                selectedOrderIds.size === readyOrders.length &&
-                readyOrders.every((o) => selectedOrderIds.has(o.id))
-              ) && (
-              <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#d9e7ff] bg-[#eef4ff] px-4 py-3 shadow-sm">
-                <div className="text-sm font-medium text-[#22304a]">
-                  {selectedOrderIds.size} pedido(s) selecionado(s)
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    className="h-9 rounded-lg border-[#ffe1c4] text-[#b86900] hover:bg-[#fff5df]"
-                    onClick={() =>
-                      handlePrintInternalLabelsEcoferroBulk(
-                        filteredOperationalOrders.filter((order) =>
-                          selectedOrderIds.has(order.id)
-                        )
-                      )
-                    }
-                  >
-                    <Tag className="mr-2 h-4 w-4" />
-                    Etiquetas Ecoferro
-                  </Button>
-                  <Button
-                    variant="default"
-                    className="h-9 rounded-lg bg-[#3483fa] text-white hover:bg-[#2968c8]"
-                    disabled={bulkPrintingMl}
-                    onClick={() =>
-                      handlePrintMlLabelsAndNFeBulk(
-                        filteredOperationalOrders.filter((order) =>
-                          selectedOrderIds.has(order.id)
-                        )
-                      )
-                    }
-                  >
-                    {bulkPrintingMl ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Printer className="mr-2 h-4 w-4" />
-                    )}
-                    Imprimir etiqueta ML + DANFe
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="h-9 rounded-lg text-[#5f6b7a]"
-                    onClick={handleClearSelection}
-                  >
-                    <X className="mr-2 h-4 w-4" />
-                    Limpar
-                  </Button>
-                </div>
-              </div>
-            )}
+            {/* Toolbar flutuante de selecao removido — as mesmas acoes
+                (Etiquetas Ecoferro, Imprimir etiqueta ML + DANFe) ja estao
+                disponiveis no banner fixo "Etiquetas Disponivel para
+                impressao" logo acima, entao esse toolbar duplicado so
+                poluia a tela. O contador de pedidos selecionados tambem
+                aparece no proprio banner como sufixo dos botoes. */}
             <VirtualizedOrderList
               orders={filteredOperationalOrders}
               onOpenDocuments={handleOpenDocumentsDialog}
