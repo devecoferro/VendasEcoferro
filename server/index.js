@@ -7,7 +7,11 @@ import rateLimit from "express-rate-limit";
 import "../api/_lib/db.js";
 import { DB_PATH } from "../api/_lib/app-config.js";
 import { db } from "../api/_lib/db.js";
-import { getLatestConnection, listConnections } from "../api/ml/_lib/storage.js";
+import {
+  getLatestConnection,
+  listConnections,
+  purgeOrdersBeforeFloor,
+} from "../api/ml/_lib/storage.js";
 import { isTokenExpiringSoon } from "../api/ml/_lib/mercado-livre.js";
 import createLogger from "../api/_lib/logger.js";
 import { startAutoBackup, stopAutoBackup, runBackup } from "../api/_lib/backup.js";
@@ -488,6 +492,17 @@ process.on("unhandledRejection", (reason) => {
 // ─── Start ──────────────────────────────────────────────────────────
 app.listen(APP_PORT, APP_HOST, () => {
   log.info(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
+
+  // Limpa vendas antigas (anteriores ao piso 2026-04-01) no boot. Idempotente
+  // — nas execucoes seguintes, zero linhas sao removidas.
+  try {
+    const purged = purgeOrdersBeforeFloor();
+    if (purged > 0) {
+      log.info(`Purge inicial: ${purged} venda(s) antigas removidas do banco.`);
+    }
+  } catch (err) {
+    log.error("Purge inicial falhou:", err instanceof Error ? err.message : err);
+  }
 
   // Inicia auto-sync 10s apos o boot para dar tempo do servidor estabilizar
   setTimeout(() => {

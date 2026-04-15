@@ -66,6 +66,11 @@ const OPERATIONAL_ORDER_STATUSES = [
 
 const MAX_PAGINATION_LIMIT = 1000;
 
+// Piso de visibilidade: vendas com sale_date anterior a esta data nao
+// sao retornadas por nenhuma query de listagem, mesmo que ainda existam
+// no banco. Alinhado com MIN_SYNC_DATE_FROM em api/ml/sync.js.
+const MIN_VISIBLE_SALE_DATE = "2026-04-01";
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -371,8 +376,12 @@ export function deleteAllConnectionsAndOrders() {
 export function getOrders(limit = null) {
   if (limit == null) {
     return db
-      .prepare(`SELECT * FROM ml_orders ORDER BY datetime(sale_date) DESC`)
-      .all()
+      .prepare(
+        `SELECT * FROM ml_orders
+         WHERE COALESCE(sale_date, '') >= ?
+         ORDER BY datetime(sale_date) DESC`
+      )
+      .all(MIN_VISIBLE_SALE_DATE)
       .map(mapOrder);
   }
 
@@ -381,24 +390,35 @@ export function getOrders(limit = null) {
     : 500;
 
   return db
-    .prepare(`SELECT * FROM ml_orders ORDER BY datetime(sale_date) DESC LIMIT ?`)
-    .all(safeLimit)
+    .prepare(
+      `SELECT * FROM ml_orders
+       WHERE COALESCE(sale_date, '') >= ?
+       ORDER BY datetime(sale_date) DESC
+       LIMIT ?`
+    )
+    .all(MIN_VISIBLE_SALE_DATE, safeLimit)
     .map(mapOrder);
 }
 
 function getScopeFilter(scope = "all") {
+  // Piso de data aplicado a todas as consultas — vendas anteriores a
+  // MIN_VISIBLE_SALE_DATE ficam invisiveis no front, mesmo que ainda
+  // existam no banco.
+  const dateFloorClause = `COALESCE(sale_date, '') >= ?`;
+  const dateFloorParam = MIN_VISIBLE_SALE_DATE;
+
   if (String(scope || "").trim().toLowerCase() !== "operational") {
     return {
-      whereSql: "",
-      params: [],
+      whereSql: `WHERE ${dateFloorClause}`,
+      params: [dateFloorParam],
     };
   }
 
   const placeholders = OPERATIONAL_ORDER_STATUSES.map(() => "?").join(", ");
 
   return {
-    whereSql: `WHERE lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})`,
-    params: [...OPERATIONAL_ORDER_STATUSES],
+    whereSql: `WHERE ${dateFloorClause} AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})`,
+    params: [dateFloorParam, ...OPERATIONAL_ORDER_STATUSES],
   };
 }
 
@@ -542,10 +562,11 @@ export function getOperationalOrders(limit = null) {
     return db
       .prepare(
         `SELECT * FROM ml_orders
-         WHERE lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
+         WHERE COALESCE(sale_date, '') >= ?
+           AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
          ORDER BY datetime(sale_date) DESC`
       )
-      .all(...statusParams)
+      .all(MIN_VISIBLE_SALE_DATE, ...statusParams)
       .map(mapOrder);
   }
 
@@ -556,11 +577,12 @@ export function getOperationalOrders(limit = null) {
   return db
     .prepare(
       `SELECT * FROM ml_orders
-       WHERE lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
+       WHERE COALESCE(sale_date, '') >= ?
+         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
        ORDER BY datetime(sale_date) DESC
        LIMIT ?`
     )
-    .all(...statusParams, safeLimit)
+    .all(MIN_VISIBLE_SALE_DATE, ...statusParams, safeLimit)
     .map(mapOrder);
 }
 
@@ -594,6 +616,22 @@ export function getOrderRowsByPackId(packId) {
     )
     .all(normalizedPackId)
     .map(mapOrder);
+}
+
+/**
+ * Apaga do banco todas as vendas com sale_date anterior ao piso
+ * (MIN_VISIBLE_SALE_DATE). NULL fica preservado pra nao remover
+ * registros que ainda nao tiveram sale_date preenchido. Idempotente —
+ * seguro chamar no boot. Retorna a quantidade de linhas removidas.
+ */
+export function purgeOrdersBeforeFloor() {
+  const stmt = db.prepare(
+    `DELETE FROM ml_orders
+     WHERE sale_date IS NOT NULL
+       AND sale_date < ?`
+  );
+  const result = stmt.run(MIN_VISIBLE_SALE_DATE);
+  return Number(result.changes || 0);
 }
 
 export function deleteOrdersByOrderIds(orderIds) {
