@@ -1118,22 +1118,36 @@ export default function MercadoLivrePage() {
 
   const depositOptions = useMemo(() => {
     const orderOptions = buildDepositOptions(permittedOrders);
-    if (orderOptions.length > 0) {
-      return orderOptions;
-    }
+    const baseOptions =
+      orderOptions.length > 0
+        ? orderOptions
+        : accessibleDashboardDeposits.map((deposit) => ({
+            key: deposit.key,
+            label: deposit.label,
+            displayLabel:
+              deposit.key === "without-deposit"
+                ? "Vendas sem depósito"
+                : deposit.logistic_type === "fulfillment"
+                  ? "Full"
+                  : deposit.label,
+            isFulfillment: deposit.logistic_type === "fulfillment",
+            kind:
+              deposit.key === "without-deposit"
+                ? ("without-deposit" as const)
+                : ("deposit" as const),
+          }));
 
-    return accessibleDashboardDeposits.map((deposit) => ({
-      key: deposit.key,
-      label: deposit.label,
-      displayLabel:
-        deposit.key === "without-deposit"
-          ? "Vendas sem depósito"
-          : deposit.logistic_type === "fulfillment"
-            ? "Full"
-            : deposit.label,
-      isFulfillment: deposit.logistic_type === "fulfillment",
-      kind: deposit.key === "without-deposit" ? ("without-deposit" as const) : ("deposit" as const),
-    }));
+    // Whitelist: só "Vendas sem depósito", "Ourinhos Rua Dario Alonso" e "Full".
+    // Filtra códigos brutos do ML (ex.: BRP750438981) que vinham listados.
+    return baseOptions.filter((option) => {
+      if (option.kind === "without-deposit") return true;
+      if (option.isFulfillment) return true;
+      const normalized = (option.displayLabel || option.label || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+      return normalized.includes("ourinhos") || normalized.includes("dario alonso");
+    });
   }, [accessibleDashboardDeposits, permittedOrders]);
 
   useEffect(() => {
