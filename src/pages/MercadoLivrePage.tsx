@@ -1937,7 +1937,7 @@ export default function MercadoLivrePage() {
 
             <div className="flex flex-wrap items-center gap-2">
               <Button
-                className="h-11 rounded-lg bg-[#fff159] px-5 text-sm font-semibold text-[#333333] hover:bg-[#ffe924] disabled:opacity-60"
+                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
                 disabled={!canGenerateBatchLabels || bulkPrintingMl}
                 onClick={() => handlePrintMlLabelsAndNFeBulk(readyOrders)}
               >
@@ -1949,7 +1949,7 @@ export default function MercadoLivrePage() {
                 Imprimir etiqueta ML + DANFe ({readyOrders.length})
               </Button>
               <Button
-                className="h-11 rounded-lg bg-[#22c55e] px-5 text-sm font-semibold text-white hover:bg-[#16a34a] disabled:opacity-60"
+                className="h-11 rounded-lg bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
                 disabled={!canGenerateBatchLabels}
                 onClick={() => handleGenerateLabels(readyOrders)}
               >
