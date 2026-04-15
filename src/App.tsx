@@ -22,6 +22,7 @@ const LoginPage = lazy(() => import("./pages/LoginPage"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
 const StockPage = lazy(() => import("./pages/StockPage"));
 const ConferenciaVendaPage = lazy(() => import("./pages/ConferenciaVendaPage"));
+const MLDiagnosticsPage = lazy(() => import("./pages/MLDiagnosticsPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -61,6 +62,7 @@ const App = () => (
 
                 <Route element={<ProtectedRoute requireAdmin />}>
                   <Route path="/users" element={<UsersPage />} />
+                  <Route path="/ml-diagnostics" element={<MLDiagnosticsPage />} />
                 </Route>
 
                   <Route path="*" element={<NotFound />} />

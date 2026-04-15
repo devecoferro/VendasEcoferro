@@ -169,4 +169,14 @@ if (fs.existsSync(mlStockAttributesMigrationPath)) {
   }
 }
 
+// Migration: cria tabela de historico de drift dos chips ML
+const mlChipDriftHistoryMigrationPath = path.join(
+  __dirname,
+  "migrations",
+  "20260415_add_ml_chip_drift_history.sql"
+);
+if (fs.existsSync(mlChipDriftHistoryMigrationPath)) {
+  db.exec(fs.readFileSync(mlChipDriftHistoryMigrationPath, "utf8"));
+}
+
 export { db };

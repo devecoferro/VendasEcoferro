@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
+  Activity,
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
@@ -61,7 +62,11 @@ function SidebarContent({
 
   const navItems = useMemo(() => {
     if (currentUser?.role === "admin") {
-      return [...baseNavItems, { to: "/users", icon: ShieldCheck, label: "Usuarios" }];
+      return [
+        ...baseNavItems,
+        { to: "/users", icon: ShieldCheck, label: "Usuarios" },
+        { to: "/ml-diagnostics", icon: Activity, label: "Diagnostico ML" },
+      ];
     }
 
     return baseNavItems;

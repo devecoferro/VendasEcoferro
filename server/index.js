@@ -19,6 +19,11 @@ import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
 import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
+import mlDiagnosticsHandler, {
+  computeChipCountsDiff,
+  saveChipDriftSnapshot,
+  pruneChipDriftHistory,
+} from "../api/ml/diagnostics.js";
 import mlOrdersHandler from "../api/ml/orders.js";
 import mlStoresHandler from "../api/ml/stores.js";
 import mlSyncHandler, { runMercadoLivreSync, runActiveOrdersRefresh } from "../api/ml/sync.js";
@@ -276,6 +281,7 @@ app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
 // ─── ML API (rate limited) ──────────────────────────────────────────
 app.all("/api/ml/auth", authLimiter, (req, res) => mlAuthHandler(req, res));
 app.all("/api/ml/dashboard", apiLimiter, (req, res) => mlDashboardHandler(req, res));
+app.all("/api/ml/diagnostics", apiLimiter, (req, res) => mlDiagnosticsHandler(req, res));
 app.all("/api/ml/orders", apiLimiter, (req, res) => mlOrdersHandler(req, res));
 app.all("/api/ml/stores", apiLimiter, (req, res) => mlStoresHandler(req, res));
 app.all("/api/ml/sync", syncLimiter, (req, res) => mlSyncHandler(req, res));
@@ -359,10 +365,19 @@ app.use((req, res) => {
 // Usa updated_from para fazer sync incremental (apenas pedidos alterados).
 const AUTO_SYNC_INTERVAL_MS = 30_000; // 30 segundos
 const ACTIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
+// Drift snapshot: tira um retrato da divergencia entre ML e app a cada 15min.
+// Fica persistido em ml_chip_drift_history para analise historica (Camada 4).
+const CHIP_DRIFT_SNAPSHOT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
+// Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
+const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
+const CHIP_DRIFT_RETENTION_DAYS = 30;
 let autoSyncRunning = false;
 let activeRefreshRunning = false;
 let autoSyncIntervalId = null;
 let activeRefreshIntervalId = null;
+let chipDriftSnapshotIntervalId = null;
+let chipDriftPruneIntervalId = null;
+let chipDriftSnapshotRunning = false;
 
 async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
@@ -424,6 +439,60 @@ async function autoRefreshActiveOrders() {
   }
 }
 
+// ─── Chip Drift Snapshot ──────────────────────────────────────────
+// A cada 15 minutos, tira um snapshot do diff entre ML Seller Center
+// (ml_live_chip_counts) e a classificacao interna (internal_operational_counts
+// somados entre depositos). Persiste em ml_chip_drift_history — permite
+// analise historica de quando os chips divergiram e por quanto.
+// Silencioso em caso de falha (telemetria e best-effort).
+async function autoChipDriftSnapshot() {
+  if (chipDriftSnapshotRunning) return;
+
+  try {
+    chipDriftSnapshotRunning = true;
+    const connections = listConnections();
+    if (connections.length === 0) return; // nada pra comparar
+
+    const result = await computeChipCountsDiff({
+      tolerance: 2,
+      includeBreakdown: false,
+      fresh: false, // usa cache de 30s do dashboard — snapshot nao precisa ser fresh
+    });
+
+    if (result.status === "ML_API_UNAVAILABLE") return;
+
+    const saved = saveChipDriftSnapshot(result, "cron_15min");
+    if (saved && result.status === "DRIFT_DETECTED") {
+      log.warn(
+        `Chip drift detectado: max_abs_diff=${result.max_abs_diff} diff=${JSON.stringify(result.diff)}`
+      );
+    }
+  } catch (error) {
+    log.error(
+      "Chip drift snapshot falhou",
+      error instanceof Error ? error : new Error(String(error))
+    );
+  } finally {
+    chipDriftSnapshotRunning = false;
+  }
+}
+
+async function autoChipDriftPrune() {
+  try {
+    const deleted = pruneChipDriftHistory(CHIP_DRIFT_RETENTION_DAYS);
+    if (deleted > 0) {
+      log.info(
+        `Chip drift prune: ${deleted} snapshot(s) antigas removidos (retencao=${CHIP_DRIFT_RETENTION_DAYS}d).`
+      );
+    }
+  } catch (error) {
+    log.error(
+      "Chip drift prune falhou",
+      error instanceof Error ? error : new Error(String(error))
+    );
+  }
+}
+
 // ─── Graceful Shutdown ──────────────────────────────────────────────
 // Quando o container Docker recebe SIGTERM (restart/stop), o servidor:
 // 1. Para de aceitar novas conexoes
@@ -447,6 +516,14 @@ async function gracefulShutdown(signal) {
   if (activeRefreshIntervalId) {
     clearInterval(activeRefreshIntervalId);
     activeRefreshIntervalId = null;
+  }
+  if (chipDriftSnapshotIntervalId) {
+    clearInterval(chipDriftSnapshotIntervalId);
+    chipDriftSnapshotIntervalId = null;
+  }
+  if (chipDriftPruneIntervalId) {
+    clearInterval(chipDriftPruneIntervalId);
+    chipDriftPruneIntervalId = null;
   }
   stopAutoBackup();
 
@@ -516,6 +593,25 @@ app.listen(APP_PORT, APP_HOST, () => {
     activeRefreshIntervalId = setInterval(autoRefreshActiveOrders, ACTIVE_REFRESH_INTERVAL_MS);
     // Primeiro active refresh 60s apos boot (depois do primeiro incremental sync)
     setTimeout(autoRefreshActiveOrders, 60_000);
+
+    // Chip drift snapshot: captura divergencias app vs ML a cada 15 min
+    log.info(
+      `Chip drift snapshot iniciado (intervalo: ${CHIP_DRIFT_SNAPSHOT_INTERVAL_MS / 60000}min)`
+    );
+    chipDriftSnapshotIntervalId = setInterval(
+      autoChipDriftSnapshot,
+      CHIP_DRIFT_SNAPSHOT_INTERVAL_MS
+    );
+    // Primeiro snapshot 90s apos boot (deixa o ML API estabilizar)
+    setTimeout(autoChipDriftSnapshot, 90_000);
+
+    // Prune diario do historico de drift (retencao: 30 dias)
+    chipDriftPruneIntervalId = setInterval(
+      autoChipDriftPrune,
+      CHIP_DRIFT_PRUNE_INTERVAL_MS
+    );
+    // Primeiro prune 5min apos boot
+    setTimeout(autoChipDriftPrune, 5 * 60 * 1000);
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
