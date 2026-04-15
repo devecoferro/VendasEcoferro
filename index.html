@@ -1,8 +1,15 @@
 <!doctype html>
-<html lang="en">
+<!--
+  lang="pt-BR" + translate="no" + <meta name="google" content="notranslate">
+  evitam que o Chrome/Google Tradutor troque nos de texto do DOM em tempo real.
+  Sem isso, o tradutor reescreve text nodes enquanto o React reconcilia o
+  virtual DOM, e aparece o erro "Falha ao executar 'insertBefore' em 'Node'".
+-->
+<html lang="pt-BR" translate="no">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="google" content="notranslate" />
     <title>Vendas </title>
     <meta name="description" content="Sistema de vendas Ecoferro">
     <meta name="author" content="Ecoferro" />
@@ -19,8 +26,8 @@
   <link rel="icon" type="image/png" sizes="96x96" href="/menu-ecoferro-logo-96.png">
 </head>
 
-  <body>
-    <div id="root"></div>
+  <body class="notranslate">
+    <div id="root" class="notranslate" translate="no"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

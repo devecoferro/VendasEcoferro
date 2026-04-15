@@ -78,6 +78,27 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </pre>
           )}
 
+          {/* Detecta o erro caracteristico de DOM mutation causado pelo
+              Google Tradutor do Chrome (ou extensoes similares) reescrevendo
+              text nodes enquanto o React reconcilia o virtual DOM. Orienta
+              o usuario a desativar a traducao automatica. */}
+          {this.state.error &&
+            /insertBefore|removeChild|Failed to execute.*on 'Node'|nao e filho|not a child/i.test(
+              this.state.error.message
+            ) && (
+              <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                <p className="mb-1 font-semibold">
+                  Esse erro costuma ser causado pelo Google Tradutor do Chrome.
+                </p>
+                <p>
+                  Clique com o botao direito na pagina → escolha{" "}
+                  <strong>&quot;Nunca traduzir este site&quot;</strong>, ou clique
+                  no icone de traducao ao lado da barra de endereco e desative a
+                  traducao automatica. Depois recarregue a pagina.
+                </p>
+              </div>
+            )}
+
           <div className="flex gap-2">
             <button
               type="button"
