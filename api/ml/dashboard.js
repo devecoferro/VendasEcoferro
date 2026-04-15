@@ -18,6 +18,11 @@ const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirme
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
 const OPERATIONAL_BUCKETS = ["today", "upcoming", "in_transit", "finalized", "cancelled"];
+// Piso de visibilidade: o app só opera com vendas de 01/04/2026 em diante.
+// Alinhado com MIN_SYNC_DATE_FROM (api/ml/sync.js) e MIN_VISIBLE_SALE_DATE
+// (api/ml/_lib/storage.js). Usado no chip "Canceladas" pra contar apenas
+// canceladas criadas a partir desse piso na ML API.
+const MIN_CANCELLED_DATE_FROM = "2026-04-01";
 const NATIVE_TODAY_SUBSTATUSES = new Set([
   "ready_for_pickup",
   "in_warehouse",
@@ -1416,6 +1421,11 @@ async function fetchMLLiveChipCounts(connection) {
     }
 
     // Shipped → classificar pelo substatus REAL:
+    // Aplica o filtro TRANSIT_MAX_DAYS (2 dias). ML Seller Center só mostra
+    // em "Em trânsito" envios recentes — shipped com substatus ativo mas
+    // com date_shipped > 2 dias são pendências antigas, não trânsito.
+    const nowMs = Date.now();
+    const msPerDay = 86400000;
     for (const [, pack] of shippedPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) continue;
@@ -1427,7 +1437,14 @@ async function fetchMLLiveChipCounts(connection) {
       if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
         upcoming++;
       } else if (TRANSIT_SHIPPED_SUBSTATUSES.has(sub) || sub === "soon_deliver" || sub === "in_transit") {
-        inTransit++;
+        // Filtro de idade: só conta envios shipped nos últimos TRANSIT_MAX_DAYS.
+        if (!shipment.dateShipped) continue;
+        const shippedAt = new Date(shipment.dateShipped).getTime();
+        if (Number.isNaN(shippedAt)) continue;
+        const ageDays = (nowMs - shippedAt) / msPerDay;
+        if (ageDays <= TRANSIT_MAX_DAYS) {
+          inTransit++;
+        }
       }
       // delivered, returned_to_sender, etc → não conta (status final)
     }
@@ -1443,11 +1460,15 @@ async function fetchMLLiveChipCounts(connection) {
       // Finalized = 0 se falhar
     }
 
-    // Canceladas → contagem total de pedidos com status=cancelled desde o
-    // piso de visibilidade. Sem filtro de data "last_updated", pra que o chip
-    // reflita todas as vendas canceladas visiveis no app.
+    // Canceladas → contagem de pedidos com status=cancelled criados a partir
+    // do piso de sincronização (MIN_CANCELLED_DATE_FROM). O app só opera com
+    // vendas de 01/04/2026 em diante, então cancelados anteriores não devem
+    // contar no chip.
     try {
-      const cUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.status=cancelled&limit=1`;
+      const cancelFromIso = `${MIN_CANCELLED_DATE_FROM}T00:00:00.000-03:00`;
+      const cUrl =
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+        `&order.status=cancelled&order.date_created.from=${encodeURIComponent(cancelFromIso)}&limit=1`;
       const cR = await fetch(cUrl, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
       cancelled = cR.paging?.total || 0;
     } catch {
