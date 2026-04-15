@@ -62,6 +62,7 @@ import {
 } from "@/services/mercadoLivreService";
 import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
 import { mergeLabelPdfs, openPdfBlobForPrint } from "@/services/pdfMergeService";
+import { SaleCardPreview } from "@/components/SaleCardPreview";
 import {
   BUYER_TYPE_FILTER_OPTIONS,
   DELIVERY_FILTER_OPTIONS,
@@ -77,7 +78,6 @@ import {
   getDepositInfo,
   getOperationalCardPresentation,
   getOperationalSummaryLabel,
-  getOrderImageFallback,
   parseDate,
   sortDashboardDepositsForDisplay,
   getSelectedDepositLabel,
@@ -553,12 +553,15 @@ function VirtualizedOrderList({
   const virtualizer = useVirtualizer({
     count: orders.length,
     getScrollElement: () => parentRef.current,
-    // Estimativa de altura: card colapsado ~320px, expandido ~420px
+    // Estimativa de altura: card colapsado ~320px, expandido inclui a
+    // pre-visualizacao completa da etiqueta (SaleCardPreview).
     estimateSize: (index) => {
       const order = orders[index];
       const isExpanded = expandedOrders[order?.id] ?? true;
       const itemCount = Math.max(1, (order?.items?.length || 1));
-      return isExpanded ? 320 + itemCount * 93 : 320;
+      // Preview: ~280px p/ 1 item, +140px por item extra em modo compacto.
+      const previewHeight = 280 + Math.max(0, itemCount - 1) * 140;
+      return isExpanded ? 320 + previewHeight : 320;
     },
     overscan: 3,
   });
@@ -720,48 +723,8 @@ function VirtualizedOrderList({
                     </div>
 
                     {isExpanded && (
-                      <div className="border-t border-[#ebebeb] bg-[#fafafa]">
-                        {orderItems.map((item, index) => {
-                          const itemImageUrl = item.product_image_url || order.product_image_url;
-                          const itemTitle = item.item_title || "Produto sem título";
-                          return (
-                            <div
-                              key={`${order.id}-${item.item_id || item.sku || index}`}
-                              className={`grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-4 px-5 py-5 ${
-                                index > 0 ? "border-t border-[#ededed]" : ""
-                              }`}
-                            >
-                              <div className="flex h-[58px] w-[58px] items-center justify-center overflow-hidden rounded-full border border-[#ededed] bg-white">
-                                {itemImageUrl ? (
-                                  <img
-                                    src={itemImageUrl}
-                                    alt={itemTitle}
-                                    loading="lazy"
-                                    className="h-full w-full object-cover"
-                                  />
-                                ) : (
-                                  <span className="px-2 text-center text-[10px] font-semibold text-[#999999]">
-                                    {item.sku || getOrderImageFallback(order)}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="min-w-0">
-                                <div className="truncate text-[16px] text-[#666666]">
-                                  {itemTitle}
-                                </div>
-                              </div>
-                              <div className="text-right text-[16px] text-[#666666]">
-                                {formatCurrency(item.amount)}
-                              </div>
-                              <div className="text-right text-[16px] text-[#666666]">
-                                {item.quantity} unidade{item.quantity > 1 ? "s" : ""}
-                              </div>
-                              <div className="text-right text-[16px] text-[#8a8a8a]">
-                                {item.sku ? `SKU: ${item.sku}` : "Sem SKU"}
-                              </div>
-                            </div>
-                          );
-                        })}
+                      <div className="border-t border-[#ebebeb] bg-[#fafafa] p-4">
+                        <SaleCardPreview sale={mapMLOrderToSaleData(order)} />
                       </div>
                     )}
                   </div>
