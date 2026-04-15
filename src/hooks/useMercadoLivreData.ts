@@ -26,6 +26,10 @@ interface SyncOptions {
 
 interface RefreshOptions {
   background?: boolean;
+  // `silent` é um alias semântico para `background`: não exibir spinner,
+  // não piscar UI, e não propagar erros de rede para o usuario. Útil para
+  // recargas disparadas por eventos SSE ou polling em background.
+  silent?: boolean;
 }
 
 interface LoadMoreOptions {
@@ -260,7 +264,8 @@ export function useMercadoLivreData(
 
   const refresh = useCallback(
     async (options: RefreshOptions = {}) => {
-      const { background = false } = options;
+      const { background = false, silent = false } = options;
+      const isSilent = background || silent;
       const hasFreshCache = Boolean(readMercadoLivreCache(cacheKey));
       const hasRenderableData =
         ordersRef.current.length > 0 || Boolean(dashboardRef.current?.deposits?.length);
@@ -268,11 +273,13 @@ export function useMercadoLivreData(
       requestVersionRef.current = requestVersion;
       loadMoreInFlightRef.current = false;
 
-      if (!background && !hasFreshCache && !hasRenderableData) {
+      if (!isSilent && !hasFreshCache && !hasRenderableData) {
         setLoading(true);
       }
 
-      setError(null);
+      if (!isSilent) {
+        setError(null);
+      }
       setOrdersPagination((current) => ({
         ...current,
         loading_more: false,
@@ -347,21 +354,27 @@ export function useMercadoLivreData(
         }
 
         if (ordersError && importedOrders.length === 0 && dashboardResponse?.deposits?.length) {
-          setError(getMercadoLivreLoadErrorMessage(ordersError));
+          if (!isSilent) {
+            setError(getMercadoLivreLoadErrorMessage(ordersError));
+          }
           return;
         }
 
         if (dashboardError && !dashboardResponse?.deposits?.length && importedOrders.length > 0) {
-          setError(getMercadoLivreLoadErrorMessage(dashboardError));
+          if (!isSilent) {
+            setError(getMercadoLivreLoadErrorMessage(dashboardError));
+          }
           return;
         }
 
         setError(null);
       } catch (caughtError) {
-        console.error("Failed to load Mercado Livre data:", caughtError);
-        setError(getMercadoLivreLoadErrorMessage(caughtError));
+        if (!isSilent) {
+          console.error("Failed to load Mercado Livre data:", caughtError);
+          setError(getMercadoLivreLoadErrorMessage(caughtError));
+        }
       } finally {
-        if (!background) {
+        if (!isSilent) {
           setLoading(false);
         }
       }
@@ -609,11 +622,14 @@ export function useMercadoLivreData(
       };
 
       eventSource.onerror = () => {
-        // SSE falhou — ativa fallback de polling
+        // SSE falhou — ativa fallback de polling silencioso.
+        // Usamos refresh() em vez de syncNow() para só revalidar os dados
+        // locais (auto-heal do backend já mantém a base fresca), evitando
+        // chamar a API do ML a cada tick.
         if (!sseConnected && !fallbackIntervalId) {
           fallbackIntervalId = setInterval(() => {
             if (typeof document === "undefined" || document.hidden) return;
-            void syncNow({ silent: true });
+            void refresh({ silent: true });
           }, autoSyncIntervalMs);
         }
       };
@@ -621,7 +637,7 @@ export function useMercadoLivreData(
       // SSE não disponível — usa polling como fallback
       fallbackIntervalId = setInterval(() => {
         if (typeof document === "undefined" || document.hidden) return;
-        void syncNow({ silent: true });
+        void refresh({ silent: true });
       }, autoSyncIntervalMs);
     }
 

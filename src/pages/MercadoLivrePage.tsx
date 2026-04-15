@@ -758,7 +758,11 @@ export default function MercadoLivrePage() {
     loadMoreOrders,
   } = useMercadoLivreData({
     autoSync: true,
-    autoSyncIntervalMs: 120000,
+    // Auto-refresh silencioso a cada 60s: SSE é o canal primário (empurrado
+    // pelo backend quando auto-heal/sync roda), este intervalo só é usado
+    // como fallback quando a conexão SSE cai. Com refresh silencioso, os
+    // cards e totalizadores se atualizam sem piscar loading na tela.
+    autoSyncIntervalMs: 60000,
     ordersScope: "operational",
     // Página grande (limite do servidor) + auto-load contínuo em background
     // para que toda a base operacional fique disponível sem o usuário ver
