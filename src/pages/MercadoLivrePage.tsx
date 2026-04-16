@@ -89,6 +89,8 @@ import {
   isOrderForCollection,
   isOrderInvoicePending,
   isOrderReadyToPrintLabel,
+  canPrintMLShippingLabel,
+  isOrderFulfillment,
   isOrderUnderReview,
   matchesOperationalSummaryRow,
   type DepositOptionPresentation,
@@ -652,7 +654,7 @@ function VirtualizedOrderList({
                     </div>
                     {(() => {
                       const nfeEligible = isOrderInvoicePending(order);
-                      const labelEligible = isOrderReadyToPrintLabel(order);
+                      const labelEligible = canPrintMLShippingLabel(order);
                       const isGeneratingNFe = generatingNFeForOrderId === order.order_id;
                       const isPrintingLabel = printingLabelForOrderId === order.order_id;
 
@@ -691,7 +693,9 @@ function VirtualizedOrderList({
                             title={
                               labelEligible
                                 ? "Imprimir etiqueta ML + DANFe"
-                                : "Aguardando emissao da NF-e para liberar a impressao"
+                                : isOrderFulfillment(order)
+                                  ? "Pedido Full — etiqueta ML gerada internamente pelo centro de distribuicao"
+                                  : "Aguardando emissao da NF-e para liberar a impressao"
                             }
                           >
                             {isPrintingLabel ? (
@@ -1472,6 +1476,14 @@ export default function MercadoLivrePage() {
     [readyOrders, selectedOrderIds]
   );
   const selectedReadyCount = selectedReadyOrders.length;
+  // Pedidos que realmente tem etiqueta ML disponivel (exclui fulfillment).
+  // Usado exclusivamente pelo botao "Imprimir etiqueta ML + DANFe".
+  // "Etiquetas Ecoferro" continua usando selectedReadyOrders (funciona para todos).
+  const selectedMlPrintableOrders = useMemo(
+    () => selectedReadyOrders.filter(canPrintMLShippingLabel),
+    [selectedReadyOrders]
+  );
+  const selectedMlPrintableCount = selectedMlPrintableOrders.length;
   const selectedInvoicePendingOrders = useMemo(
     () => invoicePendingOrders.filter((order) => selectedOrderIds.has(order.id)),
     [invoicePendingOrders, selectedOrderIds]
@@ -2160,8 +2172,13 @@ export default function MercadoLivrePage() {
               </Button>
               <Button
                 className="h-10 w-full rounded-lg bg-[#fff159] px-3.5 text-[13px] font-semibold text-[#333333] shadow-[0_1px_3px_rgba(255,241,89,0.6)] transition hover:bg-[#ffe924] hover:shadow-[0_2px_6px_rgba(255,241,89,0.8)] disabled:opacity-60 disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
-                disabled={!canGenerateBatchLabels || bulkPrintingMl}
-                onClick={() => handlePrintMlLabelsAndNFeBulk(selectedReadyOrders)}
+                disabled={selectedMlPrintableCount === 0 || !isOperationalListFullyLoaded || bulkPrintingMl}
+                onClick={() => handlePrintMlLabelsAndNFeBulk(selectedMlPrintableOrders)}
+                title={
+                  selectedMlPrintableCount === 0
+                    ? "Nenhum pedido cross-docking selecionado com etiqueta ML disponivel (pedidos Full nao tem etiqueta publica)"
+                    : `Imprimir ${selectedMlPrintableCount} etiqueta(s) ML + DANFe`
+                }
               >
                 {bulkPrintingMl ? (
                   <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
@@ -2170,7 +2187,7 @@ export default function MercadoLivrePage() {
                 )}
                 <span className="truncate">
                   Imprimir etiqueta ML + DANFe
-                  {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
+                  {selectedMlPrintableCount > 0 ? ` (${selectedMlPrintableCount})` : ""}
                 </span>
               </Button>
               <Button

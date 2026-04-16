@@ -595,6 +595,21 @@ export function isOrderFulfillment(order: MLOrder): boolean {
   return logisticType === "fulfillment";
 }
 
+/**
+ * Verifica se o pedido tem etiqueta ML de envio disponivel para impressao.
+ *
+ * Pedidos FULL (fulfillment) NAO tem etiqueta ML publica — o ML gera
+ * e usa internamente no centro de distribuicao. O backend pula a chamada
+ * a API ML para esses pedidos (fetchShippingLabelRecord retorna unavailable).
+ *
+ * Usado para:
+ * - Contagem do botao "Imprimir etiqueta ML + DANFe (N)"
+ * - Habilitar/desabilitar o botao por pedido no card
+ */
+export function canPrintMLShippingLabel(order: MLOrder): boolean {
+  return isOrderReadyToPrintLabel(order) && !isOrderFulfillment(order);
+}
+
 function getShipmentStatus(order: MLOrder): string {
   return normalizeState(getShipmentSnapshot(order).status || order.order_status);
 }
