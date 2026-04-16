@@ -1284,22 +1284,11 @@ const ML_LIVE_DETAILED_CACHE_TTL_MS = 50 * 1000;
 const RTS_EXCLUDED_SUBSTATUSES = new Set([
   "picked_up", "authorized_by_carrier",
 ]);
-const RTS_UPCOMING_SUBSTATUSES = new Set([
-  "in_packing_list", "in_hub",
-]);
-const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
-  "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
-]);
 // Shipped substatuses que o ML Seller Center coloca em "Próximos dias"
 // (o pacote está no ponto de retirada aguardando o comprador).
 const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
   "waiting_for_withdrawal",
 ]);
-// Dias máximos desde o envio para considerar "Em trânsito".
-// ML Seller Center mostra shipped recentes com tracking ativo.
-// 3 dias = janela que cobre o ciclo normal de entrega ML (2-5 dias úteis).
-// Shipped mais antigos com substatus ativo são provavelmente stale.
-const TRANSIT_MAX_DAYS = 3;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
@@ -1389,11 +1378,21 @@ async function fetchShipmentDetails(token, shippingIds, concurrency = 20) {
           const r = await fetch(`https://api.mercadolibre.com/shipments/${sid}`, { headers });
           if (!r.ok) return null;
           const j = await r.json();
+          // Extrai data SLA (estimated_delivery_limit) para classificação
+          // today/upcoming de ready_to_ship. Campo pode ser string ou objeto
+          // { date: "..." } dependendo da versão da API ML.
+          const edl = j.shipping_option?.estimated_delivery_limit;
+          const edf = j.shipping_option?.estimated_delivery_final;
+          const slaRaw =
+            (typeof edl === "string" ? edl : edl?.date) ||
+            (typeof edf === "string" ? edf : edf?.date) ||
+            null;
           return {
             id: String(sid),
             status: (j.status || "").toLowerCase(),
             substatus: (j.substatus || "none").toLowerCase(),
             dateShipped: j.status_history?.date_shipped || null,
+            slaDate: slaRaw, // YYYY-MM-DDTHH:mm:ss... ou null
           };
         } catch { return null; }
       })
@@ -1510,55 +1509,88 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       addMlOrderIds("upcoming", pack.ml_order_ids);
     }
 
-    // Ready to ship → classificação por substatus.
-    // ML Seller Center: a MAIORIA dos ready_to_ship é "Envios de hoje".
-    // Apenas substatuses específicos vão para "Próximos dias" ou são excluídos.
+    // Ready to ship → classificação por substatus + data SLA.
+    // Replica a lógica de classifyCrossDockingOrder/classifyFulfillmentOrder
+    // (classificação LOCAL que bate com ML Seller Center) mas usando dados
+    // da API ML em vez do DB local.
     //
-    // IMPORTANTE — tratamento de edge cases:
-    // - Sem shipment detail (API falhou): "upcoming" (conservador — sem dados, não adivinha)
-    // - Status mudou (ex: ready_to_ship → shipped): SKIP — o loop de shipped já cuida.
-    //   Se colocar em "today" aqui, o MESMO pack aparece em "today" E em "in_transit"
-    //   porque os fetches paralelos capturam o pack nos dois estados.
+    // Regras (alinhadas com ML Seller Center):
+    // - in_packing_list → "Envios de hoje" (na lista de separação do dia)
+    // - in_hub → "Próximos dias" (no hub esperando processamento)
+    // - invoice_pending → "Próximos dias" (só vai pra "hoje" após NF-e emitida)
+    // - ready_for_pickup, ready_to_pack → "Envios de hoje" (pronto para envio)
+    // - packed → usa data SLA: se SLA ≤ hoje → "hoje", senão → "próximos"
+    // - outros → usa data SLA, fallback "upcoming" (conservador)
+    //
+    // EDGE CASES:
+    // - Sem shipment detail (API falhou): "upcoming" (conservador)
+    // - Status mudou (ex: ready_to_ship → shipped): SKIP
     let rtsNoShipment = 0, rtsStatusMismatch = 0;
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        // Sem detalhe do shipment (API falhou/rate-limit) — conservador: upcoming.
-        // Não assume "hoje" sem dados — evita inflar o chip.
         rtsNoShipment++;
         addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
       if (shipment.status !== "ready_to_ship") {
-        // Status mudou entre o search e o /shipments/{id} (ex: já virou "shipped").
-        // NÃO classificar aqui — o loop correspondente (shipped/pending) cuida.
-        // Se colocar em "today", causa double-counting com o loop de shipped.
         rtsStatusMismatch++;
         continue;
       }
       const sub = shipment.substatus;
       if (RTS_EXCLUDED_SUBSTATUSES.has(sub)) {
         // picked_up/authorized_by_carrier: transição → excluído de todos os chips
-      } else if (RTS_UPCOMING_SUBSTATUSES.has(sub)) {
-        // in_packing_list/in_hub: agendado/hub → "Próximos dias"
-        addMlOrderIds("upcoming", pack.ml_order_ids);
-      } else {
-        // Tudo o resto → "Envios de hoje" (ready_for_pickup, in_warehouse,
-        // ready_to_pack, packed, invoice_pending, none, etc.)
+        continue;
+      }
+      if (sub === "in_packing_list") {
+        // Na lista de separação do dia → "Envios de hoje"
         addMlOrderIds("today", pack.ml_order_ids);
+      } else if (sub === "in_hub") {
+        // No hub do transportador → "Próximos dias"
+        addMlOrderIds("upcoming", pack.ml_order_ids);
+      } else if (sub === "invoice_pending") {
+        // Aguardando NF-e → "Próximos dias"
+        // ML só move para "hoje" DEPOIS que a NF-e é emitida e o substatus muda
+        addMlOrderIds("upcoming", pack.ml_order_ids);
+      } else if (sub === "ready_for_pickup" || sub === "ready_to_pack") {
+        // Pronto para envio/separação → "Envios de hoje"
+        addMlOrderIds("today", pack.ml_order_ids);
+      } else if (sub === "packed") {
+        // Empacotado: usa data SLA para decidir hoje/próximos
+        const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        if (slaKey && slaKey > todayKey) {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("today", pack.ml_order_ids);
+        }
+      } else {
+        // Substatuses desconhecidos: usa data SLA, fallback "upcoming" (conservador)
+        const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        if (slaKey) {
+          addMlOrderIds(slaKey <= todayKey ? "today" : "upcoming", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
       }
     }
 
-    // Shipped → trânsito ou upcoming
-    // ML Seller Center: shipped é "Em trânsito" EXCETO waiting_for_withdrawal
-    // (pacote no ponto de retirada → "Próximos dias").
-    // QUALQUER outro shipped é in_transit se tiver dateShipped e for recente.
-    // Antes, só contávamos substatuses específicos (out_for_delivery, etc.)
-    // e pedidos com substatuses desconhecidos eram silenciosamente descartados
-    // → in_transit ficava menor que no ML.
+    // Shipped → classificação restritiva (alinhada com ML Seller Center).
+    //
+    // ML Seller Center NÃO mostra envios normais em trânsito nos chips.
+    // Apenas pedidos com PROBLEMAS de entrega aparecem em "Em trânsito":
+    //   - out_for_delivery, receiver_absent, not_visited, at_customs
+    //   - E somente se enviados nos últimos 2 dias (evita stale)
+    //
+    // waiting_for_withdrawal (ponto de retirada) → "Próximos dias"
+    // Todos os outros shipped → excluídos dos chips (trânsito normal,
+    // nenhuma ação necessária do vendedor).
+    //
+    // A classificação anterior (TODOS shipped → in_transit) inflava o chip
+    // de 3 (ML real) para 190 (nosso). Agora replica a lógica LOCAL de
+    // classifyCrossDockingOrder (lines 549-558) que já bate com ML.
     const nowMs = Date.now();
     const msPerDay = 86400000;
-    let shippedNoDate = 0, shippedStale = 0;
+    let shippedNoDate = 0, shippedStale = 0, shippedNormal = 0;
     for (const [, pack] of shippedPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) continue;
@@ -1567,33 +1599,39 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
         // waiting_for_withdrawal → "Próximos dias"
         addMlOrderIds("upcoming", pack.ml_order_ids);
-      } else {
-        // TODOS os outros shipped → in_transit (com filtro de idade)
+      } else if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
+        // Substatuses problemáticos: out_for_delivery, receiver_absent,
+        // not_visited, at_customs → in_transit se recente
         if (!shipment.dateShipped) { shippedNoDate++; continue; }
         const shippedAt = new Date(shipment.dateShipped).getTime();
         if (Number.isNaN(shippedAt)) { shippedNoDate++; continue; }
         const ageDays = (nowMs - shippedAt) / msPerDay;
-        if (ageDays <= TRANSIT_MAX_DAYS) {
+        if (ageDays <= 2) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
         } else {
           shippedStale++;
         }
+      } else {
+        // Trânsito normal (in_transit, at_sender, etc.) → nenhum chip.
+        // ML Seller Center não mostra envios normais nas abas.
+        shippedNormal++;
       }
     }
 
-    // Not delivered com logística ainda ativa → "Em trânsito" (não "Finalizadas")
-    // Ex: returning_to_sender, returning_to_hub, delayed, return_failed
+    // Not delivered → TODOS vão para "Finalizadas" (match com ML Seller Center).
+    // No ML Seller Center, pedidos com entrega falha (devoluções, perdidos, etc.)
+    // aparecem em "Gerenciar Pós-venda" e "Finalizadas", NUNCA em "Em trânsito".
+    // A lógica anterior colocava returning_to_sender/delayed/etc em in_transit,
+    // inflando o chip. A classificação LOCAL (classifyCrossDockingOrder line 568)
+    // já coloca TODOS not_delivered em "finalized" e bate com ML.
     const ndSubstatusBreakdown = {};
     for (const [, pack] of ndPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       const ndSub = shipment?.substatus || "unknown";
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
-      if (shipment && NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(shipment.substatus)) {
-        addMlOrderIds("in_transit", pack.ml_order_ids);
-      }
     }
 
-    // Finalizadas: not_delivered de hoje (excluindo os que já estão em in_transit)
+    // Finalizadas: not_delivered de hoje.
     // NOTA: NÃO incluir "delivered" aqui — ML "Finalizadas" conta apenas
     // problemas de entrega (not_delivered), não entregas normais do dia.
     // PACK-DEDUPLICATED: usa deduplicateOrdersToPacks para contar packs, não orders.
@@ -1608,11 +1646,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       const ndTodayOrders = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
       const ndTodayPacks = deduplicateOrdersToPacks(ndTodayOrders);
       for (const [, pack] of ndTodayPacks) {
-        // Não duplicar: se algum order do pack já está em in_transit
-        const anyInTransit = pack.ml_order_ids.some((id) => buckets.in_transit.has(String(id)));
-        if (!anyInTransit) {
-          addMlOrderIds("finalized", pack.ml_order_ids);
-        }
+        addMlOrderIds("finalized", pack.ml_order_ids);
       }
     } catch {
       // deixa vazio se falhar
@@ -1657,7 +1691,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         ` shipped=${shippedPacks.size} nd=${ndPacks.size}` +
         ` | shipments: ${shipmentMap.size}/${allShippingIds.size}` +
         ` (rts_no_shipment=${rtsNoShipment} rts_status_mismatch=${rtsStatusMismatch}` +
-        ` shipped_no_date=${shippedNoDate} shipped_stale=${shippedStale})` +
+        ` shipped_no_date=${shippedNoDate} shipped_stale=${shippedStale} shipped_normal=${shippedNormal})` +
         ` | rts_substatus: ${JSON.stringify(rtsSubBreakdown)}` +
         ` | shipped_substatus: ${JSON.stringify(shippedSubBreakdown)}` +
         ` | nd_substatus: ${JSON.stringify(ndSubstatusBreakdown)}` +
