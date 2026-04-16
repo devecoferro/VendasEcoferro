@@ -141,149 +141,92 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-// ─── Print Agent (impressao silenciosa local) ─────────────────────────
-// O Print Agent e' um servico Node.js que roda na maquina do operador
-// (scripts/print-agent.mjs). Ele recebe o PDF via HTTP e imprime direto
-// na impressora padrao sem mostrar dialogo nenhum.
-const PRINT_AGENT_URL = "http://localhost:9120";
-let printAgentAvailable: boolean | null = null; // null = nao testado ainda
-
-async function checkPrintAgent(): Promise<boolean> {
-  if (printAgentAvailable !== null) return printAgentAvailable;
-  try {
-    const r = await fetch(`${PRINT_AGENT_URL}/status`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    const data = await r.json();
-    printAgentAvailable = data?.ok === true;
-  } catch {
-    printAgentAvailable = false;
-  }
-  // Re-checa a cada 30s (caso o agente seja ligado/desligado)
-  setTimeout(() => { printAgentAvailable = null; }, 30_000);
-  return printAgentAvailable;
-}
-
-async function sendToPrintAgent(blob: Blob): Promise<boolean> {
-  try {
-    const r = await fetch(`${PRINT_AGENT_URL}/print`, {
-      method: "POST",
-      headers: { "Content-Type": "application/pdf" },
-      body: blob,
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = await r.json();
-    return data?.ok === true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Impressao automatica via popup window.
+ * Impressao automatica integrada — funciona direto no navegador.
  *
- * Abre o PDF numa janela popup e dispara window.print() automaticamente
- * assim que o PDF renderiza. O Chrome mostra o dialogo de impressao com
- * a impressora padrao pre-selecionada.
+ * Detecta o dispositivo:
+ * - Desktop/Notebook: abre o PDF numa aba, dispara print() automaticamente.
+ *   O dialogo de impressao aparece com a impressora padrao — operador
+ *   so precisa dar Enter ou Ctrl+P. Apos imprimir, a aba fecha sozinha.
+ * - Mobile/Tablet: baixa o PDF para o dispositivo (celular nao imprime
+ *   direto — usa apenas para conferencia visual de QR).
  *
- * Para impressao 100% SILENCIOSA (sem dialogo nenhum), inicie o Chrome
- * com a flag --kiosk-printing:
- *   chrome.exe --kiosk-printing
- * Nesse modo, window.print() envia direto para a impressora padrao.
- *
- * Por que popup e nao iframe:
- * O Chrome renderiza PDFs via plugin sandboxed (Chromium PDF Viewer).
- * Num iframe invisivel, o plugin nao carrega corretamente e print()
- * falha silenciosamente. Numa janela popup o PDF viewer funciona normal
- * e print() dispara de forma confiavel.
- *
- * Fluxo:
- * 1. Abre popup pequena (200x200) com o blob URL do PDF
- * 2. Tenta print() a cada 500ms ate o PDF estar pronto (max 8s)
- * 3. Apos o print, fecha a popup automaticamente
- * 4. Se popup for bloqueada, abre em aba nova com fallback
+ * Nao precisa de servico externo, extensao ou flag do Chrome.
+ * Funciona em qualquer computador que acesse o sistema.
  */
-export async function autoPrintPdfBlob(blob: Blob, _filename = "etiquetas-ml.pdf"): Promise<void> {
-  // ── Tentativa 1: Print Agent local (impressao 100% silenciosa) ──
-  // Se o agente estiver rodando (scripts/print-agent.mjs), envia o PDF
-  // direto e ele imprime sem nenhum dialogo. Ideal para operacao em
-  // warehouse com leitor de QR code.
-  const agentAvailable = await checkPrintAgent();
-  if (agentAvailable) {
-    const sent = await sendToPrintAgent(blob);
-    if (sent) return; // Impresso silenciosamente — nada mais a fazer.
-    // Se falhou, cai pro popup abaixo.
-  }
-
-  // ── Tentativa 2: Popup + window.print() (fallback com dialogo) ──
-  const url = URL.createObjectURL(blob);
-
-  // Popup pequena — so precisa existir para o PDF viewer carregar.
-  // Em --kiosk-printing, a janela fecha sozinha apos imprimir.
-  const popup = window.open(
-    url,
-    "_blank",
-    "width=200,height=200,left=0,top=0,menubar=no,toolbar=no,location=no,status=no"
+export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): void {
+  const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(
+    navigator.userAgent
   );
 
-  if (!popup) {
-    // Popup bloqueada — fallback: abre numa aba normal e tenta print.
-    const tab = window.open(url, "_blank");
-    if (tab) {
-      setTimeout(() => {
-        try { tab.focus(); tab.print(); } catch { /* ignore */ }
-      }, 1500);
-    } else {
-      // Ultimo fallback: download manual.
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = _filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    }
+  // Mobile/Tablet: download do PDF (nao tem impressora conectada).
+  if (isMobile) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    return;
+  }
+
+  // Desktop/Notebook: abre numa aba e dispara print() automaticamente.
+  const url = URL.createObjectURL(blob);
+
+  // Abre em aba nova (mais confiavel que popup — popups podem ser bloqueadas,
+  // e PDFs em popups pequenas nao renderizam bem no Chrome).
+  const printWindow = window.open(url, "_blank");
+
+  if (!printWindow) {
+    // Aba bloqueada (popup blocker) — cai pro download.
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return;
   }
 
-  // Tenta disparar print() assim que o PDF estiver renderizado.
-  // O Chrome PDF viewer nao tem evento confiavel de "pronto",
-  // entao tentamos a cada 500ms ate funcionar (max 8s).
+  // Espera o PDF renderizar e dispara print().
+  // O Chrome PDF viewer precisa de ~1-2s para carregar o PDF.
+  // Tentamos a cada 600ms ate 10s (max 16 tentativas).
   let attempts = 0;
-  const maxAttempts = 16; // 16 × 500ms = 8s
+  const maxAttempts = 16;
   let printed = false;
 
   const tryPrint = () => {
     if (printed) return;
     attempts++;
-
     try {
-      // Verifica se a popup ainda existe e tem conteudo.
-      if (popup.closed) {
-        printed = true;
-        return;
-      }
-      popup.focus();
-      popup.print();
+      if (printWindow.closed) { printed = true; return; }
+      printWindow.focus();
+      printWindow.print();
       printed = true;
 
-      // Fecha a popup apos um delay (tempo pro dialogo de impressao ou
-      // para o --kiosk-printing enviar o job). Em kiosk mode, print()
-      // retorna imediatamente apos enviar — 3s e' seguro.
-      setTimeout(() => {
-        try { if (!popup.closed) popup.close(); } catch { /* ignore */ }
-      }, 3000);
+      // Escuta o evento afterprint pra fechar a aba automaticamente.
+      // Funciona no Chrome, Edge e Firefox modernos.
+      try {
+        printWindow.addEventListener("afterprint", () => {
+          setTimeout(() => {
+            try { if (!printWindow.closed) printWindow.close(); } catch { /* ok */ }
+          }, 500);
+        });
+      } catch { /* cross-origin — nao consegue escutar, tudo bem */ }
     } catch {
-      // PDF ainda nao renderizou ou cross-origin — tenta de novo.
+      // PDF ainda nao renderizou — tenta de novo.
       if (attempts < maxAttempts) {
-        setTimeout(tryPrint, 500);
+        setTimeout(tryPrint, 600);
       }
     }
   };
 
-  // Primeiro tentativa apos 1s (tempo minimo pro PDF viewer abrir).
-  setTimeout(tryPrint, 1000);
+  // Primeira tentativa apos 1.5s (tempo pro PDF viewer iniciar).
+  setTimeout(tryPrint, 1500);
 
-  // Cleanup da URL apos 2 minutos.
-  setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  // Cleanup da URL apos 3 minutos.
+  setTimeout(() => URL.revokeObjectURL(url), 180_000);
 }

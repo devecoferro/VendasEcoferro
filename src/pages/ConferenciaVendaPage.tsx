@@ -211,9 +211,10 @@ export default function ConferenciaVendaPage() {
         return;
       }
 
-      // Auto-print: tenta enviar ao Print Agent local (impressao silenciosa).
-      // Se o agente nao estiver rodando, cai pro popup + window.print().
-      await autoPrintPdfBlob(
+      // Auto-print integrado no navegador:
+      // Desktop/Notebook — abre aba com PDF e dispara print() automatico.
+      // Mobile/Tablet — baixa o PDF (apenas leitura de QR, sem impressora).
+      autoPrintPdfBlob(
         merged.mergedPdf,
         `conferencia-${order.sale_number || order.order_id}.pdf`
       );
