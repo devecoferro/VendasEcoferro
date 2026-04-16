@@ -15,6 +15,7 @@ function parseBody(request) {
 }
 
 export default async function handler(request, response) {
+  let orderId = null;
   try {
     await requireAuthenticatedProfile(request);
 
@@ -23,7 +24,7 @@ export default async function handler(request, response) {
     }
 
     const body = parseBody(request);
-    const orderId = body.order_id || body.orderId;
+    orderId = body.order_id || body.orderId;
     const payload = await generateNfe(orderId);
     onNfeEmitted(orderId, payload?.nfe_number || payload?.chave || "—").catch(() => {});
     return response.status(200).json(payload);
