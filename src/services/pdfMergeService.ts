@@ -140,3 +140,70 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
   // Libera o objeto apos 60s (tempo suficiente pro browser carregar o PDF).
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
+
+/**
+ * Impressao automatica: carrega o PDF num iframe invisivel e dispara
+ * window.print() automaticamente. O dialogo de impressao do SO aparece
+ * com a impressora padrao pre-selecionada — o operador so precisa dar
+ * Enter (ou o Chrome imprime direto se estiver em modo kiosk).
+ *
+ * Fluxo:
+ * 1. Cria iframe invisivel (0×0, fora da tela)
+ * 2. Carrega o blob URL do PDF
+ * 3. Quando o iframe carrega, chama focus() + print()
+ * 4. Limpa o iframe e revoga a URL apos 120s
+ *
+ * Fallback: se o iframe falhar (popup blocker, PDF viewer ausente),
+ * abre numa aba nova como o openPdfBlobForPrint faz.
+ */
+export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): void {
+  const url = URL.createObjectURL(blob);
+
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.top = "-9999px";
+  iframe.style.left = "-9999px";
+  iframe.style.width = "1px";
+  iframe.style.height = "1px";
+  iframe.style.border = "0";
+  iframe.style.opacity = "0";
+
+  let printed = false;
+
+  const cleanup = () => {
+    setTimeout(() => {
+      try { document.body.removeChild(iframe); } catch { /* already removed */ }
+      URL.revokeObjectURL(url);
+    }, 120_000);
+  };
+
+  const triggerPrint = () => {
+    if (printed) return;
+    printed = true;
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } catch {
+      // Fallback: se o iframe nao suporta print (cross-origin/bloqueio),
+      // abre numa aba nova e tenta imprimir la.
+      const win = window.open(url, "_blank");
+      if (win) {
+        setTimeout(() => { try { win.print(); } catch { /* ignore */ } }, 1200);
+      }
+    }
+    cleanup();
+  };
+
+  iframe.onload = () => {
+    // Pequeno delay para garantir que o PDF viewer do browser renderizou.
+    setTimeout(triggerPrint, 800);
+  };
+
+  // Safety: se onload nao disparar em 5s (raro), tenta forcar.
+  setTimeout(() => {
+    if (!printed) triggerPrint();
+  }, 5000);
+
+  document.body.appendChild(iframe);
+  iframe.src = url;
+}

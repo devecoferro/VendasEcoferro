@@ -32,6 +32,7 @@ import {
 } from "@/services/mercadoLivreService";
 import {
   mergeLabelPdfs,
+  autoPrintPdfBlob,
   openPdfBlobForPrint,
   type MergeSource,
 } from "@/services/pdfMergeService";
@@ -210,11 +211,14 @@ export default function ConferenciaVendaPage() {
         return;
       }
 
-      openPdfBlobForPrint(
+      // Auto-print: dispara o dialogo de impressao automaticamente.
+      // O operador so precisa confirmar (Enter) — a impressora padrao
+      // ja vem pre-selecionada. Muito mais rapido que abrir aba nova.
+      autoPrintPdfBlob(
         merged.mergedPdf,
         `conferencia-${order.sale_number || order.order_id}.pdf`
       );
-      toast.success("Etiqueta + NFe enviada para impressao.");
+      toast.success("Impressao automatica disparada — confirme na impressora.");
     } catch (printError) {
       toast.error(
         printError instanceof Error
