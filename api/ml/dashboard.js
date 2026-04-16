@@ -1850,6 +1850,8 @@ export async function buildDashboardPayload(options = {}) {
           for (const id of iter) mergedIds[bucket].add(String(id));
         }
       }
+
+      // Counts ficam inalterados — fonte de verdade ML para os chips.
       mlLiveChipCounts = {
         today: mergedIds.today.size,
         upcoming: mergedIds.upcoming.size,
@@ -1857,12 +1859,36 @@ export async function buildDashboardPayload(options = {}) {
         finalized: mergedIds.finalized.size,
         cancelled: mergedIds.cancelled.size,
       };
+
+      // ── TRADUÇÃO DE IDs ──────────────────────────────────────────
+      // fetchMLLiveChipBucketsDetailed retorna ML order_ids (ex: "2000006549182345")
+      // porque vem da API ML (orders/search). Mas o frontend e o deposit
+      // classification usam o DB row id (coluna `id` de ml_orders, ex: "150").
+      // Se expusermos ML order_ids direto no payload, o frontend faz
+      // operationalOrderIds.has(order.id) e NADA bate — lista vem vazia.
+      //
+      // Solução: traduzir ML order_id → DB row id usando allOrders (que já
+      // está carregado). Pedidos que o ML classifica mas ainda não estão
+      // sincronizados no DB são silenciosamente ignorados — vão aparecer
+      // assim que o próximo sync/auto-heal os trouxer.
+      const mlOrderIdToDbId = new Map();
+      for (const order of allOrders) {
+        if (order.order_id) {
+          mlOrderIdToDbId.set(String(order.order_id), String(order.id));
+        }
+      }
+
+      const translateIds = (idSet) =>
+        Array.from(idSet)
+          .map((mlId) => mlOrderIdToDbId.get(mlId))
+          .filter(Boolean);
+
       mlLiveChipOrderIds = {
-        today: Array.from(mergedIds.today),
-        upcoming: Array.from(mergedIds.upcoming),
-        in_transit: Array.from(mergedIds.in_transit),
-        finalized: Array.from(mergedIds.finalized),
-        cancelled: Array.from(mergedIds.cancelled),
+        today: translateIds(mergedIds.today),
+        upcoming: translateIds(mergedIds.upcoming),
+        in_transit: translateIds(mergedIds.in_transit),
+        finalized: translateIds(mergedIds.finalized),
+        cancelled: translateIds(mergedIds.cancelled),
       };
     }
   } catch {
