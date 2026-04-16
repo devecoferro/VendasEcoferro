@@ -1,4 +1,16 @@
 // Sincroniza leads do Mercado Livre → Supabase (ecoferro.com.br/admin/leads)
+//
+// No ML, "leads" são compradores que fazem perguntas nos anúncios (questions API)
+// ou que interagem via mensagens pós-venda. Cada pergunta com dados de contato
+// é um lead potencial para o site da Ecoferro.
+//
+// Tabela Supabase "leads":
+//   id (UUID PK), name (TEXT), email (TEXT), phone (TEXT),
+//   source (lead_source ENUM), message (TEXT), status (TEXT default 'new'),
+//   consent (BOOLEAN), metadata (JSONB), created_at (TIMESTAMPTZ)
+//
+// lead_source enum: 'newsletter','contact_form','quote_form','abandoned_cart','popup','whatsapp','other'
+
 import { createClient } from "@supabase/supabase-js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
@@ -10,145 +22,163 @@ const log = createLogger("sync-leads");
 const SUPABASE_URL = "https://kxknhqywhobkrpnlutel.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-// ── Buscar leads da API ML ──────────────────────────────────────
-async function fetchMLLeads(token, sellerId, { limit = 200, offset = 0 } = {}) {
-  const url = `https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}/leads?limit=${limit}&offset=${offset}`;
-  const response = await fetch(url, {
+// ── Buscar perguntas recentes (leads) da API ML ─────────────────
+async function fetchMLQuestions(token, sellerId, { limit = 50, offset = 0, status = "UNANSWERED" } = {}) {
+  const url = `https://api.mercadolibre.com/questions/search?seller_id=${sellerId}&status=${status}&sort_fields=date_created&sort_types=DESC&limit=${limit}&offset=${offset}`;
+  const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    log.error(`ML leads API error: ${response.status} — ${text}`);
-    return { results: [], paging: { total: 0 } };
-  }
-
-  return response.json();
+  if (!resp.ok) return { questions: [], total: 0, error: resp.status };
+  const data = await resp.json();
+  return {
+    questions: data.questions || [],
+    total: data.total || 0,
+  };
 }
 
-// ── Mapear lead ML → formato Supabase ───────────────────────────
-function mapLeadToSupabase(mlLead) {
-  // A estrutura do lead ML pode variar. Campos comuns:
-  // { id, name, email, phone, date_created, item_id, ... }
+// ── Buscar dados do comprador (nome, email) ─────────────────────
+async function fetchBuyerInfo(token, buyerId) {
+  if (!buyerId) return null;
+  try {
+    const resp = await fetch(`https://api.mercadolibre.com/users/${buyerId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return {
+      name: data.first_name && data.last_name
+        ? `${data.first_name} ${data.last_name}`
+        : data.nickname || null,
+      nickname: data.nickname || null,
+      email: data.email || null,
+      phone: data.phone?.number || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Buscar info do item (título) ────────────────────────────────
+async function fetchItemTitle(token, itemId) {
+  if (!itemId) return null;
+  try {
+    const resp = await fetch(`https://api.mercadolibre.com/items/${itemId}?attributes=title`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.title || null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Mapear pergunta ML → lead Supabase ──────────────────────────
+function mapQuestionToLead(question, buyerInfo, itemTitle) {
   return {
-    nome: mlLead.name || mlLead.full_name || mlLead.contact_name || null,
-    email: mlLead.email || mlLead.contact_email || null,
-    telefone:
-      mlLead.phone?.number ||
-      mlLead.phone ||
-      mlLead.contact_phone ||
-      mlLead.phone_number ||
-      null,
-    origem: "Mercado Livre",
-    data: mlLead.date_created || mlLead.created_at || new Date().toISOString(),
-    // Campos extras para rastreamento
-    ml_lead_id: String(mlLead.id || ""),
-    ml_item_id: mlLead.item_id || mlLead.listing_id || null,
+    name: buyerInfo?.name || buyerInfo?.nickname || null,
+    email: buyerInfo?.email || null,
+    phone: buyerInfo?.phone || null,
+    source: "other", // ML não está no enum, usa 'other'
+    message: question.text
+      ? `[ML] ${itemTitle ? itemTitle + " — " : ""}${question.text}`
+      : `Pergunta no Mercado Livre${itemTitle ? ": " + itemTitle : ""}`,
+    status: "new",
+    consent: false,
+    metadata: {
+      ml_question_id: question.id,
+      ml_item_id: question.item_id,
+      ml_buyer_id: question.from?.id,
+      ml_date: question.date_created,
+      ml_status: question.status,
+      item_title: itemTitle,
+    },
+    created_at: question.date_created || new Date().toISOString(),
   };
 }
 
 // ── Sync principal ──────────────────────────────────────────────
 async function syncLeadsToWebsite(token, sellerId) {
   if (!SUPABASE_KEY) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY nao configurada.");
+    throw new Error(
+      "SUPABASE_SERVICE_ROLE_KEY nao configurada. " +
+      "Adicione no Coolify: Settings → Environment Variables."
+    );
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  // 1. Buscar leads do ML (até 200 mais recentes)
-  const mlData = await fetchMLLeads(token, sellerId, { limit: 200 });
-  const mlLeads = Array.isArray(mlData.results)
-    ? mlData.results
-    : Array.isArray(mlData)
-      ? mlData
-      : [];
+  // 1. Buscar perguntas do ML (unanswered + answered recentes)
+  const [unanswered, answered] = await Promise.all([
+    fetchMLQuestions(token, sellerId, { limit: 50, status: "UNANSWERED" }),
+    fetchMLQuestions(token, sellerId, { limit: 50, status: "ANSWERED" }),
+  ]);
 
-  if (mlLeads.length === 0) {
+  const allQuestions = [...unanswered.questions, ...answered.questions];
+
+  if (allQuestions.length === 0) {
     return {
       success: true,
-      ml_total: mlData.paging?.total || 0,
+      ml_unanswered: unanswered.total,
+      ml_answered: answered.total,
       fetched: 0,
       inserted: 0,
       skipped: 0,
-      message: "Nenhum lead encontrado na API do Mercado Livre.",
-      raw_response_keys: Object.keys(mlData),
+      message: "Nenhuma pergunta encontrada na API do ML.",
     };
   }
 
-  // 2. Buscar leads existentes no Supabase para evitar duplicatas
+  // 2. Buscar leads existentes no Supabase para dedup
   const { data: existingLeads } = await supabase
     .from("leads")
-    .select("ml_lead_id, email")
-    .not("ml_lead_id", "is", null);
+    .select("metadata")
+    .eq("source", "other")
+    .order("created_at", { ascending: false })
+    .limit(500);
 
-  const existingIds = new Set(
-    (existingLeads || []).map((l) => l.ml_lead_id).filter(Boolean)
-  );
-  const existingEmails = new Set(
-    (existingLeads || []).map((l) => l.email?.toLowerCase()).filter(Boolean)
-  );
+  const existingQuestionIds = new Set();
+  for (const lead of existingLeads || []) {
+    const qid = lead.metadata?.ml_question_id;
+    if (qid) existingQuestionIds.add(String(qid));
+  }
 
   // 3. Inserir novos leads
   let inserted = 0;
   let skipped = 0;
   const errors = [];
 
-  for (const mlLead of mlLeads) {
-    const mapped = mapLeadToSupabase(mlLead);
-
-    // Skip se já existe pelo ml_lead_id ou email
-    if (mapped.ml_lead_id && existingIds.has(mapped.ml_lead_id)) {
-      skipped++;
-      continue;
-    }
-    if (mapped.email && existingEmails.has(mapped.email.toLowerCase())) {
+  for (const question of allQuestions) {
+    // Dedup por question_id
+    if (existingQuestionIds.has(String(question.id))) {
       skipped++;
       continue;
     }
 
-    const { error } = await supabase.from("leads").insert(mapped);
+    // Buscar info do comprador e do item (em paralelo)
+    const [buyerInfo, itemTitle] = await Promise.all([
+      fetchBuyerInfo(token, question.from?.id),
+      fetchItemTitle(token, question.item_id),
+    ]);
 
+    const lead = mapQuestionToLead(question, buyerInfo, itemTitle);
+
+    const { error } = await supabase.from("leads").insert(lead);
     if (error) {
-      // Se a tabela não tem as colunas extras (ml_lead_id, ml_item_id),
-      // tentar sem elas
-      if (error.message?.includes("ml_lead_id") || error.code === "42703") {
-        const { ml_lead_id, ml_item_id, ...basicLead } = mapped;
-        const { error: retryError } = await supabase
-          .from("leads")
-          .insert(basicLead);
-
-        if (retryError) {
-          errors.push({
-            lead: mapped.nome || mapped.email,
-            error: retryError.message,
-          });
-        } else {
-          inserted++;
-        }
-      } else {
-        errors.push({
-          lead: mapped.nome || mapped.email,
-          error: error.message,
-        });
-      }
+      errors.push({ question_id: question.id, error: error.message });
     } else {
       inserted++;
+      existingQuestionIds.add(String(question.id));
     }
   }
 
   return {
     success: true,
-    ml_total: mlData.paging?.total || mlLeads.length,
-    fetched: mlLeads.length,
+    ml_unanswered: unanswered.total,
+    ml_answered: answered.total,
+    fetched: allQuestions.length,
     inserted,
     skipped,
     errors: errors.length > 0 ? errors.slice(0, 5) : undefined,
-    sample_lead: mlLeads[0]
-      ? {
-          raw_keys: Object.keys(mlLeads[0]),
-          mapped: mapLeadToSupabase(mlLeads[0]),
-        }
-      : null,
   };
 }
 
