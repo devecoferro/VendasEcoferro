@@ -280,10 +280,10 @@ export function SaleCardPreview({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-4 text-slate-500">
-                      <p className="text-[14px] font-semibold leading-none text-slate-700">
+                      <p className="text-[20px] font-bold leading-none text-slate-700">
                         #{sale.saleNumber || "-"}
                       </p>
-                      <p className="text-[13px]">
+                      <p className="text-[18px] font-semibold">
                         {sale.saleDate || "-"} {sale.saleTime || ""}
                       </p>
                     </div>
