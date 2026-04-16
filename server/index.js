@@ -46,6 +46,16 @@ import mlPickingListHandler from "../api/ml/picking-list.js";
 import mlConferenciaHandler from "../api/ml/conferencia.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
+import obsidianHandler from "../api/obsidian.js";
+import {
+  onSyncFailed,
+  onDriftDetected,
+  onDriftHealed,
+  onDriftPersistent,
+  onUnhandledError,
+  onServerStart,
+  onBackupFailed,
+} from "../api/_lib/obsidian-sync.js";
 import { APP_HOST, APP_PORT } from "../api/_lib/app-config.js";
 
 const log = createLogger("server");
@@ -313,6 +323,9 @@ app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(re
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 
+// ─── Obsidian API ──────────────────────────────────────────────────
+app.all("/api/obsidian", apiLimiter, (req, res) => obsidianHandler(req, res));
+
 // ─── Error handler ──────────────────────────────────────────────────
 app.use((error, req, res, next) => {
   if (error?.type === "entity.parse.failed") {
@@ -410,8 +423,10 @@ async function autoSyncOrders() {
         });
       } catch (err) {
         log.error(`Auto-sync falhou para ${connection.seller_nickname || connection.seller_id}`, err);
+        onSyncFailed(connection.seller_nickname || connection.seller_id, err).catch(() => {});
       }
     }
+
   } catch (error) {
     log.error("Auto-sync falhou", error);
   } finally {
@@ -491,6 +506,7 @@ async function autoChipDriftSnapshot() {
       log.info(
         `Chip drift detectado — tentando auto-heal (max_abs_diff=${result.max_abs_diff})`
       );
+      onDriftDetected(result.max_abs_diff, result.diff).catch(() => {});
       try {
         const heal = await autoHealDrift({ tolerance: 2 });
         healOutcome = heal;
@@ -500,10 +516,12 @@ async function autoChipDriftSnapshot() {
           log.info(
             `Auto-heal SUCESSO: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? 0})`
           );
+          onDriftHealed(heal.refreshed_orders, result.max_abs_diff, heal.after?.max_abs_diff ?? 0).catch(() => {});
         } else {
           log.warn(
             `Auto-heal FALHOU: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? result.max_abs_diff}) — provavel bug de classificacao, investigar em /ml-diagnostics`
           );
+          onDriftPersistent(heal.refreshed_orders, heal.after?.max_abs_diff ?? result.max_abs_diff, heal.reason).catch(() => {});
         }
       } catch (healErr) {
         log.error(
@@ -632,6 +650,7 @@ async function gracefulShutdown(signal) {
     await runBackup();
   } catch (error) {
     log.error("Falha no backup final", error);
+    onBackupFailed(error).catch(() => {});
   }
 
   // Fecha o banco de dados
@@ -652,16 +671,19 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 // Captura erros nao tratados para nao derrubar silenciosamente
 process.on("uncaughtException", (error) => {
   log.error("Uncaught exception", error);
-  // Nao faz process.exit — deixa o container reiniciar via healthcheck
+  onUnhandledError("Uncaught Exception", error).catch(() => {});
 });
 
 process.on("unhandledRejection", (reason) => {
-  log.error("Unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  log.error("Unhandled rejection", err);
+  onUnhandledError("Unhandled Rejection", err).catch(() => {});
 });
 
 // ─── Start ──────────────────────────────────────────────────────────
 app.listen(APP_PORT, APP_HOST, () => {
   log.info(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
+  onServerStart(APP_PORT).catch(() => {});
 
   // Limpa vendas antigas (anteriores ao piso 2026-04-01) no boot. Idempotente
   // — nas execucoes seguintes, zero linhas sao removidas.

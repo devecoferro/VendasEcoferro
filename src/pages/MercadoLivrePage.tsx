@@ -113,12 +113,14 @@ interface ContextFilterChip {
   remove?: () => void;
 }
 
+// Apenas os 4 chips que o ML Seller Center mostra — NÃO incluir "Canceladas"
+// que não existe no ML e causava double-counting (pedidos cancelados apareciam
+// tanto em "Canceladas" quanto em "Envios de hoje" se o shipping não atualizava).
 const SHIPMENT_FILTERS: Array<{ key: ShipmentBucket; label: string }> = [
   { key: "today", label: "Envios de hoje" },
   { key: "upcoming", label: "Próximos dias" },
   { key: "in_transit", label: "Em trânsito" },
   { key: "finalized", label: "Finalizadas" },
-  { key: "cancelled", label: "Canceladas" },
 ];
 
 type QuickSalesStatusFilter =
@@ -1299,8 +1301,8 @@ export default function MercadoLivrePage() {
   // Contagens dos chips: ML LIVE como fonte de verdade (pack-deduplicated).
   // Fallback para contagem local se ML API indisponível.
   const shipmentCounts = useMemo(() => {
-    // Contagem local (fallback)
-    const localCounts = SHIPMENT_FILTERS.reduce<Record<ShipmentBucket, number>>(
+    // Contagem local (fallback) — só os 4 buckets do ML Seller Center
+    const localCounts = SHIPMENT_FILTERS.reduce<Record<string, number>>(
       (accumulator, currentFilter) => {
         accumulator[currentFilter.key] = selectedDashboardDeposits.reduce(
           (total, deposit) => total + getDashboardBucketCount(deposit, currentFilter.key),
@@ -1308,8 +1310,8 @@ export default function MercadoLivrePage() {
         );
         return accumulator;
       },
-      { today: 0, upcoming: 0, in_transit: 0, finalized: 0, cancelled: 0 }
-    );
+      { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
+    ) as Record<ShipmentBucket, number>;
 
     // Se temos contagens LIVE do ML (pack-deduplicated), usar DIRETO.
     // Todos os chips vêm do ML — zero cálculo local.
@@ -1320,7 +1322,7 @@ export default function MercadoLivrePage() {
         upcoming: liveCounts.upcoming,
         in_transit: liveCounts.in_transit,
         finalized: liveCounts.finalized,
-        cancelled: liveCounts.cancelled ?? 0,
+        cancelled: 0, // não exibido na UI mas mantém compatibilidade de tipo
       };
     }
 

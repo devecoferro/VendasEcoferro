@@ -9,7 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "node server/index.js",
+    "start": "node --env-file=.env server/index.js",
     "backup:db": "node scripts/backup-db.mjs",
     "backup:runtime": "node scripts/backup-runtime.mjs",
     "backup:restore": "node scripts/restore-runtime-backup.mjs",

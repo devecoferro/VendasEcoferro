@@ -1463,12 +1463,30 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     };
 
-    const [pendingOrders, rtsOrders, shippedOrders, notDeliveredOrders] = await Promise.all([
+    const [pendingRaw, rtsRaw, shippedRaw, notDeliveredRaw] = await Promise.all([
       fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
       fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
       fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
       fetchAllOrdersByShippingStatus(token, sellerId, "not_delivered", 3),
     ]);
+
+    // ── FILTRAR PEDIDOS CANCELADOS ──────────────────────────────────────
+    // Um pedido pode ter order.status=cancelled mas shipping.status ainda
+    // ser ready_to_ship ou shipped (ML nem sempre atualiza o shipping).
+    // Sem esse filtro, o pedido aparece em "Envios de hoje" E "Canceladas"
+    // simultaneamente → double-counting. ML Seller Center NÃO mostra
+    // pedidos cancelados nos chips de shipping.
+    const isCancelled = (o) => o.status === "cancelled";
+    const pendingOrders = pendingRaw.filter((o) => !isCancelled(o));
+    const rtsOrders = rtsRaw.filter((o) => !isCancelled(o));
+    const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
+    const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
+    const cancelledFiltered = {
+      pending: pendingRaw.length - pendingOrders.length,
+      rts: rtsRaw.length - rtsOrders.length,
+      shipped: shippedRaw.length - shippedOrders.length,
+      nd: notDeliveredRaw.length - notDeliveredOrders.length,
+    };
 
     const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
     const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
@@ -1532,35 +1550,44 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
 
     // Shipped → trânsito ou upcoming
+    // ML Seller Center: shipped é "Em trânsito" EXCETO waiting_for_withdrawal
+    // (pacote no ponto de retirada → "Próximos dias").
+    // QUALQUER outro shipped é in_transit se tiver dateShipped e for recente.
+    // Antes, só contávamos substatuses específicos (out_for_delivery, etc.)
+    // e pedidos com substatuses desconhecidos eram silenciosamente descartados
+    // → in_transit ficava menor que no ML.
     const nowMs = Date.now();
     const msPerDay = 86400000;
+    let shippedNoDate = 0, shippedStale = 0;
     for (const [, pack] of shippedPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) continue;
       if (shipment.status !== "shipped") continue;
       const sub = shipment.substatus;
       if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
+        // waiting_for_withdrawal → "Próximos dias"
         addMlOrderIds("upcoming", pack.ml_order_ids);
-      } else if (
-        TRANSIT_SHIPPED_SUBSTATUSES.has(sub) ||
-        sub === "soon_deliver" ||
-        sub === "in_transit"
-      ) {
-        // Sem dateShipped = sem referência temporal → skip (não infla o chip)
-        if (!shipment.dateShipped) continue;
+      } else {
+        // TODOS os outros shipped → in_transit (com filtro de idade)
+        if (!shipment.dateShipped) { shippedNoDate++; continue; }
         const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (Number.isNaN(shippedAt)) continue;
+        if (Number.isNaN(shippedAt)) { shippedNoDate++; continue; }
         const ageDays = (nowMs - shippedAt) / msPerDay;
         if (ageDays <= TRANSIT_MAX_DAYS) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
+        } else {
+          shippedStale++;
         }
       }
     }
 
     // Not delivered com logística ainda ativa → "Em trânsito" (não "Finalizadas")
     // Ex: returning_to_sender, returning_to_hub, delayed, return_failed
+    const ndSubstatusBreakdown = {};
     for (const [, pack] of ndPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
+      const ndSub = shipment?.substatus || "unknown";
+      ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
       if (shipment && NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(shipment.substatus)) {
         addMlOrderIds("in_transit", pack.ml_order_ids);
       }
@@ -1569,6 +1596,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // Finalizadas: not_delivered de hoje (excluindo os que já estão em in_transit)
     // NOTA: NÃO incluir "delivered" aqui — ML "Finalizadas" conta apenas
     // problemas de entrega (not_delivered), não entregas normais do dia.
+    // PACK-DEDUPLICATED: usa deduplicateOrdersToPacks para contar packs, não orders.
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
       const ndR = await fetch(
@@ -1576,28 +1604,15 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
           `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.json()).catch(() => ({ results: [] }));
-      for (const order of (ndR.results || [])) {
-        if (!order?.id) continue;
-        const orderId = String(order.id);
-        // Não duplicar: se já foi classificado como in_transit (returning_to_sender etc.)
-        if (!buckets.in_transit.has(orderId)) {
-          buckets.finalized.add(orderId);
+      // Filtrar cancelados e deduplicar por pack (como ML conta)
+      const ndTodayOrders = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
+      const ndTodayPacks = deduplicateOrdersToPacks(ndTodayOrders);
+      for (const [, pack] of ndTodayPacks) {
+        // Não duplicar: se algum order do pack já está em in_transit
+        const anyInTransit = pack.ml_order_ids.some((id) => buckets.in_transit.has(String(id)));
+        if (!anyInTransit) {
+          addMlOrderIds("finalized", pack.ml_order_ids);
         }
-      }
-    } catch {
-      // deixa vazio se falhar
-    }
-
-    // Canceladas: busca IDs reais (cancelled a partir do piso)
-    try {
-      const cancelFromIso = `${MIN_CANCELLED_DATE_FROM}T00:00:00.000-03:00`;
-      const cUrl =
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-        `&order.status=cancelled&order.date_created.from=${encodeURIComponent(cancelFromIso)}&limit=50`;
-      const cR = await fetch(cUrl, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
-      const results = Array.isArray(cR.results) ? cR.results : [];
-      for (const order of results) {
-        if (order?.id) buckets.cancelled.add(String(order.id));
       }
     } catch {
       // deixa vazio se falhar
@@ -1614,15 +1629,38 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       order_ids_by_bucket: buckets,
     };
 
-    // Diagnóstico: log da classificação para validar contra ML Seller Center
+    // ── Diagnóstico detalhado ─────────────────────────────────────────
+    // Log completo da classificação com breakdown de substatuses para
+    // validar contra ML Seller Center. Mostra cada substatus encontrado
+    // e como foi classificado, permitindo identificar divergências.
+    const rtsSubBreakdown = {};
+    for (const [, pack] of rtsPacks) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      const sub = shipment ? `${shipment.status}/${shipment.substatus}` : "no_shipment";
+      rtsSubBreakdown[sub] = (rtsSubBreakdown[sub] || 0) + 1;
+    }
+    const shippedSubBreakdown = {};
+    for (const [, pack] of shippedPacks) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      const sub = shipment ? `${shipment.status}/${shipment.substatus}` : "no_shipment";
+      shippedSubBreakdown[sub] = (shippedSubBreakdown[sub] || 0) + 1;
+    }
     console.log(
       `[ML Live Chips] seller=${sellerId}` +
-        ` | fetched: pending=${pendingOrders.length} rts=${rtsOrders.length}` +
+        ` | raw_fetched: pending=${pendingRaw.length} rts=${rtsRaw.length}` +
+        ` shipped=${shippedRaw.length} nd=${notDeliveredRaw.length}` +
+        ` | cancelled_filtered: rts=${cancelledFiltered.rts} shipped=${cancelledFiltered.shipped}` +
+        ` pending=${cancelledFiltered.pending} nd=${cancelledFiltered.nd}` +
+        ` | after_filter: pending=${pendingOrders.length} rts=${rtsOrders.length}` +
         ` shipped=${shippedOrders.length} nd=${notDeliveredOrders.length}` +
         ` | packs: pending=${pendingPacks.size} rts=${rtsPacks.size}` +
         ` shipped=${shippedPacks.size} nd=${ndPacks.size}` +
         ` | shipments: ${shipmentMap.size}/${allShippingIds.size}` +
-        ` (rts_no_shipment=${rtsNoShipment} rts_status_mismatch=${rtsStatusMismatch})` +
+        ` (rts_no_shipment=${rtsNoShipment} rts_status_mismatch=${rtsStatusMismatch}` +
+        ` shipped_no_date=${shippedNoDate} shipped_stale=${shippedStale})` +
+        ` | rts_substatus: ${JSON.stringify(rtsSubBreakdown)}` +
+        ` | shipped_substatus: ${JSON.stringify(shippedSubBreakdown)}` +
+        ` | nd_substatus: ${JSON.stringify(ndSubstatusBreakdown)}` +
         ` | RESULT: today=${result.counts.today} upcoming=${result.counts.upcoming}` +
         ` in_transit=${result.counts.in_transit} finalized=${result.counts.finalized}` +
         ` cancelled=${result.counts.cancelled}`

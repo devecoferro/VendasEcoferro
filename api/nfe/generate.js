@@ -1,5 +1,6 @@
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { generateNfe } from "./_lib/mercado-livre-faturador.js";
+import { onNfeEmitted, onNfeFailed } from "../_lib/obsidian-sync.js";
 
 function parseBody(request) {
   if (!request.body) return {};
@@ -24,6 +25,7 @@ export default async function handler(request, response) {
     const body = parseBody(request);
     const orderId = body.order_id || body.orderId;
     const payload = await generateNfe(orderId);
+    onNfeEmitted(orderId, payload?.nfe_number || payload?.chave || "—").catch(() => {});
     return response.status(200).json(payload);
   } catch (error) {
     const statusCode =
@@ -31,6 +33,7 @@ export default async function handler(request, response) {
         ? error.statusCode
         : 500;
 
+    onNfeFailed(orderId, error).catch(() => {});
     return response.status(statusCode).json({
       error: error instanceof Error ? error.message : "Unknown error",
       entity: "nfe_generate",
