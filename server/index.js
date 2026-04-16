@@ -46,6 +46,8 @@ import mlPickingListHandler from "../api/ml/picking-list.js";
 import mlConferenciaHandler from "../api/ml/conferencia.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
+import mlLeadsHandler from "../api/ml/leads.js";
+import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
   onSyncFailed,
@@ -322,6 +324,8 @@ app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(r
 app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
+app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
+app.post("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
 
 // ─── Obsidian API ──────────────────────────────────────────────────
 app.all("/api/obsidian", apiLimiter, (req, res) => obsidianHandler(req, res));
