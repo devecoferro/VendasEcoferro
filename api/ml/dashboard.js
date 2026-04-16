@@ -1310,8 +1310,14 @@ const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
 // 2. Busca TODAS as páginas restantes em paralelo
-async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, maxPages = ML_LIVE_MAX_PAGES) {
-  const baseUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&sort=date_desc&limit=${ML_LIVE_PAGE_LIMIT}`;
+//
+// dateFrom: filtra pedidos criados a partir dessa data (ISO string).
+// O ML Seller Center aplica "Últimos 2 meses" por padrão — sem esse filtro,
+// a API retorna pedidos antigos presos em ready_to_ship/shipped, inflando
+// os chips. Padrão: 60 dias atrás (alinhado com o Seller Center).
+async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, maxPages = ML_LIVE_MAX_PAGES, dateFrom = null) {
+  const effectiveDateFrom = dateFrom || new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const baseUrl = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&shipping.status=${shippingStatus}&sort=date_desc&limit=${ML_LIVE_PAGE_LIMIT}&order.date_created.from=${encodeURIComponent(effectiveDateFrom)}`;
   const headers = { Authorization: `Bearer ${token}` };
 
   // Página 1: obtém dados + total
