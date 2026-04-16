@@ -539,34 +539,43 @@ function validateGenerationReadiness(context, existingRecord, extraChecks = []) 
       passed: context.logistic_type !== "fulfillment",
       value: context.logistic_type || "unknown",
     }),
+    // Checks abaixo são INFORMATIVOS (blocking: false).
+    // O ML Faturador valida tudo na hora de emitir — se tiver problema
+    // real, retorna erro específico. Pré-bloquear aqui impedia NF-e
+    // de pedidos que o ML aceitaria normalmente.
     buildReadinessCheck({
       key: "order_identifier",
       label: "Pedido possui identificador do Mercado Livre",
       passed: Boolean(context.order_id),
+      blocking: false,
       value: context.order_id,
     }),
     buildReadinessCheck({
       key: "paid_order",
       label: "Pedido esta pago/confirmado",
       passed: isPaidOrder,
+      blocking: false,
       value: context.order?.order_status || "unknown",
     }),
     buildReadinessCheck({
       key: "shipment_linked",
       label: "Pedido possui envio vinculado",
       passed: Boolean(context.shipment_id),
+      blocking: false,
       value: context.shipment_id,
     }),
     buildReadinessCheck({
       key: "shipment_ready_to_ship",
       label: "Envio esta em ready_to_ship",
       passed: shipmentReady,
+      blocking: false,
       value: context.shipment_status || "unknown",
     }),
     buildReadinessCheck({
       key: "shipment_invoice_pending",
       label: "Mercado Livre sinalizou invoice_pending",
       passed: invoicePending,
+      blocking: false,
       value: context.shipment_substatus || "none",
       detail:
         "Sem esse substatus, o Faturador ainda pode nao aceitar a solicitacao imediatamente.",
@@ -575,24 +584,28 @@ function validateGenerationReadiness(context, existingRecord, extraChecks = []) 
       key: "billing_info_available",
       label: "Dados fiscais do comprador foram carregados",
       passed: hasBillingInfo,
+      blocking: false,
       value: context.billing_info_status || "missing",
     }),
     buildReadinessCheck({
       key: "buyer_identification",
       label: "Comprador possui documento fiscal",
       passed: hasBuyerIdentification,
+      blocking: false,
       value: buyerBilling.identification.type || null,
     }),
     buildReadinessCheck({
       key: "buyer_address",
       label: "Comprador possui endereco fiscal minimo",
       passed: hasBuyerAddress,
+      blocking: false,
       value: buyerBilling.address.zip_code || null,
     }),
     buildReadinessCheck({
       key: "order_items",
       label: "Pedido possui itens identificaveis",
       passed: hasAnyItem && hasItemIdentity && hasPositiveQuantity,
+      blocking: false,
       value: String(items.length),
     }),
     ...extraChecks,
