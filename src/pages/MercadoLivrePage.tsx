@@ -2030,40 +2030,44 @@ export default function MercadoLivrePage() {
           <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
             <div className="flex items-center gap-2.5">
               {(() => {
-                const hasReady = readyOrders.length > 0;
-                const allReadySelected =
-                  hasReady &&
-                  readyOrders.every((o) => selectedOrderIds.has(o.id));
-                const someReadySelected =
-                  !allReadySelected &&
-                  readyOrders.some((o) => selectedOrderIds.has(o.id));
+                // Selecionar TODOS os pedidos visíveis (readyOrders + invoicePending).
+                // Assim o "Gerar NF-e" fica ativo quando há pedidos que precisam de NF-e,
+                // e o "Imprimir etiqueta" fica ativo com os que já estão prontos.
+                const allVisible = filteredOperationalOrders;
+                const hasOrders = allVisible.length > 0;
+                const allSelected =
+                  hasOrders &&
+                  allVisible.every((o) => selectedOrderIds.has(o.id));
+                const someSelected =
+                  !allSelected &&
+                  allVisible.some((o) => selectedOrderIds.has(o.id));
                 return (
                   <button
                     type="button"
-                    disabled={!hasReady}
+                    disabled={!hasOrders}
                     onClick={() => {
-                      if (!hasReady) return;
+                      if (!hasOrders) return;
                       setSelectedOrderIds((current) => {
                         const next = new Set(current);
-                        if (allReadySelected) {
-                          for (const o of readyOrders) next.delete(o.id);
+                        if (allSelected) {
+                          for (const o of allVisible) next.delete(o.id);
                         } else {
-                          for (const o of readyOrders) next.add(o.id);
+                          for (const o of allVisible) next.add(o.id);
                         }
                         return next;
                       });
                     }}
                     title={
-                      !hasReady
-                        ? "Nenhuma etiqueta disponível neste bucket"
-                        : allReadySelected
-                          ? "Desmarcar todos elegíveis"
-                          : `Selecionar todas ${readyOrders.length} etiquetas elegíveis`
+                      !hasOrders
+                        ? "Nenhum pedido neste bucket"
+                        : allSelected
+                          ? "Desmarcar todos"
+                          : `Selecionar todos ${allVisible.length} pedidos`
                     }
                     className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition ${
-                      !hasReady
+                      !hasOrders
                         ? "cursor-not-allowed border border-[#e5e5e5] bg-[#f5f5f5] text-transparent"
-                        : allReadySelected || someReadySelected
+                        : allSelected || someSelected
                           ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
                           : "border border-[#c8d3e0] bg-white text-transparent hover:border-[#3483fa]"
                     }`}
@@ -2076,11 +2080,14 @@ export default function MercadoLivrePage() {
                 <span className="font-semibold">
                   Etiquetas disponíveis para impressão
                 </span>
-                {readyOrders.length > 0 ? (
+                {filteredOperationalOrders.length > 0 ? (
                   <span className="ml-1.5 text-[13px] text-[#666666]">
-                    {selectedReadyCount > 0
-                      ? `(${selectedReadyCount}/${readyOrders.length} selecionadas)`
-                      : `(${readyOrders.length})`}
+                    ({filteredOperationalOrders.filter((o) => selectedOrderIds.has(o.id)).length}/{filteredOperationalOrders.length} selecionadas)
+                    {selectedInvoicePendingCount > 0 && (
+                      <span className="ml-1 text-[#ff6d1b] font-semibold">
+                        · {selectedInvoicePendingCount} NF-e pendente{selectedInvoicePendingCount > 1 ? "s" : ""}
+                      </span>
+                    )}
                   </span>
                 ) : (
                   <span className="ml-1.5 text-[13px] text-[#999999]">
