@@ -129,30 +129,40 @@ async function syncLeadsToWebsite(token, sellerId) {
   }
 
   // 2. Buscar leads existentes no Supabase para dedup
-  const { data: existingLeads } = await supabase
+  const { data: existingLeads, error: fetchErr } = await supabase
     .from("leads")
     .select("metadata")
-    .eq("source", "other")
     .order("created_at", { ascending: false })
     .limit(500);
 
   const existingQuestionIds = new Set();
   for (const lead of existingLeads || []) {
     const qid = lead.metadata?.ml_question_id;
-    if (qid) existingQuestionIds.add(String(qid));
+    if (qid != null && qid !== "") existingQuestionIds.add(String(qid));
   }
+
+  log.info(`Dedup: ${existingQuestionIds.size} question IDs ja existem no Supabase`);
 
   // 3. Inserir novos leads
   let inserted = 0;
   let skipped = 0;
   const errors = [];
+  const seenIds = new Set();
 
   for (const question of allQuestions) {
-    // Dedup por question_id
-    if (existingQuestionIds.has(String(question.id))) {
+    const qid = question.id;
+
+    // Dedup: pular se id invalido, ja existe no DB, ou ja processado neste batch
+    if (qid == null) {
       skipped++;
       continue;
     }
+    const qidStr = String(qid);
+    if (existingQuestionIds.has(qidStr) || seenIds.has(qidStr)) {
+      skipped++;
+      continue;
+    }
+    seenIds.add(qidStr);
 
     // Buscar info do comprador e do item (em paralelo)
     const [buyerInfo, itemTitle] = await Promise.all([
@@ -164,15 +174,20 @@ async function syncLeadsToWebsite(token, sellerId) {
 
     const { error } = await supabase.from("leads").insert(lead);
     if (error) {
-      errors.push({ question_id: question.id, error: error.message });
+      errors.push({ question_id: qid, error: error.message });
+      log.error(`Insert lead falhou (q=${qid}): ${error.message}`);
     } else {
       inserted++;
-      existingQuestionIds.add(String(question.id));
+      existingQuestionIds.add(qidStr);
     }
   }
 
   return {
     success: true,
+    supabase_existing: existingLeads?.length || 0,
+    supabase_fetch_error: fetchErr?.message || null,
+    dedup_ids_count: existingQuestionIds.size - inserted,
+    sample_question_id: allQuestions[0]?.id ?? "NO_ID",
     ml_unanswered: unanswered.total,
     ml_answered: answered.total,
     fetched: allQuestions.length,
