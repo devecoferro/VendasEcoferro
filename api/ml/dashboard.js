@@ -1270,22 +1270,21 @@ const ML_LIVE_MAX_PAGES = 15;
 const liveChipDetailedCache = new Map();
 const ML_LIVE_DETAILED_CACHE_TTL_MS = 50 * 1000;
 
-// Substatuses que o ML Seller Center classifica como "Envios de hoje".
-// Substatuses que o ML Seller Center classifica como "Envios de hoje":
-// Pedidos que AINDA estão aguardando processamento/coleta no armazém.
-// NOTA: "picked_up" e "authorized_by_carrier" NÃO entram aqui —
-// significam que o transportador JÁ coletou, então o ML Seller Center
-// os remove de "Envios de hoje" (ficam em transição entre ready_to_ship e shipped).
-// "in_packing_list" é UPCOMING (próximos dias), não hoje.
-const TODAY_SUBSTATUSES = new Set([
-  "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
-]);
-// Substatuses em transição: ML Seller Center NÃO conta em nenhum chip.
-// Ficam invisíveis — estão entre "ready_to_ship" e "shipped" no fluxo logístico.
-// - picked_up/authorized_by_carrier: transportador já coletou
-// - in_packing_list/in_hub: cross-docking — pacote em processamento no hub
-const TRANSITION_SUBSTATUSES = new Set([
+// ── Classificação de ready_to_ship por substatus ──
+// ML Seller Center: a MAIORIA dos ready_to_ship aparece em "Envios de hoje".
+// Apenas substatuses específicos vão para "Próximos dias" ou são excluídos.
+//
+// EXCLUÍDOS (transição): picked_up, authorized_by_carrier
+//   → Transportador já coletou — entre ready_to_ship e shipped, invisíveis.
+// UPCOMING: in_packing_list, in_hub
+//   → Agendado para futuro ou em processamento no hub — "Próximos dias".
+// DEFAULT (tudo o resto): "Envios de hoje"
+//   → ready_for_pickup, in_warehouse, ready_to_pack, packed,
+//     invoice_pending, unknown/none, etc.
+const RTS_EXCLUDED_SUBSTATUSES = new Set([
   "picked_up", "authorized_by_carrier",
+]);
+const RTS_UPCOMING_SUBSTATUSES = new Set([
   "in_packing_list", "in_hub",
 ]);
 const TRANSIT_SHIPPED_SUBSTATUSES = new Set([
@@ -1297,9 +1296,9 @@ const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
   "waiting_for_withdrawal",
 ]);
 // Dias máximos desde o envio para considerar "Em trânsito".
-// ML Seller Center só mostra shipped recentes — orders muito antigos
-// com substatus ativo são tratados como pendências, não trânsito.
-const TRANSIT_MAX_DAYS = 2;
+// ML Seller Center mostra shipped com tracking ativo. Pedidos muito antigos
+// (>7 dias) com substatus ativo são provavelmente stale (sem scan da entrega).
+const TRANSIT_MAX_DAYS = 7;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
@@ -1463,21 +1462,26 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     };
 
-    const [pendingOrders, rtsOrders, shippedOrders] = await Promise.all([
+    const [pendingOrders, rtsOrders, shippedOrders, notDeliveredOrders] = await Promise.all([
       fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
       fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
       fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
+      fetchAllOrdersByShippingStatus(token, sellerId, "not_delivered", 3),
     ]);
 
     const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
     const rtsPacks = deduplicateOrdersToPacks(rtsOrders);
     const shippedPacks = deduplicateOrdersToPacks(shippedOrders);
+    const ndPacks = deduplicateOrdersToPacks(notDeliveredOrders);
 
     const allShippingIds = new Set();
     for (const [, pack] of rtsPacks) {
       if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
     }
     for (const [, pack] of shippedPacks) {
+      if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
+    }
+    for (const [, pack] of ndPacks) {
       if (pack.shipping_id) allShippingIds.add(pack.shipping_id);
     }
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
@@ -1487,25 +1491,40 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       addMlOrderIds("upcoming", pack.ml_order_ids);
     }
 
-    // Ready to ship → hoje/upcoming dependendo do substatus
+    // Ready to ship → classificação por substatus.
+    // ML Seller Center: a MAIORIA dos ready_to_ship é "Envios de hoje".
+    // Apenas substatuses específicos vão para "Próximos dias" ou são excluídos.
+    let rtsNoShipment = 0, rtsStatusMismatch = 0;
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+        // Sem detalhe do shipment (API falhou/rate-limit) — default "hoje"
+        // porque a maioria dos ready_to_ship SÃO "Envios de hoje".
+        rtsNoShipment++;
+        addMlOrderIds("today", pack.ml_order_ids);
         continue;
       }
-      if (shipment.status !== "ready_to_ship") continue;
-      const sub = shipment.substatus;
-      if (TODAY_SUBSTATUSES.has(sub)) {
+      if (shipment.status !== "ready_to_ship") {
+        // Status mudou entre search e detail (ex: já virou "shipped").
+        // Default "hoje" — será reclassificado no próximo refresh.
+        rtsStatusMismatch++;
         addMlOrderIds("today", pack.ml_order_ids);
-      } else if (TRANSITION_SUBSTATUSES.has(sub)) {
-        // nao conta em nenhum chip
-      } else {
+        continue;
+      }
+      const sub = shipment.substatus;
+      if (RTS_EXCLUDED_SUBSTATUSES.has(sub)) {
+        // picked_up/authorized_by_carrier: transição → excluído de todos os chips
+      } else if (RTS_UPCOMING_SUBSTATUSES.has(sub)) {
+        // in_packing_list/in_hub: agendado/hub → "Próximos dias"
         addMlOrderIds("upcoming", pack.ml_order_ids);
+      } else {
+        // Tudo o resto → "Envios de hoje" (ready_for_pickup, in_warehouse,
+        // ready_to_pack, packed, invoice_pending, none, etc.)
+        addMlOrderIds("today", pack.ml_order_ids);
       }
     }
 
-    // Shipped → trânsito (janela de 2 dias) ou upcoming
+    // Shipped → trânsito ou upcoming
     const nowMs = Date.now();
     const msPerDay = 86400000;
     for (const [, pack] of shippedPacks) {
@@ -1520,9 +1539,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         sub === "soon_deliver" ||
         sub === "in_transit"
       ) {
-        if (!shipment.dateShipped) continue;
+        // Se não tem dateShipped, ainda conta como in_transit (substatus ativo)
+        if (!shipment.dateShipped) {
+          addMlOrderIds("in_transit", pack.ml_order_ids);
+          continue;
+        }
         const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (Number.isNaN(shippedAt)) continue;
+        if (Number.isNaN(shippedAt)) {
+          addMlOrderIds("in_transit", pack.ml_order_ids);
+          continue;
+        }
         const ageDays = (nowMs - shippedAt) / msPerDay;
         if (ageDays <= TRANSIT_MAX_DAYS) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
@@ -1530,16 +1556,39 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     }
 
-    // Finalizadas: busca IDs reais (not_delivered de hoje)
+    // Not delivered com logística ainda ativa → "Em trânsito" (não "Finalizadas")
+    // Ex: returning_to_sender, returning_to_hub, delayed, return_failed
+    for (const [, pack] of ndPacks) {
+      const shipment = shipmentMap.get(String(pack.shipping_id));
+      if (shipment && NOT_DELIVERED_IN_TRANSIT_SUBSTATUSES.has(shipment.substatus)) {
+        addMlOrderIds("in_transit", pack.ml_order_ids);
+      }
+    }
+
+    // Finalizadas: not_delivered + delivered de hoje
+    // (exclui os que já foram para in_transit acima)
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
-      const ndUrl =
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-        `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`;
-      const ndR = await fetch(ndUrl, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
-      const results = Array.isArray(ndR.results) ? ndR.results : [];
-      for (const order of results) {
-        if (order?.id) buckets.finalized.add(String(order.id));
+      const authHeaders = { Authorization: `Bearer ${token}` };
+      const [ndR, dlR] = await Promise.all([
+        fetch(
+          `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+            `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`,
+          { headers: authHeaders }
+        ).then((r) => r.json()).catch(() => ({ results: [] })),
+        fetch(
+          `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+            `&shipping.status=delivered&order.date_last_updated.from=${todayISO}&limit=50`,
+          { headers: authHeaders }
+        ).then((r) => r.json()).catch(() => ({ results: [] })),
+      ]);
+      for (const order of [...(ndR.results || []), ...(dlR.results || [])]) {
+        if (!order?.id) continue;
+        const orderId = String(order.id);
+        // Não duplicar: se já foi classificado como in_transit, não vai pra finalized
+        if (!buckets.in_transit.has(orderId)) {
+          buckets.finalized.add(orderId);
+        }
       }
     } catch {
       // deixa vazio se falhar
@@ -1570,6 +1619,21 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       },
       order_ids_by_bucket: buckets,
     };
+
+    // Diagnóstico: log da classificação para validar contra ML Seller Center
+    console.log(
+      `[ML Live Chips] seller=${sellerId}` +
+        ` | fetched: pending=${pendingOrders.length} rts=${rtsOrders.length}` +
+        ` shipped=${shippedOrders.length} nd=${notDeliveredOrders.length}` +
+        ` | packs: pending=${pendingPacks.size} rts=${rtsPacks.size}` +
+        ` shipped=${shippedPacks.size} nd=${ndPacks.size}` +
+        ` | shipments: ${shipmentMap.size}/${allShippingIds.size}` +
+        ` (rts_no_shipment=${rtsNoShipment} rts_status_mismatch=${rtsStatusMismatch})` +
+        ` | RESULT: today=${result.counts.today} upcoming=${result.counts.upcoming}` +
+        ` in_transit=${result.counts.in_transit} finalized=${result.counts.finalized}` +
+        ` cancelled=${result.counts.cancelled}`
+    );
+
     liveChipDetailedCache.set(cacheKey, {
       data: result,
       expiresAt: Date.now() + ML_LIVE_DETAILED_CACHE_TTL_MS,
