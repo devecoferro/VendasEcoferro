@@ -142,68 +142,98 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
 }
 
 /**
- * Impressao automatica: carrega o PDF num iframe invisivel e dispara
- * window.print() automaticamente. O dialogo de impressao do SO aparece
- * com a impressora padrao pre-selecionada — o operador so precisa dar
- * Enter (ou o Chrome imprime direto se estiver em modo kiosk).
+ * Impressao automatica via popup window.
+ *
+ * Abre o PDF numa janela popup e dispara window.print() automaticamente
+ * assim que o PDF renderiza. O Chrome mostra o dialogo de impressao com
+ * a impressora padrao pre-selecionada.
+ *
+ * Para impressao 100% SILENCIOSA (sem dialogo nenhum), inicie o Chrome
+ * com a flag --kiosk-printing:
+ *   chrome.exe --kiosk-printing
+ * Nesse modo, window.print() envia direto para a impressora padrao.
+ *
+ * Por que popup e nao iframe:
+ * O Chrome renderiza PDFs via plugin sandboxed (Chromium PDF Viewer).
+ * Num iframe invisivel, o plugin nao carrega corretamente e print()
+ * falha silenciosamente. Numa janela popup o PDF viewer funciona normal
+ * e print() dispara de forma confiavel.
  *
  * Fluxo:
- * 1. Cria iframe invisivel (0×0, fora da tela)
- * 2. Carrega o blob URL do PDF
- * 3. Quando o iframe carrega, chama focus() + print()
- * 4. Limpa o iframe e revoga a URL apos 120s
- *
- * Fallback: se o iframe falhar (popup blocker, PDF viewer ausente),
- * abre numa aba nova como o openPdfBlobForPrint faz.
+ * 1. Abre popup pequena (200x200) com o blob URL do PDF
+ * 2. Tenta print() a cada 500ms ate o PDF estar pronto (max 8s)
+ * 3. Apos o print, fecha a popup automaticamente
+ * 4. Se popup for bloqueada, abre em aba nova com fallback
  */
-export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): void {
+export function autoPrintPdfBlob(blob: Blob, _filename = "etiquetas-ml.pdf"): void {
   const url = URL.createObjectURL(blob);
 
-  const iframe = document.createElement("iframe");
-  iframe.style.position = "fixed";
-  iframe.style.top = "-9999px";
-  iframe.style.left = "-9999px";
-  iframe.style.width = "1px";
-  iframe.style.height = "1px";
-  iframe.style.border = "0";
-  iframe.style.opacity = "0";
+  // Popup pequena — so precisa existir para o PDF viewer carregar.
+  // Em --kiosk-printing, a janela fecha sozinha apos imprimir.
+  const popup = window.open(
+    url,
+    "_blank",
+    "width=200,height=200,left=0,top=0,menubar=no,toolbar=no,location=no,status=no"
+  );
 
+  if (!popup) {
+    // Popup bloqueada — fallback: abre numa aba normal e tenta print.
+    const tab = window.open(url, "_blank");
+    if (tab) {
+      setTimeout(() => {
+        try { tab.focus(); tab.print(); } catch { /* ignore */ }
+      }, 1500);
+    } else {
+      // Ultimo fallback: download manual.
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = _filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return;
+  }
+
+  // Tenta disparar print() assim que o PDF estiver renderizado.
+  // O Chrome PDF viewer nao tem evento confiavel de "pronto",
+  // entao tentamos a cada 500ms ate funcionar (max 8s).
+  let attempts = 0;
+  const maxAttempts = 16; // 16 × 500ms = 8s
   let printed = false;
 
-  const cleanup = () => {
-    setTimeout(() => {
-      try { document.body.removeChild(iframe); } catch { /* already removed */ }
-      URL.revokeObjectURL(url);
-    }, 120_000);
-  };
-
-  const triggerPrint = () => {
+  const tryPrint = () => {
     if (printed) return;
-    printed = true;
+    attempts++;
+
     try {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
+      // Verifica se a popup ainda existe e tem conteudo.
+      if (popup.closed) {
+        printed = true;
+        return;
+      }
+      popup.focus();
+      popup.print();
+      printed = true;
+
+      // Fecha a popup apos um delay (tempo pro dialogo de impressao ou
+      // para o --kiosk-printing enviar o job). Em kiosk mode, print()
+      // retorna imediatamente apos enviar — 3s e' seguro.
+      setTimeout(() => {
+        try { if (!popup.closed) popup.close(); } catch { /* ignore */ }
+      }, 3000);
     } catch {
-      // Fallback: se o iframe nao suporta print (cross-origin/bloqueio),
-      // abre numa aba nova e tenta imprimir la.
-      const win = window.open(url, "_blank");
-      if (win) {
-        setTimeout(() => { try { win.print(); } catch { /* ignore */ } }, 1200);
+      // PDF ainda nao renderizou ou cross-origin — tenta de novo.
+      if (attempts < maxAttempts) {
+        setTimeout(tryPrint, 500);
       }
     }
-    cleanup();
   };
 
-  iframe.onload = () => {
-    // Pequeno delay para garantir que o PDF viewer do browser renderizou.
-    setTimeout(triggerPrint, 800);
-  };
+  // Primeiro tentativa apos 1s (tempo minimo pro PDF viewer abrir).
+  setTimeout(tryPrint, 1000);
 
-  // Safety: se onload nao disparar em 5s (raro), tenta forcar.
-  setTimeout(() => {
-    if (!printed) triggerPrint();
-  }, 5000);
-
-  document.body.appendChild(iframe);
-  iframe.src = url;
+  // Cleanup da URL apos 2 minutos.
+  setTimeout(() => URL.revokeObjectURL(url), 120_000);
 }
