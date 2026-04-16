@@ -1242,9 +1242,23 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
 
 // ─── Contagens LIVE dos chips (pack-deduplicated) ─────────────────────────
 // Busca TODOS os pedidos ativos da API ML, agrupa por pack (como o ML faz),
-// e classifica em buckets usando substatus do DB local.
-// Retorna { today, upcoming, in_transit, finalized } — os 4 números exatos
-// que o ML Seller Center mostra nos chips.
+// e classifica em buckets usando substatus real do ML (/shipments/{id}).
+// Retorna { today, upcoming, in_transit, finalized, cancelled } — os números
+// exatos que o ML Seller Center mostra nos chips.
+//
+// ⚠️  ATENÇÃO — DOIS ESPAÇOS DE IDs COEXISTEM NESTE MÓDULO:
+//
+//   1. DB row id  (ml_orders.id)    — PK do banco, usado pelo frontend (order.id)
+//                                     e pelos deposits (deposit.order_ids_by_bucket).
+//
+//   2. ML order id (ml_orders.order_id) — ID externo da API ML (orders/search).
+//                                     Usado nas funções abaixo (deduplicateOrdersToPacks,
+//                                     fetchMLLiveChipBucketsDetailed) porque elas operam
+//                                     com dados crus da ML API, onde order.id = ML order id.
+//
+// buildDashboardPayload traduz ML order ids → DB row ids (via mlOrderIdToDbId)
+// antes de expor ml_live_chip_order_ids_by_bucket no payload. Se você adicionar
+// novos campos com IDs, SEMPRE verifique qual espaço está usando.
 
 const ML_LIVE_PAGE_LIMIT = 50;
 const ML_LIVE_MAX_PAGES = 15;
@@ -1328,25 +1342,31 @@ async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, m
 
 // Agrupa orders por pack (como ML conta nos chips).
 // Chave: pack_id > shipping_id > order_id
+//
+// ⚠️  ESPAÇO DE IDs: os orders vêm da ML API (orders/search). Logo,
+// `order.id` aqui é o **ML order ID externo** (ex: "2000006549182345"),
+// NÃO o DB row id (ml_orders.id). O array `pack.ml_order_ids` armazena
+// ML order IDs. Se precisar cruzar com dados locais, use o mapa
+// mlOrderIdToDbId construído em buildDashboardPayload.
 function deduplicateOrdersToPacks(orders) {
   const packs = new Map();
   for (const order of orders) {
     const packId = order.pack_id ? String(order.pack_id) : null;
     const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
-    const orderId = String(order.id);
-    const key = packId || shippingId || orderId;
+    const mlOrderId = String(order.id); // ML API order.id = ML order ID externo
+    const key = packId || shippingId || mlOrderId;
 
     if (!packs.has(key)) {
       packs.set(key, {
         key,
         shipping_id: shippingId,
         shipping_status: "",
-        order_ids: [],
+        ml_order_ids: [], // ⚠️ ML order IDs, NÃO DB row ids
         date_created: order.date_created,
       });
     }
     const pack = packs.get(key);
-    pack.order_ids.push(orderId);
+    pack.ml_order_ids.push(mlOrderId);
     // Usa o primeiro shipping_id encontrado para o pack
     if (!pack.shipping_id && shippingId) pack.shipping_id = shippingId;
   }
@@ -1433,9 +1453,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       cancelled: new Set(),
     };
 
-    const addOrderIds = (bucket, orderIds) => {
-      if (!Array.isArray(orderIds)) return;
-      for (const id of orderIds) {
+    // ⚠️ IDs armazenados nos buckets são ML order IDs (API externa),
+    // NÃO DB row ids. buildDashboardPayload traduz via mlOrderIdToDbId
+    // antes de expor ao frontend.
+    const addMlOrderIds = (bucket, mlOrderIds) => {
+      if (!Array.isArray(mlOrderIds)) return;
+      for (const id of mlOrderIds) {
         if (id != null) buckets[bucket].add(String(id));
       }
     };
@@ -1461,24 +1484,24 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
 
     // Pending → upcoming
     for (const [, pack] of pendingPacks) {
-      addOrderIds("upcoming", pack.order_ids);
+      addMlOrderIds("upcoming", pack.ml_order_ids);
     }
 
     // Ready to ship → hoje/upcoming dependendo do substatus
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        addOrderIds("upcoming", pack.order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
       if (shipment.status !== "ready_to_ship") continue;
       const sub = shipment.substatus;
       if (TODAY_SUBSTATUSES.has(sub)) {
-        addOrderIds("today", pack.order_ids);
+        addMlOrderIds("today", pack.ml_order_ids);
       } else if (TRANSITION_SUBSTATUSES.has(sub)) {
         // nao conta em nenhum chip
       } else {
-        addOrderIds("upcoming", pack.order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
       }
     }
 
@@ -1491,7 +1514,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (shipment.status !== "shipped") continue;
       const sub = shipment.substatus;
       if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
-        addOrderIds("upcoming", pack.order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
       } else if (
         TRANSIT_SHIPPED_SUBSTATUSES.has(sub) ||
         sub === "soon_deliver" ||
@@ -1502,7 +1525,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         if (Number.isNaN(shippedAt)) continue;
         const ageDays = (nowMs - shippedAt) / msPerDay;
         if (ageDays <= TRANSIT_MAX_DAYS) {
-          addOrderIds("in_transit", pack.order_ids);
+          addMlOrderIds("in_transit", pack.ml_order_ids);
         }
       }
     }
@@ -1692,7 +1715,8 @@ export async function buildDashboardPayload(options = {}) {
         const packDedupeKey = packId ? `${bucket}:${packId}` : null;
         const isPackAlreadyCounted = packDedupeKey && countedPacks.has(packDedupeKey);
 
-        // Always track order IDs (for grid display)
+        // Always track order IDs (for grid display).
+        // ⚠️ order.id aqui é DB row id (fetchStoredOrders), NÃO ML order id.
         deposit.order_ids_by_bucket[bucket].push(order.id);
         deposit.native_order_ids_by_bucket[bucket].push(order.id);
 
