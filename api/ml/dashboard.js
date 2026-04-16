@@ -557,9 +557,16 @@ function classifyCrossDockingOrder(order, todayKey) {
     return null;
   }
 
-  // "in_transit" como status direto = definitivamente em trânsito
+  // "in_transit" como status direto — MAS com filtro de idade.
+  // O ML Seller Center NÃO busca in_transit como shipping.status separado.
+  // Pedidos com in_transit no DB local são normalmente shipped que o ML já
+  // entregou. Sem filtro, inflava de 11 (ML real) para 90 (app).
+  // Mesmo tratamento que shipped: só conta se recente (≤ 2 dias do envio).
   if (status === "in_transit") {
-    return "in_transit";
+    const transitAge = dates.shippedDateKey
+      ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+      : 999;
+    return transitAge <= 2 ? "in_transit" : null;
   }
 
   // not_delivered: SEMPRE finalized. No ML Seller Center, pedidos com entrega
@@ -635,8 +642,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return null;
   }
 
+  // Fulfillment in_transit: mesma lógica de idade do cross_docking
   if (status === "in_transit") {
-    return "in_transit";
+    const transitAge = dates.shippedDateKey
+      ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+      : 999;
+    return transitAge <= 2 ? "in_transit" : null;
   }
 
   // not_delivered: SEMPRE finalized (pós-venda, não trânsito)
