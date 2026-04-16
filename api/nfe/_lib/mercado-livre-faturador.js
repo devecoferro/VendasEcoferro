@@ -660,11 +660,14 @@ async function fetchSkuFiscalInformationCheck(sku, accessToken) {
     normalizeNullable(payload?.message) ||
     normalizeNullable(payload?.error_code) ||
     `Falha ${response.status}`;
+  // SKU não cadastrado no faturador: apenas aviso, NÃO bloqueia.
+  // O ML vai validar na hora de emitir — se tiver problema, retorna
+  // erro específico. Bloquear aqui impedia NF-e de pedidos válidos.
   return buildReadinessCheck({
     key: `sku_fiscal_information:${normalizedSku}`,
     label: `SKU ${normalizedSku} cadastrado no faturador do Mercado Livre`,
     passed: false,
-    blocking: response.status === 404,
+    blocking: false,
     value: normalizedSku,
     detail,
   });
