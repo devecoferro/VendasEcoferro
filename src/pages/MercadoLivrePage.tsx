@@ -996,42 +996,59 @@ export default function MercadoLivrePage() {
         return;
       }
       setBulkPrintingMl(true);
-      const labelSources: MergeSource[] = [];
-      let missingDocs = 0;
       try {
-        // Coleta etiqueta ML + DANFe separadas quando possivel (1 pagina de
-        // cada, evita a "Identificacao Produto" e outras paginas intermediarias
-        // que aparecem no PDF unificado do ML). Fallback: 2 primeiras paginas
-        // da etiqueta unificada.
-        for (const order of ordersToPrint) {
-          try {
-            const docs = await getMLOrderDocuments(order.order_id);
+        // ── Busca documentos em PARALELO (controlado) ──────────────────
+        // Antes era sequencial (1 por 1) — com 96 pedidos levava minutos.
+        // Agora busca 10 em paralelo, reduzindo tempo drasticamente.
+        const CONCURRENCY = 10;
+        const docResults: { order: MLOrder; shippingUrl: string | null; danfeUrl: string | null }[] = [];
+        let missingDocs = 0;
 
-            const shippingUrl =
-              docs?.shipping_label_external?.print_url ||
-              docs?.shipping_label_external?.download_url ||
-              docs?.shipping_label_external?.view_url ||
-              null;
-
-            const danfeUrl =
-              docs?.invoice_nfe_document?.danfe_print_url ||
-              docs?.invoice_nfe_document?.danfe_download_url ||
-              docs?.invoice_nfe_document?.danfe_view_url ||
-              null;
-
-            if (shippingUrl && danfeUrl) {
-              // Ideal: 1 pagina de cada fonte separada.
-              labelSources.push({ url: shippingUrl, maxPages: 1 });
-              labelSources.push({ url: danfeUrl, maxPages: 1 });
-            } else if (shippingUrl) {
-              // Fallback: etiqueta unificada (ate 2 paginas).
-              labelSources.push({ url: shippingUrl, maxPages: 2 });
-            } else if (danfeUrl) {
-              labelSources.push({ url: danfeUrl, maxPages: 1 });
+        for (let i = 0; i < ordersToPrint.length; i += CONCURRENCY) {
+          const batch = ordersToPrint.slice(i, i + CONCURRENCY);
+          const batchResults = await Promise.allSettled(
+            batch.map(async (order) => {
+              const docs = await getMLOrderDocuments(order.order_id);
+              return {
+                order,
+                shippingUrl:
+                  docs?.shipping_label_external?.print_url ||
+                  docs?.shipping_label_external?.download_url ||
+                  docs?.shipping_label_external?.view_url ||
+                  null,
+                danfeUrl:
+                  docs?.invoice_nfe_document?.danfe_print_url ||
+                  docs?.invoice_nfe_document?.danfe_download_url ||
+                  docs?.invoice_nfe_document?.danfe_view_url ||
+                  null,
+              };
+            })
+          );
+          for (const r of batchResults) {
+            if (r.status === "fulfilled") {
+              docResults.push(r.value);
             } else {
               missingDocs += 1;
             }
-          } catch {
+          }
+        }
+
+        // ── Monta sources para merge ────────────────────────────────────
+        // Etiqueta ML e por PACK (envio), nao por pedido.
+        // Pedidos no mesmo pack compartilham a mesma etiqueta de envio.
+        // A deduplicacao por URL (em normalizeSources) evita imprimir
+        // a mesma etiqueta duas vezes — por isso o total de paginas pode
+        // ser menor que o numero de pedidos selecionados.
+        const labelSources: MergeSource[] = [];
+        for (const { shippingUrl, danfeUrl } of docResults) {
+          if (shippingUrl && danfeUrl) {
+            labelSources.push({ url: shippingUrl, maxPages: 1 });
+            labelSources.push({ url: danfeUrl, maxPages: 1 });
+          } else if (shippingUrl) {
+            labelSources.push({ url: shippingUrl, maxPages: 2 });
+          } else if (danfeUrl) {
+            labelSources.push({ url: danfeUrl, maxPages: 1 });
+          } else {
             missingDocs += 1;
           }
         }
@@ -1041,8 +1058,6 @@ export default function MercadoLivrePage() {
           return;
         }
 
-        // Baixa cada PDF, respeita o limite por fonte (1 pagina quando etiqueta
-        // e DANFe vem em URLs separadas; 2 paginas no fallback unificado).
         const result = await mergeLabelPdfs(labelSources);
 
         if (result.includedSources === 0) {
@@ -1055,9 +1070,15 @@ export default function MercadoLivrePage() {
           `etiquetas-ml-${new Date().toISOString().slice(0, 10)}.pdf`
         );
 
-        const ordersPrinted = ordersToPrint.length - missingDocs;
+        // Mensagem com contagem real de paginas (packs desduplicados)
+        // para o operador entender por que o total difere dos pedidos.
+        const totalPages = result.includedSources;
+        const totalOrders = ordersToPrint.length;
+        const pagesInfo = totalPages < totalOrders
+          ? ` (${totalPages} pags — pedidos no mesmo pack compartilham etiqueta)`
+          : ` (${totalPages} pags)`;
         toast.success(
-          `${ordersPrinted} pedido(s) com etiqueta + DANFe unidos em um unico arquivo.`
+          `${totalOrders} pedido(s) processado(s)${pagesInfo}`
         );
 
         if (result.errors.length > 0) {

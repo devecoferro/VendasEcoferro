@@ -127,9 +127,11 @@ export async function mergeLabelPdfs(
 
 export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): void {
   const url = URL.createObjectURL(blob);
-  const win = window.open(url, "_blank", "noopener,noreferrer");
+  // Abre em aba nova (sem features extras — "noopener,noreferrer" causava
+  // abertura dupla em alguns navegadores com plugin de PDF externo).
+  const win = window.open(url, "_blank");
   if (!win) {
-    // Popup bloqueado — cai pro download manual.
+    // Aba bloqueada (popup blocker) — cai pro download manual.
     const link = document.createElement("a");
     link.href = url;
     link.download = filename;
