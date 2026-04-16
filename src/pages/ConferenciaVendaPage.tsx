@@ -211,14 +211,13 @@ export default function ConferenciaVendaPage() {
         return;
       }
 
-      // Auto-print: dispara o dialogo de impressao automaticamente.
-      // O operador so precisa confirmar (Enter) — a impressora padrao
-      // ja vem pre-selecionada. Muito mais rapido que abrir aba nova.
-      autoPrintPdfBlob(
+      // Auto-print: tenta enviar ao Print Agent local (impressao silenciosa).
+      // Se o agente nao estiver rodando, cai pro popup + window.print().
+      await autoPrintPdfBlob(
         merged.mergedPdf,
         `conferencia-${order.sale_number || order.order_id}.pdf`
       );
-      toast.success("Impressao automatica disparada — confirme na impressora.");
+      toast.success("Etiqueta + NFe enviada para impressão.");
     } catch (printError) {
       toast.error(
         printError instanceof Error

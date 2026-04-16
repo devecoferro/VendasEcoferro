@@ -17,6 +17,7 @@
     "capture:private-seller-center:all-tabs": "node scripts/capture-private-seller-center-snapshots.mjs --all-tabs --stores all,unknown,79856028,full",
     "healthcheck:ping": "node scripts/healthcheck-ping.mjs",
     "migrate:supabase": "node scripts/migrate-supabase-to-local.mjs",
+    "print-agent": "node scripts/print-agent.mjs",
     "security:audit": "node scripts/security-audit.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

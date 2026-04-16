@@ -141,6 +141,44 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+// ─── Print Agent (impressao silenciosa local) ─────────────────────────
+// O Print Agent e' um servico Node.js que roda na maquina do operador
+// (scripts/print-agent.mjs). Ele recebe o PDF via HTTP e imprime direto
+// na impressora padrao sem mostrar dialogo nenhum.
+const PRINT_AGENT_URL = "http://localhost:9120";
+let printAgentAvailable: boolean | null = null; // null = nao testado ainda
+
+async function checkPrintAgent(): Promise<boolean> {
+  if (printAgentAvailable !== null) return printAgentAvailable;
+  try {
+    const r = await fetch(`${PRINT_AGENT_URL}/status`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    const data = await r.json();
+    printAgentAvailable = data?.ok === true;
+  } catch {
+    printAgentAvailable = false;
+  }
+  // Re-checa a cada 30s (caso o agente seja ligado/desligado)
+  setTimeout(() => { printAgentAvailable = null; }, 30_000);
+  return printAgentAvailable;
+}
+
+async function sendToPrintAgent(blob: Blob): Promise<boolean> {
+  try {
+    const r = await fetch(`${PRINT_AGENT_URL}/print`, {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: blob,
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await r.json();
+    return data?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Impressao automatica via popup window.
  *
@@ -165,7 +203,19 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
  * 3. Apos o print, fecha a popup automaticamente
  * 4. Se popup for bloqueada, abre em aba nova com fallback
  */
-export function autoPrintPdfBlob(blob: Blob, _filename = "etiquetas-ml.pdf"): void {
+export async function autoPrintPdfBlob(blob: Blob, _filename = "etiquetas-ml.pdf"): Promise<void> {
+  // ── Tentativa 1: Print Agent local (impressao 100% silenciosa) ──
+  // Se o agente estiver rodando (scripts/print-agent.mjs), envia o PDF
+  // direto e ele imprime sem nenhum dialogo. Ideal para operacao em
+  // warehouse com leitor de QR code.
+  const agentAvailable = await checkPrintAgent();
+  if (agentAvailable) {
+    const sent = await sendToPrintAgent(blob);
+    if (sent) return; // Impresso silenciosamente — nada mais a fazer.
+    // Se falhou, cai pro popup abaixo.
+  }
+
+  // ── Tentativa 2: Popup + window.print() (fallback com dialogo) ──
   const url = URL.createObjectURL(blob);
 
   // Popup pequena — so precisa existir para o PDF viewer carregar.
