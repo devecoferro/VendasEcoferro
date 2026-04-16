@@ -997,15 +997,18 @@ export default function MercadoLivrePage() {
       }
       setBulkPrintingMl(true);
       try {
-        // ── Busca documentos em PARALELO (controlado) ──────────────────
-        // Antes era sequencial (1 por 1) — com 96 pedidos levava minutos.
-        // Agora busca 10 em paralelo, reduzindo tempo drasticamente.
-        const CONCURRENCY = 10;
+        // ── Busca documentos com concorrencia BAIXA ─────────────────────
+        // Cada chamada getMLOrderDocuments faz ate 7 requests a API ML
+        // (etiqueta + NF-e + downloads de binarios). Com muitas concorrentes,
+        // o ML faz rate limiting e rejeita tudo.
+        // Concorrencia 3 + delay entre batches = seguro para 100+ pedidos.
+        const DOC_CONCURRENCY = 3;
+        const BATCH_DELAY_MS = 300; // pequeno delay entre batches pra nao saturar
         const docResults: { order: MLOrder; shippingUrl: string | null; danfeUrl: string | null }[] = [];
-        let missingDocs = 0;
+        let docFetchFailed = 0;
 
-        for (let i = 0; i < ordersToPrint.length; i += CONCURRENCY) {
-          const batch = ordersToPrint.slice(i, i + CONCURRENCY);
+        for (let i = 0; i < ordersToPrint.length; i += DOC_CONCURRENCY) {
+          const batch = ordersToPrint.slice(i, i + DOC_CONCURRENCY);
           const batchResults = await Promise.allSettled(
             batch.map(async (order) => {
               const docs = await getMLOrderDocuments(order.order_id);
@@ -1028,28 +1031,40 @@ export default function MercadoLivrePage() {
             if (r.status === "fulfilled") {
               docResults.push(r.value);
             } else {
-              missingDocs += 1;
+              docFetchFailed += 1;
             }
+          }
+          // Delay entre batches para nao saturar ML API
+          if (i + DOC_CONCURRENCY < ordersToPrint.length) {
+            await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
           }
         }
 
         // ── Monta sources para merge ────────────────────────────────────
         // Etiqueta ML e por PACK (envio), nao por pedido.
-        // Pedidos no mesmo pack compartilham a mesma etiqueta de envio.
+        // Pedidos no mesmo pack compartilham a mesma URL de etiqueta.
         // A deduplicacao por URL (em normalizeSources) evita imprimir
-        // a mesma etiqueta duas vezes — por isso o total de paginas pode
-        // ser menor que o numero de pedidos selecionados.
+        // a mesma etiqueta duas vezes.
+        // DANFe (NF-e) e geralmente por pedido — cada um tem URL propria.
         const labelSources: MergeSource[] = [];
+        let withEtiqueta = 0;
+        let withDanfe = 0;
+        let withoutDocs = 0;
         for (const { shippingUrl, danfeUrl } of docResults) {
           if (shippingUrl && danfeUrl) {
             labelSources.push({ url: shippingUrl, maxPages: 1 });
             labelSources.push({ url: danfeUrl, maxPages: 1 });
+            withEtiqueta++;
+            withDanfe++;
           } else if (shippingUrl) {
+            // Sem DANFe — pega ate 2 paginas do PDF ML (etiqueta + DANFe combinada)
             labelSources.push({ url: shippingUrl, maxPages: 2 });
+            withEtiqueta++;
           } else if (danfeUrl) {
             labelSources.push({ url: danfeUrl, maxPages: 1 });
+            withDanfe++;
           } else {
-            missingDocs += 1;
+            withoutDocs += 1;
           }
         }
 
@@ -1073,25 +1088,26 @@ export default function MercadoLivrePage() {
           `etiquetas-ml-${new Date().toISOString().slice(0, 10)}.pdf`
         );
 
-        // Mensagem com contagem real de paginas (packs desduplicados)
-        // para o operador entender por que o total difere dos pedidos.
-        const totalPages = result.includedSources;
+        // Mensagem detalhada para o operador entender a composicao do PDF
         const totalOrders = ordersToPrint.length;
-        const pagesInfo = totalPages < totalOrders
-          ? ` (${totalPages} pags — pedidos no mesmo pack compartilham etiqueta)`
-          : ` (${totalPages} pags)`;
+        const pageCount = result.includedSources;
         toast.success(
-          `${totalOrders} pedido(s) processado(s)${pagesInfo}`
+          `${totalOrders} pedido(s): ${withEtiqueta} etiqueta(s) + ${withDanfe} DANFe(s) → ${pageCount} pagina(s) no PDF`
         );
 
         if (result.errors.length > 0) {
           toast.warning(
-            `${result.errors.length} PDF(s) nao foram processados (problemas de rede ou formato).`
+            `${result.errors.length} PDF(s) nao foram baixados (rede ou formato).`
           );
         }
-        if (missingDocs > 0) {
+        if (docFetchFailed > 0) {
           toast.warning(
-            `${missingDocs} pedido(s) sem etiqueta/DANFe disponivel.`
+            `${docFetchFailed} pedido(s) falharam ao buscar documentos no ML.`
+          );
+        }
+        if (withoutDocs > 0) {
+          toast.warning(
+            `${withoutDocs} pedido(s) sem etiqueta e sem DANFe no ML.`
           );
         }
       } catch (error) {
