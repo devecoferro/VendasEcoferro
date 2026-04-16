@@ -1757,21 +1757,20 @@ export async function buildDashboardPayload(options = {}) {
   // Regras de freshness (baseadas no ciclo de vida típico do ML):
   //   - "paid"/"pending"/"confirmed": stale depois de 14 dias
   //   - "ready_to_ship": stale depois de 30 dias
-  //   - "shipped"/"in_transit": stale depois de 45 dias
-  //   - "delivered"/"cancelled"/"not_delivered"/"returned": sem limite (status final)
-  // Thresholds para detectar dados stale. Para shipped/in_transit, usa
-  // date_shipped (data real de envio), não sale_date. Entrega ML = 2-5 dias.
-  // Com active refresh (5 min), dados ficam frescos rapidamente.
-  // Thresholds mais agressivos para eliminar pedidos fantasma.
+  // Thresholds para detectar dados stale no dashboard. Usa data de referência
+  // contextual: date_shipped para shipped/in_transit, date_cancelled para cancelled.
+  // Entrega ML = 2-3 dias. Thresholds agressivos para eliminar pedidos fantasma
+  // que ficam presos em status transitórios no DB local.
   const STALE_THRESHOLDS_DAYS = {
     paid: 7,
     pending: 7,
     confirmed: 7,
     handling: 7,
     ready_to_ship: 21,
-    shipped: 5,
-    in_transit: 5,
-    not_delivered: 10,
+    shipped: 3,       // ML entrega em 2-3 dias; 3d elimina fantasmas "shipped" já entregues
+    in_transit: 2,    // Alinhado com ML live chips (age ≤ 2d para shipped_in_transit_substatuses)
+    not_delivered: 5,  // Reduzido de 10 para alinhar com ML Seller Center
+    cancelled: 3,     // Cancelamentos recentes apenas — ML não mostra cancelados nos chips
   };
   const orders = allOrders.filter((order) => {
     const saleDate = order.sale_date ? new Date(order.sale_date) : null;
@@ -1784,16 +1783,24 @@ export async function buildDashboardPayload(options = {}) {
     );
     const thresholdDays = STALE_THRESHOLDS_DAYS[shipmentStatus];
 
-    // Status finais (delivered, cancelled, etc.) ou desconhecidos: sem filtro de freshness
+    // Status finais sem threshold (delivered, returned, etc.) ou desconhecidos: sem filtro
     if (thresholdDays == null) return true;
 
-    // Para shipped/in_transit: usar data de envio (não data de venda)
+    // Data de referência: depende do status para ser mais preciso
     let referenceDate = saleDate;
     if (shipmentStatus === "shipped" || shipmentStatus === "in_transit") {
+      // Usa data de envio (não data de venda) — mais preciso para detectar stale
       const statusHistory = snapshot.status_history || {};
       const shippedDate = statusHistory.date_shipped ? new Date(statusHistory.date_shipped) : null;
       if (shippedDate && !isNaN(shippedDate.getTime())) {
         referenceDate = shippedDate;
+      }
+    } else if (shipmentStatus === "cancelled") {
+      // Usa data de cancelamento — só mostra cancelamentos recentes
+      const statusHistory = snapshot.status_history || {};
+      const cancelledDate = statusHistory.date_cancelled ? new Date(statusHistory.date_cancelled) : null;
+      if (cancelledDate && !isNaN(cancelledDate.getTime())) {
+        referenceDate = cancelledDate;
       }
     }
 

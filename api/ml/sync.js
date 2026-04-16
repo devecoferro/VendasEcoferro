@@ -747,11 +747,13 @@ const ACTIVE_REFRESH_SHIPPING_STATUSES = [
   { status: "pending", maxPages: 50 },
   { status: "ready_to_ship", maxPages: 50 },
   { status: "shipped", maxPages: 10 },
+  { status: "not_delivered", maxPages: 5 },
 ];
 // Pedidos recém-entregues/cancelados: atualiza no DB local para limpar
 // dados stale (ex: pedido que era shipped/out_for_delivery mas agora
 // é delivered — sem esse sync, fica preso como "Em trânsito").
 const ACTIVE_REFRESH_RECENT_DELIVERED_DAYS = 3;
+const ACTIVE_REFRESH_RECENT_CANCELLED_DAYS = 3;
 
 export async function runActiveOrdersRefresh({ connectionId }) {
   let totalRefreshed = 0;
@@ -792,6 +794,27 @@ export async function runActiveOrdersRefresh({ connectionId }) {
     totalRefreshed += result.synced || 0;
   } catch (err) {
     console.error("[active-refresh] Failed for recent delivered:", err.message);
+  }
+
+  // 3. Sync recently-cancelled orders to clear stale data.
+  // Pedidos cancelados precisam ser atualizados no DB local para que
+  // não fiquem presos em ready_to_ship/shipped fantasma.
+  try {
+    const recentCancelDate = new Date();
+    recentCancelDate.setDate(recentCancelDate.getDate() - ACTIVE_REFRESH_RECENT_CANCELLED_DAYS);
+    const cancelledFrom = recentCancelDate.toISOString();
+
+    const result = await runMercadoLivreSync({
+      connectionId,
+      statusFilter: "cancelled",
+      updatedFrom: cancelledFrom,
+      pageLimit: 5,
+      skipMirrorSync: true,
+      skipLastSyncUpdate: true,
+    });
+    totalRefreshed += result.synced || 0;
+  } catch (err) {
+    console.error("[active-refresh] Failed for recent cancelled:", err.message);
   }
 
   invalidateDashboardCache();
