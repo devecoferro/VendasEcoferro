@@ -290,10 +290,15 @@ const DASHBOARD_ACTIVE_STATUSES = [
   "shipped", "in_transit", "not_delivered", "returned", "cancelled",
 ];
 
-function fetchStoredOrders(limit = null) {
+function fetchStoredOrders(connectionId = null, limit = null) {
   // Query otimizada: filtra no SQL para carregar apenas pedidos relevantes.
   // Antes: carregava 10k+ rows (incluindo 9k delivered). Agora: ~400 rows.
+  // Filtra por connection_id para não misturar pedidos de contas ML diferentes.
   const placeholders = DASHBOARD_ACTIVE_STATUSES.map(() => "?").join(", ");
+  const connectionFilter = connectionId ? "AND connection_id = ?" : "";
+  const params = [...DASHBOARD_ACTIVE_STATUSES];
+  if (connectionId) params.push(String(connectionId));
+
   const rows = db.prepare(`
     WITH filtered AS (
       SELECT *,
@@ -304,11 +309,12 @@ function fetchStoredOrders(limit = null) {
       FROM ml_orders
       WHERE lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) != 'delivered'
+        ${connectionFilter}
     )
     SELECT * FROM filtered WHERE rn = 1
     ORDER BY COALESCE(sale_date, '') DESC, order_id DESC
     ${limit != null ? `LIMIT ${Math.max(0, Number(limit) || 0)}` : ""}
-  `).all(...DASHBOARD_ACTIVE_STATUSES);
+  `).all(...params);
 
   const mappedOrders = rows.map((row) => {
     let rawData = {};
@@ -1758,7 +1764,7 @@ export async function buildDashboardPayload(options = {}) {
 
   const today = new Date();
   const todayKey = getCalendarKey(today);
-  const allOrders = fetchStoredOrders();
+  const allOrders = fetchStoredOrders(baseConnection.id);
 
   // Filtro de freshness: remove pedidos com status operacional provavelmente
   // desatualizado ("stale"). Quando o sync não re-busca pedidos antigos,
