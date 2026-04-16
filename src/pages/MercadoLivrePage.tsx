@@ -2028,8 +2028,9 @@ export default function MercadoLivrePage() {
           <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
             <div className="flex items-center gap-2.5">
               {(() => {
+                const hasReady = readyOrders.length > 0;
                 const allReadySelected =
-                  readyOrders.length > 0 &&
+                  hasReady &&
                   readyOrders.every((o) => selectedOrderIds.has(o.id));
                 const someReadySelected =
                   !allReadySelected &&
@@ -2037,7 +2038,9 @@ export default function MercadoLivrePage() {
                 return (
                   <button
                     type="button"
+                    disabled={!hasReady}
                     onClick={() => {
+                      if (!hasReady) return;
                       setSelectedOrderIds((current) => {
                         const next = new Set(current);
                         if (allReadySelected) {
@@ -2049,14 +2052,18 @@ export default function MercadoLivrePage() {
                       });
                     }}
                     title={
-                      allReadySelected
-                        ? "Desmarcar todos elegíveis"
-                        : "Selecionar todos elegíveis"
+                      !hasReady
+                        ? "Nenhuma etiqueta disponível neste bucket"
+                        : allReadySelected
+                          ? "Desmarcar todos elegíveis"
+                          : `Selecionar todas ${readyOrders.length} etiquetas elegíveis`
                     }
                     className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition ${
-                      allReadySelected || someReadySelected
-                        ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
-                        : "border border-[#c8d3e0] bg-white text-transparent hover:border-[#3483fa]"
+                      !hasReady
+                        ? "cursor-not-allowed border border-[#e5e5e5] bg-[#f5f5f5] text-transparent"
+                        : allReadySelected || someReadySelected
+                          ? "bg-[#3483fa] text-white hover:bg-[#2968c8]"
+                          : "border border-[#c8d3e0] bg-white text-transparent hover:border-[#3483fa]"
                     }`}
                   >
                     <Check className="h-3.5 w-3.5" />
@@ -2065,9 +2072,19 @@ export default function MercadoLivrePage() {
               })()}
               <div className="min-w-0 text-[13px] text-[#333333]">
                 <span className="font-semibold">
-                  Etiquetas Disponível para impressão
-                  {selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
+                  Etiquetas disponíveis para impressão
                 </span>
+                {readyOrders.length > 0 ? (
+                  <span className="ml-1.5 text-[13px] text-[#666666]">
+                    {selectedReadyCount > 0
+                      ? `(${selectedReadyCount}/${readyOrders.length} selecionadas)`
+                      : `(${readyOrders.length})`}
+                  </span>
+                ) : (
+                  <span className="ml-1.5 text-[13px] text-[#999999]">
+                    (0 neste bucket)
+                  </span>
+                )}
               </div>
             </div>
 
