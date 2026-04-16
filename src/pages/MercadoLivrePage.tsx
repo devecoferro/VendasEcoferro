@@ -44,9 +44,14 @@ import {
   SlidersHorizontal,
   Tag,
   Printer,
+  ClipboardList,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  buildSeparationReport,
+  exportSeparationPdf,
+} from "@/services/separationReportService";
 import {
   generateMLNFe,
   getMLNFeDocument,
@@ -792,6 +797,7 @@ export default function MercadoLivrePage() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
   const [bulkGeneratingNFe, setBulkGeneratingNFe] = useState(false);
+  const [generatingSeparation, setGeneratingSeparation] = useState(false);
   // Estados per-order para os botoes "Gerar NF-e" e "Etiqueta ML + DANFe"
   // no card — evitam o spinner global dos botoes em lote e deixam claro
   // qual pedido especifico esta sendo processado.
@@ -1120,6 +1126,42 @@ export default function MercadoLivrePage() {
         );
       } finally {
         setBulkPrintingMl(false);
+      }
+    },
+    []
+  );
+
+  // Gera relatorio de separacao (picking list) agrupado por SKU.
+  // O operador usa para ir ao estoque e separar os produtos dos pedidos
+  // selecionados — cada produto aparece uma unica vez com a quantidade total.
+  const handleGenerateSeparationReport = useCallback(
+    async (ordersForReport: MLOrder[]) => {
+      if (ordersForReport.length === 0) {
+        toast.info("Selecione pelo menos um pedido.");
+        return;
+      }
+      setGeneratingSeparation(true);
+      try {
+        const items = buildSeparationReport(ordersForReport);
+        if (items.length === 0) {
+          toast.warning("Nenhum produto encontrado nos pedidos selecionados.");
+          return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        await exportSeparationPdf(items, {
+          date: today,
+          totalOrders: ordersForReport.length,
+        });
+        const totalQty = items.reduce((s, i) => s + i.totalQuantity, 0);
+        toast.success(
+          `Relatorio de separacao: ${items.length} produto(s), ${totalQty} unidade(s) de ${ordersForReport.length} pedido(s).`
+        );
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Falha ao gerar relatorio de separacao."
+        );
+      } finally {
+        setGeneratingSeparation(false);
       }
     },
     []
@@ -2200,6 +2242,21 @@ export default function MercadoLivrePage() {
                   {isOperationalListFullyLoaded
                     ? `Etiquetas Ecoferro${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`
                     : `Carregando base completa${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`}
+                </span>
+              </Button>
+              <Button
+                className="h-10 w-full rounded-lg bg-[#3483fa] px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_3px_rgba(52,131,250,0.28)] transition hover:bg-[#2968c8] hover:shadow-[0_2px_6px_rgba(52,131,250,0.4)] disabled:opacity-60 disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
+                disabled={selectedReadyCount === 0 || generatingSeparation}
+                onClick={() => handleGenerateSeparationReport(selectedReadyOrders)}
+                title="Gerar relatorio de separacao agrupado por produto/SKU para o estoque"
+              >
+                {generatingSeparation ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <ClipboardList className="mr-1.5 h-4 w-4" />
+                )}
+                <span className="truncate">
+                  Separacao{selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
                 </span>
               </Button>
             </div>
