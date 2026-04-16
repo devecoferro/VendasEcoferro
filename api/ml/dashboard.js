@@ -1296,9 +1296,10 @@ const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
   "waiting_for_withdrawal",
 ]);
 // Dias máximos desde o envio para considerar "Em trânsito".
-// ML Seller Center mostra shipped com tracking ativo. Pedidos muito antigos
-// (>7 dias) com substatus ativo são provavelmente stale (sem scan da entrega).
-const TRANSIT_MAX_DAYS = 7;
+// ML Seller Center mostra shipped recentes com tracking ativo.
+// 3 dias = janela que cobre o ciclo normal de entrega ML (2-5 dias úteis).
+// Shipped mais antigos com substatus ativo são provavelmente stale.
+const TRANSIT_MAX_DAYS = 3;
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
@@ -1494,21 +1495,27 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // Ready to ship → classificação por substatus.
     // ML Seller Center: a MAIORIA dos ready_to_ship é "Envios de hoje".
     // Apenas substatuses específicos vão para "Próximos dias" ou são excluídos.
+    //
+    // IMPORTANTE — tratamento de edge cases:
+    // - Sem shipment detail (API falhou): "upcoming" (conservador — sem dados, não adivinha)
+    // - Status mudou (ex: ready_to_ship → shipped): SKIP — o loop de shipped já cuida.
+    //   Se colocar em "today" aqui, o MESMO pack aparece em "today" E em "in_transit"
+    //   porque os fetches paralelos capturam o pack nos dois estados.
     let rtsNoShipment = 0, rtsStatusMismatch = 0;
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
-        // Sem detalhe do shipment (API falhou/rate-limit) — default "hoje"
-        // porque a maioria dos ready_to_ship SÃO "Envios de hoje".
+        // Sem detalhe do shipment (API falhou/rate-limit) — conservador: upcoming.
+        // Não assume "hoje" sem dados — evita inflar o chip.
         rtsNoShipment++;
-        addMlOrderIds("today", pack.ml_order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
       if (shipment.status !== "ready_to_ship") {
-        // Status mudou entre search e detail (ex: já virou "shipped").
-        // Default "hoje" — será reclassificado no próximo refresh.
+        // Status mudou entre o search e o /shipments/{id} (ex: já virou "shipped").
+        // NÃO classificar aqui — o loop correspondente (shipped/pending) cuida.
+        // Se colocar em "today", causa double-counting com o loop de shipped.
         rtsStatusMismatch++;
-        addMlOrderIds("today", pack.ml_order_ids);
         continue;
       }
       const sub = shipment.substatus;
@@ -1539,16 +1546,10 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         sub === "soon_deliver" ||
         sub === "in_transit"
       ) {
-        // Se não tem dateShipped, ainda conta como in_transit (substatus ativo)
-        if (!shipment.dateShipped) {
-          addMlOrderIds("in_transit", pack.ml_order_ids);
-          continue;
-        }
+        // Sem dateShipped = sem referência temporal → skip (não infla o chip)
+        if (!shipment.dateShipped) continue;
         const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (Number.isNaN(shippedAt)) {
-          addMlOrderIds("in_transit", pack.ml_order_ids);
-          continue;
-        }
+        if (Number.isNaN(shippedAt)) continue;
         const ageDays = (nowMs - shippedAt) / msPerDay;
         if (ageDays <= TRANSIT_MAX_DAYS) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
@@ -1565,27 +1566,20 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     }
 
-    // Finalizadas: not_delivered + delivered de hoje
-    // (exclui os que já foram para in_transit acima)
+    // Finalizadas: not_delivered de hoje (excluindo os que já estão em in_transit)
+    // NOTA: NÃO incluir "delivered" aqui — ML "Finalizadas" conta apenas
+    // problemas de entrega (not_delivered), não entregas normais do dia.
     try {
       const todayISO = todayKey + "T00:00:00.000-03:00";
-      const authHeaders = { Authorization: `Bearer ${token}` };
-      const [ndR, dlR] = await Promise.all([
-        fetch(
-          `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-            `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`,
-          { headers: authHeaders }
-        ).then((r) => r.json()).catch(() => ({ results: [] })),
-        fetch(
-          `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-            `&shipping.status=delivered&order.date_last_updated.from=${todayISO}&limit=50`,
-          { headers: authHeaders }
-        ).then((r) => r.json()).catch(() => ({ results: [] })),
-      ]);
-      for (const order of [...(ndR.results || []), ...(dlR.results || [])]) {
+      const ndR = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+          `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      ).then((r) => r.json()).catch(() => ({ results: [] }));
+      for (const order of (ndR.results || [])) {
         if (!order?.id) continue;
         const orderId = String(order.id);
-        // Não duplicar: se já foi classificado como in_transit, não vai pra finalized
+        // Não duplicar: se já foi classificado como in_transit (returning_to_sender etc.)
         if (!buckets.in_transit.has(orderId)) {
           buckets.finalized.add(orderId);
         }
