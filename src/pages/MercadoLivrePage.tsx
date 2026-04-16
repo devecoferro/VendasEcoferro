@@ -1061,7 +1061,10 @@ export default function MercadoLivrePage() {
         const result = await mergeLabelPdfs(labelSources);
 
         if (result.includedSources === 0) {
-          toast.error("Falha ao ler os PDFs das etiquetas.");
+          const firstError = result.errors[0]?.reason || "erro desconhecido";
+          toast.error(
+            `Falha ao ler os PDFs das etiquetas (${result.errors.length} erro(s): ${firstError}).`
+          );
           return;
         }
 

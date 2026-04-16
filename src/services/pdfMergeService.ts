@@ -73,33 +73,41 @@ function normalizeSources(
  */
 export async function mergeLabelPdfs(
   sources: string[] | MergeSource[],
-  options: { maxPagesPerSource?: number } = {}
+  options: { maxPagesPerSource?: number; concurrency?: number } = {}
 ): Promise<MergeLabelsResult> {
   const fallbackMaxPages = options.maxPagesPerSource ?? DEFAULT_MAX_PAGES_PER_SOURCE;
+  const concurrency = options.concurrency ?? 5;
   const normalized = normalizeSources(sources, fallbackMaxPages);
   const merged = await PDFDocument.create();
   const errors: MergeSourceError[] = [];
   let includedSources = 0;
   let skippedPages = 0;
 
-  const fetches = await Promise.allSettled(
-    normalized.map(async (source) => ({
-      source,
-      fetched: await fetchPdf(source.url),
-    }))
-  );
-
-  for (const result of fetches) {
-    if (result.status === "rejected") {
-      errors.push({
-        url: "desconhecido",
-        reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
-      continue;
+  // Baixa PDFs em lotes controlados (default: 5 simultâneos).
+  // Antes baixava TODOS de uma vez (48+ simultâneos) — os servidores do ML
+  // faziam rate limiting e rejeitavam tudo, causando "Falha ao ler PDFs".
+  const fetchedResults: { source: MergeSource; url: string; bytes: ArrayBuffer }[] = [];
+  for (let i = 0; i < normalized.length; i += concurrency) {
+    const batch = normalized.slice(i, i + concurrency);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (source) => {
+        const fetched = await fetchPdf(source.url);
+        return { source, url: fetched.url, bytes: fetched.bytes };
+      })
+    );
+    for (const result of batchResults) {
+      if (result.status === "fulfilled") {
+        fetchedResults.push(result.value);
+      } else {
+        errors.push({
+          url: batch[batchResults.indexOf(result)]?.url || "desconhecido",
+          reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      }
     }
+  }
 
-    const { source, fetched } = result.value;
-    const { url, bytes } = fetched;
+  for (const { source, url, bytes } of fetchedResults) {
     try {
       const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
       const pageCount = src.getPageCount();
