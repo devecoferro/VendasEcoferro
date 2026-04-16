@@ -94,6 +94,7 @@ import {
   isOrderForCollection,
   isOrderInvoicePending,
   isOrderReadyToPrintLabel,
+  isOrderReadyForInvoiceLabel,
   canPrintMLShippingLabel,
   isOrderFulfillment,
   isOrderUnderReview,
@@ -1520,7 +1521,6 @@ export default function MercadoLivrePage() {
   const selectedReadyCount = selectedReadyOrders.length;
   // Pedidos que realmente tem etiqueta ML disponivel (exclui fulfillment).
   // Usado exclusivamente pelo botao "Imprimir etiqueta ML + DANFe".
-  // "Etiquetas Ecoferro" continua usando selectedReadyOrders (funciona para todos).
   const selectedMlPrintableOrders = useMemo(
     () => selectedReadyOrders.filter(canPrintMLShippingLabel),
     [selectedReadyOrders]
@@ -1531,6 +1531,18 @@ export default function MercadoLivrePage() {
     [invoicePendingOrders, selectedOrderIds]
   );
   const selectedInvoicePendingCount = selectedInvoicePendingOrders.length;
+  // Pedidos elegiveis para etiqueta interna Ecoferro — inclui TODOS com
+  // pagamento aprovado + ready_to_ship (ready + invoice_pending).
+  // Etiqueta Ecoferro e interna, NAO depende de NF-e ter sido emitida.
+  const ecoferroEligibleOrders = useMemo(
+    () => filteredOperationalOrders.filter(isOrderReadyForInvoiceLabel),
+    [filteredOperationalOrders]
+  );
+  const selectedEcoferroOrders = useMemo(
+    () => ecoferroEligibleOrders.filter((order) => selectedOrderIds.has(order.id)),
+    [ecoferroEligibleOrders, selectedOrderIds]
+  );
+  const selectedEcoferroCount = selectedEcoferroOrders.length;
 
   const isOperationalListIncomplete =
     ordersPagination.loading_more ||
@@ -1551,7 +1563,7 @@ export default function MercadoLivrePage() {
     isOperationalListIncomplete &&
     !hasClientSideOperationalFilters;
   const canGenerateBatchLabels =
-    selectedReadyCount > 0 && isOperationalListFullyLoaded;
+    selectedEcoferroCount > 0 && isOperationalListFullyLoaded;
 
   const hasOperationalSummaryWithoutVisibleOrders = useMemo(
     () =>
@@ -2235,19 +2247,19 @@ export default function MercadoLivrePage() {
               <Button
                 className="h-10 w-full rounded-lg bg-[#22c55e] px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_3px_rgba(34,197,94,0.28)] transition hover:bg-[#16a34a] hover:shadow-[0_2px_6px_rgba(34,197,94,0.4)] disabled:opacity-60 disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
                 disabled={!canGenerateBatchLabels}
-                onClick={() => handleGenerateLabels(selectedReadyOrders)}
+                onClick={() => handleGenerateLabels(selectedEcoferroOrders)}
               >
                 <Tag className="mr-1.5 h-4 w-4" />
                 <span className="truncate">
                   {isOperationalListFullyLoaded
-                    ? `Etiquetas Ecoferro${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`
-                    : `Carregando base completa${selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}`}
+                    ? `Etiquetas Ecoferro${selectedEcoferroCount > 0 ? ` (${selectedEcoferroCount})` : ""}`
+                    : `Carregando base completa${selectedEcoferroCount > 0 ? ` (${selectedEcoferroCount})` : ""}`}
                 </span>
               </Button>
               <Button
                 className="h-10 w-full rounded-lg bg-[#3483fa] px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_3px_rgba(52,131,250,0.28)] transition hover:bg-[#2968c8] hover:shadow-[0_2px_6px_rgba(52,131,250,0.4)] disabled:opacity-60 disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
-                disabled={selectedReadyCount === 0 || generatingSeparation}
-                onClick={() => handleGenerateSeparationReport(selectedReadyOrders)}
+                disabled={selectedEcoferroCount === 0 || generatingSeparation}
+                onClick={() => handleGenerateSeparationReport(selectedEcoferroOrders)}
                 title="Gerar relatorio de separacao agrupado por produto/SKU para o estoque"
               >
                 {generatingSeparation ? (
