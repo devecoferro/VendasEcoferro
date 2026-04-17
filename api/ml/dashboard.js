@@ -495,24 +495,23 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // Substatuses operacionais → "Envios de hoje" (alinhado com ML Seller Center).
-    // ML coloca em "hoje" todos os substatuses que indicam ação imediata do vendedor:
-    // in_packing_list, ready_for_pickup, ready_to_pack, ready_to_print,
-    // in_warehouse, packed (sem checar SLA — ML já considerou).
+    // ML Seller Center: "Envios de hoje" = pedidos prontos para envio HOJE.
+    // Substatuses que SEMPRE vão pra "Envios de hoje":
     if (
-      substatus === "in_packing_list" ||
       substatus === "ready_for_pickup" ||
-      substatus === "ready_to_pack" ||
-      substatus === "ready_to_print" ||
-      substatus === "in_warehouse" ||
-      substatus === "packed"
+      substatus === "packed" ||
+      substatus === "ready_to_pack"
     ) {
       return "today";
     }
 
-    // in_hub: pacote está no hub do transportador aguardando processamento.
-    // ML Seller Center mantém em "Próximos dias".
-    if (substatus === "in_hub") {
+    // Substatuses que SEMPRE vão pra "Próximos dias" (aguardando ação):
+    if (
+      substatus === "in_hub" ||
+      substatus === "in_warehouse" ||
+      substatus === "in_packing_list" ||
+      substatus === "ready_to_print"
+    ) {
       return "upcoming";
     }
 
@@ -1640,18 +1639,22 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // (classificação LOCAL que bate com ML Seller Center) mas usando dados
     // da API ML em vez do DB local.
     //
-    // Regras (alinhadas com ML Seller Center — substatus-based):
-    // O ML Seller Center classifica por SUBSTATUS do envio:
-    //   - in_packing_list, ready_for_pickup, ready_to_pack,
-    //     ready_to_print, in_warehouse, packed → "Envios de hoje"
-    //   - in_hub → "Próximos dias"
-    //   - invoice_pending → "Próximos dias"
-    //   - picked_up, authorized_by_carrier → excluído (transição)
-    //   - outros → SLA date decide, fallback "today"
-    //
-    // APP interno (substatus-based) = 86 hoje ≈ Seller Center 89
-    // ML Live (SLA-first) = 33 hoje ≠ Seller Center 89
-    // Conclusão: Seller Center usa substatus, não SLA.
+    // Regras alinhadas com ML Seller Center (data-based + substatus):
+    // ML usa DATA SLA para decidir hoje vs próximos dias:
+    //   - SLA (estimated_delivery_limit) ≤ HOJE → "Envios de hoje"
+    //   - SLA > HOJE → "Próximos dias"
+    // Exceções por substatus que SEMPRE vão pra "Próximos dias":
+    //   - in_hub (no hub do transportador)
+    //   - invoice_pending (aguardando NF-e)
+    //   - ready_to_print (aguardando impressão)
+    //   - in_warehouse (no armazém)
+    //   - in_packing_list (na lista de separação)
+    // Exceções por substatus que SEMPRE vão pra "Envios de hoje":
+    //   - ready_for_pickup (pronto para coleta HOJE)
+    //   - packed (empacotado para envio)
+    //   - ready_to_pack (pronto para empacotar)
+    // Excluídos (transição):
+    //   - picked_up, authorized_by_carrier
     let rtsNoShipment = 0, rtsStatusMismatch = 0;
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
@@ -1668,28 +1671,37 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (RTS_EXCLUDED_SUBSTATUSES.has(sub)) {
         continue;
       }
-      if (sub === "in_hub") {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
-      } else if (sub === "invoice_pending") {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
-      } else if (
-        sub === "in_packing_list" ||
-        sub === "ready_for_pickup" ||
-        sub === "ready_to_pack" ||
+
+      // Sempre "Próximos dias" (aguardando ação do vendedor)
+      if (
+        sub === "in_hub" ||
+        sub === "invoice_pending" ||
         sub === "ready_to_print" ||
         sub === "in_warehouse" ||
-        sub === "packed"
+        sub === "in_packing_list"
       ) {
-        // Substatuses operacionais → "Envios de hoje"
+        addMlOrderIds("upcoming", pack.ml_order_ids);
+        continue;
+      }
+
+      // Sempre "Envios de hoje" (pronto para envio/coleta)
+      if (
+        sub === "ready_for_pickup" ||
+        sub === "packed" ||
+        sub === "ready_to_pack"
+      ) {
+        addMlOrderIds("today", pack.ml_order_ids);
+        continue;
+      }
+
+      // Substatuses desconhecidos: usa SLA
+      const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+      if (slaKey && slaKey > todayKey) {
+        addMlOrderIds("upcoming", pack.ml_order_ids);
+      } else if (slaKey) {
         addMlOrderIds("today", pack.ml_order_ids);
       } else {
-        // Substatuses desconhecidos: SLA date, fallback "today"
-        const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-        if (slaKey && slaKey > todayKey) {
-          addMlOrderIds("upcoming", pack.ml_order_ids);
-        } else {
-          addMlOrderIds("today", pack.ml_order_ids);
-        }
+        addMlOrderIds("upcoming", pack.ml_order_ids);
       }
     }
 
