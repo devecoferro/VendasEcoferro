@@ -280,13 +280,36 @@ async function syncBuyersAsLeads(connectionId, token, supabase) {
   return { buyers_fetched: rows.length, buyers_inserted: inserted, buyers_skipped: skipped };
 }
 
+// Limpa todos os leads do ML (source='other' com metadata ML)
+async function clearMLLeads() {
+  if (!SUPABASE_KEY) throw new Error("SUPABASE_SERVICE_ROLE_KEY nao configurada.");
+  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  // Apagar leads com source='other' (que são os ML)
+  const { error, count } = await supabase
+    .from("leads")
+    .delete({ count: "exact" })
+    .eq("source", "other");
+
+  return {
+    leads_deleted: count || 0,
+    error: error?.message || null,
+  };
+}
+
 export default async function handler(request, response) {
-  if (request.method !== "POST") {
-    return response.status(405).json({ error: "Use POST para sincronizar leads." });
+  const method = (request.method || "GET").toUpperCase();
+  if (method !== "POST" && method !== "DELETE") {
+    return response.status(405).json({ error: "Use POST (sincronizar) ou DELETE (limpar)." });
   }
 
   try {
     await requireAuthenticatedProfile(request);
+
+    if (method === "DELETE") {
+      const result = await clearMLLeads();
+      return response.status(200).json(result);
+    }
 
     const connection = getLatestConnection();
     if (!connection?.id) {

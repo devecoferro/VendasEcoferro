@@ -215,13 +215,43 @@ async function syncCustomersToWebsite(connectionId, token) {
   };
 }
 
+// Limpa todos os clientes e endereços vindos do ML
+async function clearCustomers() {
+  if (!SUPABASE_KEY) throw new Error("SUPABASE_SERVICE_ROLE_KEY nao configurada.");
+  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  // Apagar endereços primeiro (FK)
+  const { error: addrErr } = await supabase
+    .from("addresses")
+    .delete()
+    .eq("label", "Mercado Livre");
+
+  // Apagar clientes com notes contendo "Mercado Livre"
+  const { error: custErr, count } = await supabase
+    .from("customers")
+    .delete({ count: "exact" })
+    .ilike("notes", "%Mercado Livre%");
+
+  return {
+    customers_deleted: count || 0,
+    customers_error: custErr?.message || null,
+    addresses_error: addrErr?.message || null,
+  };
+}
+
 export default async function handler(request, response) {
-  if (request.method !== "POST") {
-    return response.status(405).json({ error: "Use POST para sincronizar clientes." });
+  const method = (request.method || "GET").toUpperCase();
+  if (method !== "POST" && method !== "DELETE") {
+    return response.status(405).json({ error: "Use POST (sincronizar) ou DELETE (limpar)." });
   }
 
   try {
     await requireAuthenticatedProfile(request);
+
+    if (method === "DELETE") {
+      const result = await clearCustomers();
+      return response.status(200).json(result);
+    }
 
     const connection = getLatestConnection();
     if (!connection?.id) {

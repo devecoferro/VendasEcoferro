@@ -326,8 +326,8 @@ app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(re
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
-app.post("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
-app.post("/api/ml/sync-customers", syncLimiter, (req, res) => mlSyncCustomersHandler(req, res));
+app.all("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
+app.all("/api/ml/sync-customers", syncLimiter, (req, res) => mlSyncCustomersHandler(req, res));
 
 // ─── Obsidian API ──────────────────────────────────────────────────
 app.all("/api/obsidian", apiLimiter, (req, res) => obsidianHandler(req, res));
