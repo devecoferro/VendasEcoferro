@@ -592,6 +592,76 @@ export function mapMLOrderToSaleData(order: MLOrder) {
   };
 }
 
+// Retorna o pack_id de um order (se existir)
+export function getOrderPackId(order: MLOrder): string | null {
+  const raw = (order.raw_data as any) || {};
+  const pid = raw?.pack_id;
+  return pid ? String(pid) : null;
+}
+
+// Encontra todos os orders do mesmo pack. Se o order não tem pack, retorna só ele.
+export function findOrdersInSamePack(
+  targetOrder: MLOrder,
+  allOrders: MLOrder[]
+): MLOrder[] {
+  const packId = getOrderPackId(targetOrder);
+  if (!packId) return [targetOrder];
+  const same = allOrders.filter((o) => getOrderPackId(o) === packId);
+  return same.length > 0 ? same : [targetOrder];
+}
+
+// Unifica múltiplos orders do MESMO pack em uma única SaleData.
+// Todos os items dos pedidos viram groupedItems da mesma etiqueta.
+// Mantém dados do buyer (comprador) — nunca do receiver.
+export function mapUnifiedPackSaleData(orders: MLOrder[]): ReturnType<typeof mapMLOrderToSaleData> {
+  if (orders.length === 0) throw new Error("Nenhum pedido para unificar");
+  if (orders.length === 1) return mapMLOrderToSaleData(orders[0]);
+
+  // Usa o primeiro order como base (buyer, data, etc.)
+  const base = orders[0];
+  const baseSale = mapMLOrderToSaleData(base);
+
+  // Junta todos os items de todos os orders
+  const allGroupedItems: SaleItemData[] = [];
+  const allSaleNumbers: string[] = [];
+
+  for (const order of orders) {
+    const sale = mapMLOrderToSaleData(order);
+    allGroupedItems.push(...(sale.groupedItems || []));
+    const num = order.sale_number || order.order_id;
+    if (num) allSaleNumbers.push(num);
+  }
+
+  // Deduplicar items por SKU+variação (somando quantidades)
+  const unifiedMap = new Map<string, SaleItemData>();
+  for (const item of allGroupedItems) {
+    const key = `${item.sku || item.itemTitle}::${item.variation || ""}`;
+    const existing = unifiedMap.get(key);
+    if (existing) {
+      existing.quantity += item.quantity || 1;
+      existing.amount = (existing.amount || 0) + (item.amount || 0);
+    } else {
+      unifiedMap.set(key, { ...item });
+    }
+  }
+  const unifiedItems = Array.from(unifiedMap.values());
+
+  // Sale number = o pack_id ou todos concatenados
+  const packId = getOrderPackId(base) || allSaleNumbers.join(" + ");
+
+  return {
+    ...baseSale,
+    saleNumber: packId,
+    saleQrcodeValue: packId,
+    productName: unifiedItems.length > 1
+      ? `Pacote com ${unifiedItems.length} produtos`
+      : unifiedItems[0]?.itemTitle || baseSale.productName,
+    sku: unifiedItems[0]?.sku || baseSale.sku,
+    quantity: unifiedItems.reduce((sum, i) => sum + (i.quantity || 1), 0),
+    groupedItems: unifiedItems,
+  };
+}
+
 export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
   const { saleDate, saleTime } = formatSaleDate(order.sale_date);
   const sku = order.sku || order.items?.[0]?.sku || "";
@@ -640,7 +710,58 @@ export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
 }
 
 export function mapMLOrdersToProcessingResults(orders: MLOrder[]): ProcessingResult[] {
-  return orders.map(mapMLOrderToProcessingResult);
+  // Agrupa orders pelo pack_id e gera 1 ProcessingResult por pack.
+  // Orders sem pack_id continuam individuais.
+  const packMap = new Map<string, MLOrder[]>();
+  const standalone: MLOrder[] = [];
+
+  for (const order of orders) {
+    const packId = getOrderPackId(order);
+    if (packId) {
+      const existing = packMap.get(packId);
+      if (existing) existing.push(order);
+      else packMap.set(packId, [order]);
+    } else {
+      standalone.push(order);
+    }
+  }
+
+  const results: ProcessingResult[] = [];
+
+  // Orders com pack → 1 SaleData unificada por pack
+  for (const [, packOrders] of packMap) {
+    if (packOrders.length === 1) {
+      results.push(mapMLOrderToProcessingResult(packOrders[0]));
+    } else {
+      const unifiedSale = mapUnifiedPackSaleData(packOrders);
+      const base = packOrders[0];
+      results.push({
+        sale: unifiedSale,
+        rawText: JSON.stringify({
+          pack_id: getOrderPackId(base),
+          unified_orders: packOrders.map((o) => o.order_id),
+        }),
+        confidence: {
+          saleNumber: 1,
+          saleDate: 1,
+          saleTime: 1,
+          customerName: 1,
+          customerNickname: 1,
+          productName: 1,
+          sku: 1,
+          quantity: 1,
+        },
+        method: "mercado-livre",
+      });
+    }
+  }
+
+  // Orders sem pack → 1 SaleData por order
+  for (const order of standalone) {
+    results.push(mapMLOrderToProcessingResult(order));
+  }
+
+  return results;
 }
 
 async function parseErrorMessage(

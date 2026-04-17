@@ -352,36 +352,40 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
 
     // ─── Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO ───────────────
     // Valores puxam do item (SKU específico) ou fallback do sale.
-    // Vazios mostram "CAMPO :" em negrito (placeholder).
+    // Posicionamento: à direita do logo, dimensionado para caber sem cortar.
     const locCorridor = item.locationCorridor || sale.locationCorridor || "";
     const locShelf = item.locationShelf || sale.locationShelf || "";
     const locLevel = item.locationLevel || sale.locationLevel || "";
     const variation = item.variation || sale.variation || "";
 
-    // Posicionamento: à direita do logo, alinhado verticalmente com QR VENDA.
-    const infoX = saleQrX + saleQrSize + (compactRows ? 22 : 30);
-    const infoFont = veryCompactRows ? 6 : compactRows ? 7 : 8.5;
-    const infoLineH = veryCompactRows ? 3.5 : compactRows ? 4.2 : 5.2;
-    let infoY = saleQrY + (compactRows ? 1.5 : 2.2);
+    // Posicionamento: calcula distância exata após o logo
+    const infoX = saleQrX + saleQrSize + (compactRows ? 20 : 27);
+    const infoFont = veryCompactRows ? 5.6 : compactRows ? 6.4 : 7.6;
+    const infoLineH = veryCompactRows ? 3.2 : compactRows ? 3.8 : 4.6;
+    let infoY = saleQrY + (compactRows ? 1.8 : 2.6);
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(infoFont);
     doc.setTextColor(17, 24, 39);
 
-    doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY);
+    // Largura máxima disponível até o divider do QR PEÇA
+    const infoMaxW = dividerX - infoX - 2;
+
+    doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY, { maxWidth: infoMaxW });
     infoY += infoLineH;
-    doc.text(`ESTANTE : ${locShelf}`, infoX, infoY);
+    doc.text(`ESTANTE : ${locShelf}`, infoX, infoY, { maxWidth: infoMaxW });
     infoY += infoLineH;
-    doc.text(`NIVEL : ${locLevel}`, infoX, infoY);
+    doc.text(`NIVEL : ${locLevel}`, infoX, infoY, { maxWidth: infoMaxW });
     infoY += infoLineH;
 
-    // VARIAÇÃO com destaque (preto quando preenchida, cinza quando vazia)
+    // VARIAÇÃO: trunca se muito longa
     doc.setFont("helvetica", "bold");
+    doc.setTextColor(17, 24, 39);
     if (variation) {
-      doc.setTextColor(17, 24, 39);
-      doc.text(`VARIACAO : ${variation}`, infoX, infoY);
+      const varText = `VARIACAO : ${variation}`;
+      const varLines = doc.splitTextToSize(varText, infoMaxW);
+      doc.text(varLines.slice(0, 2), infoX, infoY);
     } else {
-      doc.setTextColor(17, 24, 39);
       doc.text(`VARIACAO :`, infoX, infoY);
     }
 

@@ -58,6 +58,8 @@ import {
   getMLOrderDocuments,
   mapMLOrdersToProcessingResults,
   mapMLOrderToSaleData,
+  mapUnifiedPackSaleData,
+  findOrdersInSamePack,
   getStockLocations,
   getMLConnectionStatus,
   type MLDashboardDeposit,
@@ -1024,7 +1026,10 @@ export default function MercadoLivrePage() {
 
   const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
     try {
-      const sale = mapMLOrderToSaleData(order);
+      // Busca todos os orders do mesmo pack e unifica em uma só etiqueta.
+      // Se não tem pack ou tem só 1 order no pack, comporta-se normal.
+      const packOrders = findOrdersInSamePack(order, permittedOrders);
+      const sale = mapUnifiedPackSaleData(packOrders);
       const enriched = await enrichSaleWithLocations(sale);
       await exportSalePdf(enriched);
     } catch (caughtError) {
@@ -1034,7 +1039,7 @@ export default function MercadoLivrePage() {
           : "Falha ao gerar a etiqueta interna Ecoferro."
       );
     }
-  }, [enrichSaleWithLocations]);
+  }, [enrichSaleWithLocations, permittedOrders]);
 
   const handlePrintMlLabelsAndNFeBulk = useCallback(
     async (ordersToPrint: MLOrder[]) => {
