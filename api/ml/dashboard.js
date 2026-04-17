@@ -1537,20 +1537,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // (classificação LOCAL que bate com ML Seller Center) mas usando dados
     // da API ML em vez do DB local.
     //
-    // Regras (alinhadas com ML Seller Center — SLA-first):
-    // O ML Seller Center usa a DATA SLA como critério PRIMÁRIO para
-    // classificar "Envios de hoje" vs "Próximos dias":
-    //   - SLA ≤ hoje → "Envios de hoje" (independente do substatus)
-    //   - SLA > hoje → "Próximos dias" (independente do substatus)
-    //   - Sem SLA → fallback por substatus
-    // Substatuses que EXCLUEM o pedido dos chips:
-    //   - picked_up, authorized_by_carrier → transição
-    //   - in_hub → "Próximos dias" (sempre, independente de SLA)
-    //   - invoice_pending → "Próximos dias" (NF-e pendente)
+    // Regras (alinhadas com ML Seller Center — substatus-based):
+    // O ML Seller Center classifica por SUBSTATUS do envio:
+    //   - in_packing_list, ready_for_pickup, ready_to_pack,
+    //     ready_to_print, in_warehouse, packed → "Envios de hoje"
+    //   - in_hub → "Próximos dias"
+    //   - invoice_pending → "Próximos dias"
+    //   - picked_up, authorized_by_carrier → excluído (transição)
+    //   - outros → SLA date decide, fallback "today"
     //
-    // EDGE CASES:
-    // - Sem shipment detail (API falhou): "upcoming" (conservador)
-    // - Status mudou (ex: ready_to_ship → shipped): SKIP
+    // APP interno (substatus-based) = 86 hoje ≈ Seller Center 89
+    // ML Live (SLA-first) = 33 hoje ≠ Seller Center 89
+    // Conclusão: Seller Center usa substatus, não SLA.
     let rtsNoShipment = 0, rtsStatusMismatch = 0;
     for (const [, pack] of rtsPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
@@ -1565,24 +1563,29 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
       const sub = shipment.substatus;
       if (RTS_EXCLUDED_SUBSTATUSES.has(sub)) {
-        // picked_up/authorized_by_carrier: transição → excluído de todos os chips
         continue;
       }
       if (sub === "in_hub") {
-        // No hub do transportador → SEMPRE "Próximos dias"
         addMlOrderIds("upcoming", pack.ml_order_ids);
       } else if (sub === "invoice_pending") {
-        // Aguardando NF-e → SEMPRE "Próximos dias"
         addMlOrderIds("upcoming", pack.ml_order_ids);
+      } else if (
+        sub === "in_packing_list" ||
+        sub === "ready_for_pickup" ||
+        sub === "ready_to_pack" ||
+        sub === "ready_to_print" ||
+        sub === "in_warehouse" ||
+        sub === "packed"
+      ) {
+        // Substatuses operacionais → "Envios de hoje"
+        addMlOrderIds("today", pack.ml_order_ids);
       } else {
-        // TODOS os outros substatuses: classificar por DATA SLA
-        // SLA ≤ hoje → "Envios de hoje", SLA > hoje → "Próximos dias"
+        // Substatuses desconhecidos: SLA date, fallback "today"
         const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-        if (slaKey) {
-          addMlOrderIds(slaKey <= todayKey ? "today" : "upcoming", pack.ml_order_ids);
-        } else {
-          // Sem data SLA: fallback "upcoming" (conservador)
+        if (slaKey && slaKey > todayKey) {
           addMlOrderIds("upcoming", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("today", pack.ml_order_ids);
         }
       }
     }
