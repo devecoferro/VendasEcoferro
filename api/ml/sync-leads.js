@@ -250,33 +250,12 @@ async function syncBuyersAsLeads(connectionId, token, supabase) {
     if (existingNames.has(fullName.toLowerCase())) { skipped++; continue; }
     if (buyerId && existingBuyerIds.has(String(buyerId))) { skipped++; continue; }
 
-    // Buscar telefone real via GET /orders/{id} (pode retornar se app certificado)
-    let phone = null;
-    let email = null;
-    try {
-      const oR = await fetch(`https://api.mercadolibre.com/orders/${row.order_id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (oR.ok) {
-        const oD = await oR.json();
-        const bp = oD.buyer?.phone;
-        phone = bp ? [bp.area_code, bp.number].filter(Boolean).join("") : null;
-        email = oD.buyer?.email || null;
-        // Se telefone mascarado, ignorar
-        if (phone === "XXXXXXX" || phone === "") phone = null;
-        // Se email mascarado (@mail.mercadolivre), ignorar
-        if (email && email.includes("@mail.mercadolivre")) email = null;
-      }
-    } catch { /* best effort */ }
-
     const cpf = ident.number ? String(ident.number).trim() : null;
     const city = addr.city_name || "";
     const state = addr.state_name || addr.state || "";
 
     const lead = {
       name: fullName,
-      phone,
-      email,
       source: "other",
       message: `Comprador ML — ${cpf ? (ident.type || "CPF") + ": " + cpf : ""}${city ? " | " + city + "/" + state : ""}`,
       status: "new",
