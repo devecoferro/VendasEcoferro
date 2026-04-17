@@ -41,6 +41,9 @@ export type OperationalSummaryKey =
   | "in_transit_collection"
   | "not_delivered"
   | "complaints"
+  | "delivered"
+  | "returns_completed"
+  | "returns_incomplete"
   | "fulfillment";
 
 export interface MercadoLivreFilters {
@@ -1014,6 +1017,9 @@ export function getOperationalSummaryLabel(
     in_transit_collection: "A caminho - Coleta",
     not_delivered: "Não entregues",
     complaints: "Com reclamação ou mediação",
+    delivered: "Entregues",
+    returns_completed: "Devoluções concluídas",
+    returns_incomplete: "Devoluções não concluídas",
   };
 
   return labels[summaryKey];
@@ -1060,6 +1066,12 @@ export function matchesOperationalSummaryRow(
       return status === "not_delivered";
     case "complaints":
       return status === "returned";
+    case "delivered":
+      return status === "delivered";
+    case "returns_completed":
+      return status === "returned" && (substatus === "completed" || substatus === "delivered");
+    case "returns_incomplete":
+      return status === "returned" && substatus !== "completed" && substatus !== "delivered";
     case "fulfillment":
       return getDepositInfo(order).isFulfillment &&
         activeBucket !== "finalized" &&
