@@ -17,14 +17,38 @@ export interface SeparationItem {
   imageUrl: string | null;
   totalQuantity: number;
   orderCount: number;
+  locationCorridor?: string | null;
+  locationShelf?: string | null;
+  locationLevel?: string | null;
+  variation?: string | null;
 }
 
 // ─── Agrupamento por SKU ────────────────────────────────────────────────
+
+// Extrai variação do raw_data.order_items[i].item.variation_attributes
+function extractVariationFromRawItem(rawItem: any): string | null {
+  if (!rawItem) return null;
+  const varAttrs = rawItem?.item?.variation_attributes;
+  if (Array.isArray(varAttrs) && varAttrs.length > 0) {
+    return varAttrs
+      .map((attr: any) => {
+        const name = attr?.name || attr?.id || "";
+        const value = attr?.value_name || attr?.value?.name || attr?.value || "";
+        return value ? (name ? `${name}: ${value}` : value) : null;
+      })
+      .filter(Boolean)
+      .join(" | ") || null;
+  }
+  return null;
+}
 
 export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
   const map = new Map<string, SeparationItem>();
 
   for (const order of orders) {
+    const rawItems: any[] = Array.isArray((order.raw_data as any)?.order_items)
+      ? ((order.raw_data as any).order_items as any[])
+      : [];
     const items: MLOrderItem[] =
       Array.isArray(order.items) && order.items.length > 0
         ? order.items
@@ -38,21 +62,20 @@ export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
             },
           ];
 
-    for (const item of items) {
+    items.forEach((item, idx) => {
       const sku = (item.sku || "").trim();
       const title = (item.item_title || "").trim();
-      // Chave de agrupamento: SKU se existir, senao titulo
-      const key = sku || title || "SEM_SKU";
+      const variation = item.variation || extractVariationFromRawItem(rawItems[idx]) || null;
+      // Chave de agrupamento: SKU + variação (diferentes variações = linhas separadas)
+      const key = (sku || title || "SEM_SKU") + (variation ? `::${variation}` : "");
 
       const existing = map.get(key);
       if (existing) {
         existing.totalQuantity += item.quantity || 1;
         existing.orderCount += 1;
-        // Atualiza imagem se a existente estiver vazia
         if (!existing.imageUrl && item.product_image_url) {
           existing.imageUrl = item.product_image_url;
         }
-        // Atualiza titulo se o existente estiver vazio
         if (!existing.title && title) {
           existing.title = title;
         }
@@ -63,9 +86,10 @@ export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
           imageUrl: item.product_image_url || null,
           totalQuantity: item.quantity || 1,
           orderCount: 1,
+          variation,
         });
       }
-    }
+    });
   }
 
   // Ordena por quantidade decrescente (produto mais frequente primeiro)
@@ -135,10 +159,10 @@ const PAGE_H = 297;
 const MARGIN = 10;
 const USABLE_W = PAGE_W - MARGIN * 2;
 const HEADER_H = 20;
-const ROW_H = 26;
-const IMG_SIZE = 22;
+const ROW_H = 38; // aumentado para caber CORREDOR/ESTANTE/NIVEL/VARIAÇÃO
+const IMG_SIZE = 32;
 const IMG_PADDING = 2;
-const QTY_W = 28;
+const QTY_W = 32;
 const ROWS_PER_PAGE = Math.floor((PAGE_H - MARGIN * 2 - HEADER_H - 5) / ROW_H);
 
 // ─── Geracao do PDF ─────────────────────────────────────────────────────
@@ -233,45 +257,66 @@ export async function exportSeparationPdf(
       drawPlaceholder(doc, imgX, imgY, IMG_SIZE, IMG_SIZE);
     }
 
-    // ── Texto: Nome do produto ──
-    const textX = MARGIN + IMG_SIZE + IMG_PADDING * 2 + 2;
-    const textMaxW = USABLE_W - IMG_SIZE - IMG_PADDING * 2 - QTY_W - 30;
+    // ── Texto: Nome do produto (linha 1) ──
+    const textX = MARGIN + IMG_SIZE + IMG_PADDING * 2 + 3;
+    const pedidosX = MARGIN + USABLE_W - QTY_W - 15;
+    const textMaxW = pedidosX - textX - 2;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(30, 30, 30);
+    const titleLines = doc.splitTextToSize(item.title, textMaxW);
+    const displayTitle = titleLines.slice(0, 1);
+    doc.text(displayTitle, textX, baseY + 5);
+
+    // ── SKU ──
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
-    doc.setTextColor(30, 30, 30);
-    // Trunca o titulo se muito longo
-    const titleLines = doc.splitTextToSize(item.title, textMaxW);
-    const maxTitleLines = 2;
-    const displayTitle = titleLines.slice(0, maxTitleLines);
-    doc.text(displayTitle, textX, baseY + 6);
+    doc.setTextColor(80, 80, 80);
+    doc.text(`SKU: ${item.sku}`, textX, baseY + 11);
 
-    // ── Texto: SKU ──
-    const skuY = baseY + 6 + displayTitle.length * 4;
-    doc.setFont("helvetica", "normal");
+    // ── CORREDOR / ESTANTE / NIVEL / VARIAÇÃO ──
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
-    doc.setTextColor(100, 100, 100);
-    doc.text(`SKU: ${item.sku}`, textX, skuY);
+    doc.setTextColor(60, 60, 60);
+    const locY1 = baseY + 18;
+    const locY2 = baseY + 24;
+    const locY3 = baseY + 30;
+    const locY4 = baseY + 36;
+
+    doc.text(`CORREDOR : ${item.locationCorridor || ""}`, textX, locY1);
+    doc.text(`ESTANTE : ${item.locationShelf || ""}`, textX, locY2);
+    doc.text(`NIVEL : ${item.locationLevel || ""}`, textX, locY3);
+
+    // VARIAÇÃO: destaque quando preenchida
+    if (item.variation) {
+      doc.setTextColor(17, 24, 39);
+      doc.text(`VARIACAO : ${item.variation}`, textX, locY4);
+    } else {
+      doc.setTextColor(160, 160, 170);
+      doc.text(`VARIACAO :`, textX, locY4);
+    }
 
     // ── Pedidos count ──
-    const pedidosX = MARGIN + USABLE_W - QTY_W - 12;
-    doc.setFontSize(8);
-    doc.setTextColor(120, 120, 120);
-    doc.text(`${item.orderCount}`, pedidosX, baseY + 12, { align: "center" });
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(60, 60, 60);
+    doc.text(`${item.orderCount}`, pedidosX, baseY + 16, { align: "center" });
     doc.setFontSize(6);
-    doc.text("pedido(s)", pedidosX, baseY + 16, { align: "center" });
+    doc.setFont("helvetica", "normal");
+    doc.text("pedido(s)", pedidosX, baseY + 20, { align: "center" });
 
     // ── Quantidade (grande, destaque) ──
     const qtyX = MARGIN + USABLE_W - QTY_W / 2;
-    // Fundo colorido para quantidade
     doc.setFillColor(255, 241, 89); // amarelo ML
-    doc.roundedRect(MARGIN + USABLE_W - QTY_W, baseY + 2, QTY_W, 18, 3, 3, "F");
+    doc.roundedRect(MARGIN + USABLE_W - QTY_W, baseY + 2, QTY_W, 28, 3, 3, "F");
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(16);
-    doc.setTextColor(30, 30, 30);
-    doc.text(`${item.totalQuantity}`, qtyX, baseY + 12, { align: "center" });
-    doc.setFontSize(7);
-    doc.setFont("helvetica", "normal");
-    doc.text("un", qtyX, baseY + 17, { align: "center" });
+    doc.setFontSize(20);
+    doc.setTextColor(17, 24, 39);
+    doc.text(`${item.totalQuantity}`, qtyX, baseY + 18, { align: "center" });
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.text("un", qtyX, baseY + 25, { align: "center" });
 
     rowOnPage++;
   }

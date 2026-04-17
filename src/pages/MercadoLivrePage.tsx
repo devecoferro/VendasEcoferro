@@ -1184,6 +1184,26 @@ export default function MercadoLivrePage() {
           toast.warning("Nenhum produto encontrado nos pedidos selecionados.");
           return;
         }
+
+        // Enriquece com localização do stock por SKU (Corredor/Estante/Nível)
+        try {
+          const conn = await getMLConnectionStatus();
+          if (conn?.id) {
+            const skus = items.map((i) => i.sku).filter((s) => s && s !== "-");
+            if (skus.length > 0) {
+              const locations = await getStockLocations(conn.id, skus);
+              for (const item of items) {
+                const loc = locations[item.sku];
+                if (loc) {
+                  item.locationCorridor = loc.corridor;
+                  item.locationShelf = loc.shelf;
+                  item.locationLevel = loc.level;
+                }
+              }
+            }
+          }
+        } catch { /* best effort */ }
+
         const today = new Date().toISOString().slice(0, 10);
         await exportSeparationPdf(items, {
           date: today,

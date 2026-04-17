@@ -350,38 +350,10 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       }
     }
 
-    // ─── Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO ───────────────
-    // Puxa valores do item (SKU específico) ou do sale (fallback).
-    const locCorridor = item.locationCorridor || sale.locationCorridor || "";
-    const locShelf = item.locationShelf || sale.locationShelf || "";
-    const locLevel = item.locationLevel || sale.locationLevel || "";
-    const variation = item.variation || sale.variation || "";
-    // Posiciona na direita do logo, mais ao meio do card
-    const infoX = saleQrX + saleQrSize + (compactRows ? 22 : 30);
-    const infoFont = veryCompactRows ? 5.8 : compactRows ? 6.8 : 8.2;
-    const infoLineH = veryCompactRows ? 3.5 : compactRows ? 4.2 : 5.2;
-    let infoY = saleQrY + (compactRows ? 1.4 : 2);
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(infoFont);
-    doc.setTextColor(17, 24, 39);
-
-    doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY);
-    infoY += infoLineH;
-    doc.text(`ESTANTE : ${locShelf}`, infoX, infoY);
-    infoY += infoLineH;
-    doc.text(`NIVEL : ${locLevel}`, infoX, infoY);
-    infoY += infoLineH;
-
-    // VARIAÇÃO destacada em negrito — se vazio mostra em cinza
-    doc.setFont("helvetica", "bold");
-    if (variation) {
-      doc.setTextColor(17, 24, 39);
-      doc.text(`VARIACAO : ${variation}`, infoX, infoY);
-    } else {
-      doc.setTextColor(156, 163, 175);
-      doc.text(`VARIACAO :`, infoX, infoY);
-    }
+    // CORREDOR/ESTANTE/NÍVEL/VARIAÇÃO removidos da etiqueta.
+    // Esses dados agora aparecem apenas no Relatório de Separação,
+    // que é usado pelo operador para encontrar os produtos no depósito.
+    // A etiqueta (que vai junto ao envio) não precisa dessa info interna.
 
     let qrY = rowTop + 2.4;
     const pieceQrData = await generateQRCodeDataUrl(item.sku || "");
