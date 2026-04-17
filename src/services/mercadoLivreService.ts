@@ -39,6 +39,7 @@ export interface MLOrderItem {
   amount: number | null;
   item_id?: string | null;
   product_image_url?: string | null;
+  variation?: string | null;
 }
 
 export interface MLOrdersPagination {
@@ -510,17 +511,48 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
   };
 }
 
+// Extrai a variação de um item do pedido ML.
+// A variação pode vir em diferentes lugares no raw_data:
+// - raw_data.order_items[i].item.variation_attributes (array com name + value_name)
+// - raw_data.order_items[i].item.variation_id (ID só, sem labels)
+function extractVariationFromRawItem(rawItem: any): string | null {
+  if (!rawItem) return null;
+  const varAttrs = rawItem?.item?.variation_attributes;
+  if (Array.isArray(varAttrs) && varAttrs.length > 0) {
+    return varAttrs
+      .map((attr: any) => {
+        const name = attr?.name || attr?.id || "";
+        const value = attr?.value_name || attr?.value?.name || attr?.value || "";
+        return value ? (name ? `${name}: ${value}` : value) : null;
+      })
+      .filter(Boolean)
+      .join(" | ") || null;
+  }
+  return null;
+}
+
 export function mapMLOrderToSaleData(order: MLOrder) {
   const { saleDate, saleTime } = formatSaleDate(order.sale_date);
   const primaryItem = order.items?.[0];
-  const groupedItems: SaleItemData[] = (order.items || []).map((item) => ({
-    itemTitle: item.item_title || "Produto sem titulo",
-    sku: item.sku || "",
-    quantity: item.quantity || 1,
-    amount: item.amount ?? undefined,
-    productImageUrl: item.product_image_url || undefined,
-    productImageData: "",
-  }));
+  const rawOrderItems: any[] = Array.isArray((order.raw_data as any)?.order_items)
+    ? ((order.raw_data as any).order_items as any[])
+    : [];
+  const groupedItems: SaleItemData[] = (order.items || []).map((item, idx) => {
+    const rawItem = rawOrderItems[idx];
+    const variation =
+      item.variation ||
+      extractVariationFromRawItem(rawItem) ||
+      null;
+    return {
+      itemTitle: item.item_title || "Produto sem titulo",
+      sku: item.sku || "",
+      quantity: item.quantity || 1,
+      amount: item.amount ?? undefined,
+      productImageUrl: item.product_image_url || undefined,
+      productImageData: "",
+      variation,
+    };
+  });
   const sku = order.sku || primaryItem?.sku || "";
   const productName =
     groupedItems.length > 1
@@ -534,6 +566,9 @@ export function mapMLOrderToSaleData(order: MLOrder) {
         "";
   const productImageUrl =
     order.product_image_url || primaryItem?.product_image_url || "";
+
+  // Variação do primeiro item (se houver) → vai no topo do SaleData também
+  const topVariation = groupedItems[0]?.variation || null;
 
   return {
     id: order.id,
@@ -553,6 +588,7 @@ export function mapMLOrderToSaleData(order: MLOrder) {
     productImageData: "",
     labelObservation: "",
     groupedItems,
+    variation: topVariation,
   };
 }
 

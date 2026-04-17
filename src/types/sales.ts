@@ -5,6 +5,10 @@ export interface SaleItemData {
   amount?: number;
   productImageUrl?: string;
   productImageData?: string;
+  variation?: string | null;
+  locationCorridor?: string | null;
+  locationShelf?: string | null;
+  locationLevel?: string | null;
 }
 
 export interface SaleData {
@@ -25,6 +29,10 @@ export interface SaleData {
   productImageData?: string;
   labelObservation?: string;
   groupedItems?: SaleItemData[];
+  variation?: string | null;
+  locationCorridor?: string | null;
+  locationShelf?: string | null;
+  locationLevel?: string | null;
 }
 
 export interface DocumentRecord {

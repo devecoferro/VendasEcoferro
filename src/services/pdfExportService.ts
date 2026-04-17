@@ -336,6 +336,35 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       }
     }
 
+    // Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO — à direita do logo.
+    const locCorridor = item.locationCorridor || sale.locationCorridor || "";
+    const locShelf = item.locationShelf || sale.locationShelf || "";
+    const locLevel = item.locationLevel || sale.locationLevel || "";
+    const variation = item.variation || sale.variation || "";
+    const infoX =
+      saleQrX + saleQrSize + (compactRows ? 22 : 30);
+    const infoFont = veryCompactRows ? 5.4 : compactRows ? 6.2 : 7.4;
+    const infoLineH = veryCompactRows ? 3.2 : compactRows ? 3.8 : 4.6;
+    let infoY = saleQrY + (compactRows ? 2.2 : 3.2);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(infoFont);
+    doc.setTextColor(51, 65, 85);
+
+    doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY);
+    infoY += infoLineH;
+    doc.text(`ESTANTE : ${locShelf}`, infoX, infoY);
+    infoY += infoLineH;
+    doc.text(`NIVEL : ${locLevel}`, infoX, infoY);
+    infoY += infoLineH;
+    if (variation) {
+      doc.setTextColor(17, 24, 39);
+      doc.text(`VARIACAO : ${variation}`, infoX, infoY);
+    } else {
+      doc.setTextColor(156, 163, 175);
+      doc.text(`VARIACAO :`, infoX, infoY);
+    }
+
     let qrY = rowTop + 2.4;
     const pieceQrData = await generateQRCodeDataUrl(item.sku || "");
 

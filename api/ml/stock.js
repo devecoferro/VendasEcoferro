@@ -260,6 +260,7 @@ async function fetchItemsPage(accessToken, sellerId, offset) {
 const BRAND_ATTRIBUTE_IDS = new Set(["BRAND", "MARCA", "VEHICLE_BRAND"]);
 const MODEL_ATTRIBUTE_IDS = new Set(["MODEL", "MODELO", "VEHICLE_MODEL", "PART_NUMBER"]);
 const YEAR_ATTRIBUTE_IDS = new Set(["VEHICLE_YEAR", "YEAR", "ANO", "VEHICLE_YEARS"]);
+const SKU_ATTRIBUTE_IDS = new Set(["SELLER_SKU", "SKU", "MANUFACTURER_PART_NUMBER"]);
 
 function extractAttribute(attributes, idSet) {
   if (!Array.isArray(attributes)) return null;
@@ -319,7 +320,8 @@ async function syncStock(connection) {
       connection_id: connection.id,
       seller_id: String(connection.seller_id),
       item_id: String(item.id),
-      sku: item.seller_sku || null,
+      // SKU: prioriza seller_sku (campo legado), senão busca em attributes.SELLER_SKU
+      sku: item.seller_sku || extractAttribute(item.attributes, SKU_ATTRIBUTE_IDS) || null,
       title: item.title || null,
       available_quantity: Number(item.available_quantity ?? 0),
       sold_quantity: Number(item.sold_quantity ?? 0),
