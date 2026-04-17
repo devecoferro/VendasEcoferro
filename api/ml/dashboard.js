@@ -783,34 +783,103 @@ function buildCrossDockingSummaryRows(orders, todayKey) {
   let overdue = 0;
   let invoicePending = 0;
   let ready = 0;
+  let labelsToPrint = 0;
+  let processing = 0;
+  let defaultShipping = 0;
+  let waitingPickup = 0;
+  let inTransitCollection = 0;
+  let deliveredOk = 0;
+  let notDelivered = 0;
+  let complaints = 0;
 
   for (const order of orders) {
-    if (FINAL_EXCEPTION_STATUSES.has(getShipmentStatus(order).status)) {
+    const { status, substatus } = getShipmentStatus(order);
+
+    // Canceladas (status final)
+    if (FINAL_EXCEPTION_STATUSES.has(status) && status === "cancelled") {
       cancelled += 1;
       continue;
     }
 
+    // Devoluções / reclamações (not_delivered, returned)
+    if (status === "not_delivered") {
+      notDelivered += 1;
+      continue;
+    }
+    if (status === "returned") {
+      complaints += 1;
+      continue;
+    }
+
+    // NF-e pendente
     if (isOrderInvoicePending(order)) {
       invoicePending += 1;
       continue;
     }
 
+    // Etiquetas para imprimir (ready_to_print)
+    if (substatus === "ready_to_print") {
+      labelsToPrint += 1;
+      continue;
+    }
+
+    // Em processamento (in_warehouse, ready_to_pack, packed, in_packing_list)
+    if (
+      substatus === "in_warehouse" ||
+      substatus === "ready_to_pack" ||
+      substatus === "packed" ||
+      substatus === "in_packing_list"
+    ) {
+      processing += 1;
+      continue;
+    }
+
+    // Em trânsito — para retirar (waiting_for_withdrawal)
+    if (status === "shipped" && substatus === "waiting_for_withdrawal") {
+      waitingPickup += 1;
+      continue;
+    }
+
+    // Em trânsito — coleta (shipped normal, out_for_delivery)
+    if (status === "shipped" && (substatus === "out_for_delivery" || substatus === "none")) {
+      inTransitCollection += 1;
+      continue;
+    }
+
+    // Prontas para enviar (ready_for_pickup + NFe emitida)
     if (isOrderReadyToPrintLabel(order)) {
       ready += 1;
       continue;
     }
 
+    // Por envio padrão (pending sem label)
+    if (status === "pending" || substatus === "pending") {
+      defaultShipping += 1;
+      continue;
+    }
+
+    // Atrasadas
     if (isOrderOverdue(order, todayKey)) {
       overdue += 1;
     }
   }
 
-  return [
+  const rows = [
     { key: "cancelled", label: "Canceladas. Nao enviar", count: cancelled },
     { key: "overdue", label: "Atrasadas. Enviar", count: overdue },
     { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
+    { key: "labels_to_print", label: "Etiquetas para imprimir", count: labelsToPrint },
+    { key: "processing", label: "Em processamento", count: processing },
+    { key: "default_shipping", label: "Por envio padrao", count: defaultShipping },
     { key: "ready", label: "Prontas para enviar", count: ready },
+    { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
+    { key: "in_transit_collection", label: "A caminho - Coleta", count: inTransitCollection },
+    { key: "not_delivered", label: "Nao entregues", count: notDelivered },
+    { key: "complaints", label: "Com reclamacao ou mediacao", count: complaints },
   ];
+
+  // Retorna só linhas com contagem > 0 (igual ML Seller Center faz)
+  return rows.filter((r) => r.count > 0);
 }
 
 function buildFulfillmentSummaryRows(orders, activeBucket) {

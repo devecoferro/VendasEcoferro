@@ -34,6 +34,13 @@ export type OperationalSummaryKey =
   | "overdue"
   | "invoice_pending"
   | "ready"
+  | "labels_to_print"
+  | "processing"
+  | "default_shipping"
+  | "waiting_pickup"
+  | "in_transit_collection"
+  | "not_delivered"
+  | "complaints"
   | "fulfillment";
 
 export interface MercadoLivreFilters {
@@ -914,38 +921,65 @@ export function getOperationalTotalCount(deposit: MLDashboardDeposit): number {
 }
 
 function buildCrossDockingSummaryRows(orders: MLOrder[], referenceDate = new Date()): MLDashboardSummaryRow[] {
-  let cancelled = 0;
-  let overdue = 0;
-  let invoicePending = 0;
-  let ready = 0;
+  const counts: Record<string, number> = {
+    cancelled: 0,
+    overdue: 0,
+    invoice_pending: 0,
+    ready: 0,
+    labels_to_print: 0,
+    processing: 0,
+    default_shipping: 0,
+    waiting_pickup: 0,
+    in_transit_collection: 0,
+    not_delivered: 0,
+    complaints: 0,
+  };
 
   for (const order of orders) {
-    if (isOrderFinalException(order)) {
-      cancelled += 1;
+    const snapshot = getShipmentSnapshot(order);
+    const status = String(snapshot.status || "").toLowerCase();
+    const substatus = String(snapshot.substatus || "").toLowerCase();
+
+    if (status === "cancelled") { counts.cancelled += 1; continue; }
+    if (status === "not_delivered") { counts.not_delivered += 1; continue; }
+    if (status === "returned") { counts.complaints += 1; continue; }
+    if (isOrderInvoicePending(order)) { counts.invoice_pending += 1; continue; }
+    if (substatus === "ready_to_print") { counts.labels_to_print += 1; continue; }
+    if (
+      substatus === "in_warehouse" ||
+      substatus === "ready_to_pack" ||
+      substatus === "packed" ||
+      substatus === "in_packing_list"
+    ) { counts.processing += 1; continue; }
+    if (status === "shipped" && substatus === "waiting_for_withdrawal") {
+      counts.waiting_pickup += 1;
       continue;
     }
-
-    if (isOrderInvoicePending(order)) {
-      invoicePending += 1;
+    if (status === "shipped" && (substatus === "out_for_delivery" || substatus === "none" || substatus === "")) {
+      counts.in_transit_collection += 1;
       continue;
     }
-
-    if (isOrderReadyToPrintLabel(order)) {
-      ready += 1;
-      continue;
-    }
-
-    if (isOrderOverdue(order, referenceDate)) {
-      overdue += 1;
-    }
+    if (isOrderReadyToPrintLabel(order)) { counts.ready += 1; continue; }
+    if (status === "pending" || substatus === "pending") { counts.default_shipping += 1; continue; }
+    if (isOrderOverdue(order, referenceDate)) { counts.overdue += 1; }
   }
 
-  return [
-    { key: "cancelled", label: "Canceladas. Não enviar", count: cancelled },
-    { key: "overdue", label: "Atrasadas. Enviar", count: overdue },
-    { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
-    { key: "ready", label: "Prontas para enviar", count: ready },
+  const rows: MLDashboardSummaryRow[] = [
+    { key: "cancelled", label: "Canceladas. Não enviar", count: counts.cancelled },
+    { key: "overdue", label: "Atrasadas. Enviar", count: counts.overdue },
+    { key: "invoice_pending", label: "NF-e para gerenciar", count: counts.invoice_pending },
+    { key: "labels_to_print", label: "Etiquetas para imprimir", count: counts.labels_to_print },
+    { key: "processing", label: "Em processamento", count: counts.processing },
+    { key: "default_shipping", label: "Por envio padrão", count: counts.default_shipping },
+    { key: "ready", label: "Prontas para enviar", count: counts.ready },
+    { key: "waiting_pickup", label: "Esperando retirada do comprador", count: counts.waiting_pickup },
+    { key: "in_transit_collection", label: "A caminho - Coleta", count: counts.in_transit_collection },
+    { key: "not_delivered", label: "Não entregues", count: counts.not_delivered },
+    { key: "complaints", label: "Com reclamação ou mediação", count: counts.complaints },
   ];
+
+  // Retorna só linhas com count > 0 (igual ML Seller Center)
+  return rows.filter((r) => r.count > 0);
 }
 
 function buildFulfillmentSummaryRows(
@@ -973,6 +1007,13 @@ export function getOperationalSummaryLabel(
     overdue: "Atrasadas. Enviar",
     invoice_pending: "NF-e para gerenciar",
     ready: "Prontas para enviar",
+    labels_to_print: "Etiquetas para imprimir",
+    processing: "Em processamento",
+    default_shipping: "Por envio padrão",
+    waiting_pickup: "Esperando retirada do comprador",
+    in_transit_collection: "A caminho - Coleta",
+    not_delivered: "Não entregues",
+    complaints: "Com reclamação ou mediação",
   };
 
   return labels[summaryKey];
@@ -984,6 +1025,10 @@ export function matchesOperationalSummaryRow(
   activeBucket: ShipmentBucket,
   referenceDate = new Date()
 ): boolean {
+  const snapshot = getShipmentSnapshot(order);
+  const status = String(snapshot.status || "").toLowerCase();
+  const substatus = String(snapshot.substatus || "").toLowerCase();
+
   switch (summaryKey) {
     case "cancelled":
       return isOrderFinalException(order);
@@ -993,6 +1038,28 @@ export function matchesOperationalSummaryRow(
       return isOrderInvoicePending(order);
     case "ready":
       return isOrderReadyToPrintLabel(order);
+    case "labels_to_print":
+      return substatus === "ready_to_print";
+    case "processing":
+      return (
+        substatus === "in_warehouse" ||
+        substatus === "ready_to_pack" ||
+        substatus === "packed" ||
+        substatus === "in_packing_list"
+      );
+    case "default_shipping":
+      return status === "pending" || substatus === "pending";
+    case "waiting_pickup":
+      return status === "shipped" && substatus === "waiting_for_withdrawal";
+    case "in_transit_collection":
+      return (
+        status === "shipped" &&
+        (substatus === "out_for_delivery" || substatus === "none" || substatus === "")
+      );
+    case "not_delivered":
+      return status === "not_delivered";
+    case "complaints":
+      return status === "returned";
     case "fulfillment":
       return getDepositInfo(order).isFulfillment &&
         activeBucket !== "finalized" &&
