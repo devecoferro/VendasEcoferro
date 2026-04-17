@@ -350,10 +350,40 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       }
     }
 
-    // CORREDOR/ESTANTE/NÍVEL/VARIAÇÃO removidos da etiqueta.
-    // Esses dados agora aparecem apenas no Relatório de Separação,
-    // que é usado pelo operador para encontrar os produtos no depósito.
-    // A etiqueta (que vai junto ao envio) não precisa dessa info interna.
+    // ─── Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO ───────────────
+    // Valores puxam do item (SKU específico) ou fallback do sale.
+    // Vazios mostram "CAMPO :" em negrito (placeholder).
+    const locCorridor = item.locationCorridor || sale.locationCorridor || "";
+    const locShelf = item.locationShelf || sale.locationShelf || "";
+    const locLevel = item.locationLevel || sale.locationLevel || "";
+    const variation = item.variation || sale.variation || "";
+
+    // Posicionamento: à direita do logo, alinhado verticalmente com QR VENDA.
+    const infoX = saleQrX + saleQrSize + (compactRows ? 22 : 30);
+    const infoFont = veryCompactRows ? 6 : compactRows ? 7 : 8.5;
+    const infoLineH = veryCompactRows ? 3.5 : compactRows ? 4.2 : 5.2;
+    let infoY = saleQrY + (compactRows ? 1.5 : 2.2);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(infoFont);
+    doc.setTextColor(17, 24, 39);
+
+    doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY);
+    infoY += infoLineH;
+    doc.text(`ESTANTE : ${locShelf}`, infoX, infoY);
+    infoY += infoLineH;
+    doc.text(`NIVEL : ${locLevel}`, infoX, infoY);
+    infoY += infoLineH;
+
+    // VARIAÇÃO com destaque (preto quando preenchida, cinza quando vazia)
+    doc.setFont("helvetica", "bold");
+    if (variation) {
+      doc.setTextColor(17, 24, 39);
+      doc.text(`VARIACAO : ${variation}`, infoX, infoY);
+    } else {
+      doc.setTextColor(17, 24, 39);
+      doc.text(`VARIACAO :`, infoX, infoY);
+    }
 
     let qrY = rowTop + 2.4;
     const pieceQrData = await generateQRCodeDataUrl(item.sku || "");
