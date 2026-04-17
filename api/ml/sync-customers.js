@@ -13,6 +13,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { db } from "../_lib/db.js";
 import { getLatestConnection } from "./_lib/storage.js";
 import createLogger from "../_lib/logger.js";
@@ -70,7 +71,29 @@ function extractBuyerFromOrder(order) {
   };
 }
 
-async function syncCustomersToWebsite(connectionId) {
+// Buscar telefone/email do comprador via ML API (GET /orders/{id})
+async function fetchBuyerContact(token, orderId) {
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    const order = await r.json();
+    const buyer = order.buyer || {};
+    const phone = buyer.phone;
+    const phoneStr = phone
+      ? [phone.area_code, phone.number].filter(Boolean).join("")
+      : null;
+    return {
+      phone: phoneStr || null,
+      email: buyer.email || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function syncCustomersToWebsite(connectionId, token) {
   if (!SUPABASE_KEY) {
     throw new Error("SUPABASE_SERVICE_ROLE_KEY nao configurada.");
   }
@@ -130,11 +153,16 @@ async function syncCustomersToWebsite(connectionId) {
         continue;
       }
 
+      // Buscar telefone/email da API ML (1 call por cliente)
+      const contact = token ? await fetchBuyerContact(token, row.order_id) : null;
+
       // Inserir cliente
       const { data: created, error } = await supabase
         .from("customers")
         .insert({
           name: buyer.name,
+          phone: contact?.phone || null,
+          email: contact?.email || null,
           cpf_cnpj: buyer.cpf_cnpj,
           is_company: buyer.is_company,
           company_name: buyer.company_name,
@@ -200,7 +228,8 @@ export default async function handler(request, response) {
       return response.status(400).json({ error: "Conexao ML nao encontrada." });
     }
 
-    const result = await syncCustomersToWebsite(connection.id);
+    const validConnection = await ensureValidAccessToken(connection);
+    const result = await syncCustomersToWebsite(connection.id, validConnection.access_token);
     return response.status(200).json(result);
   } catch (error) {
     log.error("Sync customers falhou", error instanceof Error ? error : new Error(String(error)));
