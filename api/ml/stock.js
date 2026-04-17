@@ -394,6 +394,37 @@ export default async function mlStockHandler(req, res) {
     return res.status(404).json({ error: "Conexão não encontrada" });
   }
 
+  // GET /api/ml/stock?connection_id=X&skus=YA001,YA002 → retorna só os locations
+  if (req.method === "GET" && req.query.skus) {
+    const skus = String(req.query.skus)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (skus.length === 0) return res.json({ locations: {} });
+
+    const placeholders = skus.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT sku, location_corridor, location_shelf, location_level, location_notes
+         FROM ml_stock
+         WHERE connection_id = ? AND sku IN (${placeholders})`
+      )
+      .all(connectionId, ...skus);
+
+    const locations = {};
+    for (const r of rows) {
+      if (r.sku) {
+        locations[r.sku] = {
+          corridor: r.location_corridor,
+          shelf: r.location_shelf,
+          level: r.location_level,
+          notes: r.location_notes,
+        };
+      }
+    }
+    return res.json({ locations });
+  }
+
   if (req.method === "POST") {
     // Force sync
     try {

@@ -1023,6 +1023,35 @@ export async function deleteMLStockItem(connectionId: string, itemId: string): P
   if (!response.ok) throw new Error(data?.error || "Falha ao excluir produto.");
 }
 
+export interface StockLocation {
+  corridor: string | null;
+  shelf: string | null;
+  level: string | null;
+  notes: string | null;
+}
+
+// Busca localizações de vários SKUs de uma vez. Retorna mapa { sku → location }.
+export async function getStockLocations(
+  connectionId: string,
+  skus: string[]
+): Promise<Record<string, StockLocation>> {
+  const cleanSkus = skus.filter(Boolean);
+  if (cleanSkus.length === 0) return {};
+
+  const { response, data } = await fetchJsonWithTimeout<{
+    locations?: Record<string, StockLocation>;
+    error?: string;
+  }>(
+    `/api/ml/stock?connection_id=${encodeURIComponent(connectionId)}&skus=${encodeURIComponent(cleanSkus.join(","))}`,
+    {},
+    "Timeout ao buscar localização dos produtos.",
+    10000
+  );
+
+  if (!response.ok) return {};
+  return data?.locations || {};
+}
+
 export async function getMLStock(connectionId: string): Promise<{ items: MLStockItem[]; stale: boolean }> {
   const { response, data } = await fetchJsonWithTimeout<{
     items?: MLStockItem[];

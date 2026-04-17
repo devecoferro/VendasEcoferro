@@ -149,9 +149,9 @@ function drawObservationBox(
 }
 
 async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) {
-  doc.setDrawColor(185, 185, 195);
-  doc.setLineWidth(0.25);
-  doc.roundedRect(x0, y0, CARD_W, CARD_H, 1.6, 1.6, "S");
+  doc.setDrawColor(160, 160, 170);
+  doc.setLineWidth(0.35);
+  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
 
   const pad = 3;
   const innerH = CARD_H - pad * 2;
@@ -167,6 +167,10 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
             amount: sale.amount,
             productImageUrl: sale.productImageData || sale.productImageUrl,
             productImageData: sale.productImageData,
+            variation: sale.variation,
+            locationCorridor: sale.locationCorridor,
+            locationShelf: sale.locationShelf,
+            locationLevel: sale.locationLevel,
           },
         ];
   const rowGap = 1.2;
@@ -218,50 +222,60 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       drawPlaceholder(doc, imageX, imageY, imageW, imageH);
     }
 
-    let textY = rowTop + 2.2;
-    const skuFont = veryCompactRows ? 5.5 : compactRows ? 6 : 7.4;
-    const titleFont = veryCompactRows ? 6.6 : compactRows ? 7.4 : 9.2;
-    const customerFont = veryCompactRows ? 6.2 : compactRows ? 7.2 : 8.8;
-    const nicknameFont = veryCompactRows ? 5.8 : compactRows ? 6.4 : 7.8;
-    const saleNumberFont = veryCompactRows ? 5.5 : compactRows ? 6 : 7.1;
-    const saleMetaFont = veryCompactRows ? 5.2 : compactRows ? 5.6 : 6.7;
+    // ─── LAYOUT SIMPLIFICADO + FONTES EM NEGRITO ───────────────────
+    // Tudo em helvetica bold, com hierarquia por tamanho.
+    let textY = rowTop + 2.8;
+    const skuFont = veryCompactRows ? 6 : compactRows ? 7 : 8.5;
+    const titleFont = veryCompactRows ? 7 : compactRows ? 8 : 9.8;
+    const customerFont = veryCompactRows ? 6.4 : compactRows ? 7.4 : 9;
+    const nicknameFont = veryCompactRows ? 5.8 : compactRows ? 6.6 : 7.8;
+    const saleNumberFont = veryCompactRows ? 5.8 : compactRows ? 6.6 : 7.8;
+    const saleMetaFont = veryCompactRows ? 5.4 : compactRows ? 6 : 7;
 
+    // SKU: destacado no topo
     doc.setFont("helvetica", "bold");
     doc.setFontSize(skuFont);
-    doc.setTextColor(38, 51, 72);
+    doc.setTextColor(17, 24, 39);
     doc.text(`SKU: ${item.sku || "-"}`, centerX, textY);
-    textY += compactRows ? 3.5 : 4.5;
+    textY += compactRows ? 3.8 : 4.8;
 
+    // Nome do produto
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(titleFont);
-    doc.setTextColor(21, 35, 57);
+    doc.setTextColor(17, 24, 39);
     const productLines = doc.splitTextToSize(
       item.itemTitle || sale.productName || "-",
       maxTextW
     );
     const maxProductLines = 2;
     doc.text(productLines.slice(0, maxProductLines), centerX, textY);
-    textY += Math.min(productLines.length, maxProductLines) * (compactRows ? 3 : 3.8) + 0.8;
+    textY += Math.min(productLines.length, maxProductLines) * (compactRows ? 3.2 : 4.1) + 0.8;
 
+    // Nome do comprador
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(customerFont);
+    doc.setTextColor(17, 24, 39);
     doc.text(sale.customerName || "-", centerX, textY, { maxWidth: maxTextW });
-    textY += compactRows ? 3.3 : 4.1;
+    textY += compactRows ? 3.5 : 4.3;
 
+    // Nickname
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(nicknameFont);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(107, 114, 128);
+    doc.setTextColor(185, 28, 28); // vermelho escuro
     doc.text(sale.customerNickname || "-", centerX, textY, { maxWidth: maxTextW });
-    textY += compactRows ? 3.1 : 4;
+    textY += compactRows ? 3.2 : 4;
 
+    // #Number + Data
     const saleNumberText = `#${sale.saleNumber || "-"}`;
-    doc.setFontSize(saleNumberFont);
     doc.setFont("helvetica", "bold");
-    doc.setTextColor(77, 90, 108);
+    doc.setFontSize(saleNumberFont);
+    doc.setTextColor(17, 24, 39);
     doc.text(saleNumberText, centerX, textY, { maxWidth: maxTextW * 0.56 });
 
     const saleNumberWidth = doc.getTextWidth(saleNumberText);
-    doc.setFont("helvetica", "normal");
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(saleMetaFont);
-    doc.setTextColor(120, 120, 130);
+    doc.setTextColor(100, 116, 139);
     doc.text(
       `${sale.saleDate || "-"} ${sale.saleTime || ""}`.trim(),
       centerX + saleNumberWidth + 3,
@@ -336,20 +350,21 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       }
     }
 
-    // Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO — à direita do logo.
+    // ─── Bloco CORREDOR / ESTANTE / NÍVEL / VARIAÇÃO ───────────────
+    // Puxa valores do item (SKU específico) ou do sale (fallback).
     const locCorridor = item.locationCorridor || sale.locationCorridor || "";
     const locShelf = item.locationShelf || sale.locationShelf || "";
     const locLevel = item.locationLevel || sale.locationLevel || "";
     const variation = item.variation || sale.variation || "";
-    const infoX =
-      saleQrX + saleQrSize + (compactRows ? 22 : 30);
-    const infoFont = veryCompactRows ? 5.4 : compactRows ? 6.2 : 7.4;
-    const infoLineH = veryCompactRows ? 3.2 : compactRows ? 3.8 : 4.6;
-    let infoY = saleQrY + (compactRows ? 2.2 : 3.2);
+    // Posiciona na direita do logo, mais ao meio do card
+    const infoX = saleQrX + saleQrSize + (compactRows ? 22 : 30);
+    const infoFont = veryCompactRows ? 5.8 : compactRows ? 6.8 : 8.2;
+    const infoLineH = veryCompactRows ? 3.5 : compactRows ? 4.2 : 5.2;
+    let infoY = saleQrY + (compactRows ? 1.4 : 2);
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(infoFont);
-    doc.setTextColor(51, 65, 85);
+    doc.setTextColor(17, 24, 39);
 
     doc.text(`CORREDOR : ${locCorridor}`, infoX, infoY);
     infoY += infoLineH;
@@ -357,6 +372,9 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     infoY += infoLineH;
     doc.text(`NIVEL : ${locLevel}`, infoX, infoY);
     infoY += infoLineH;
+
+    // VARIAÇÃO destacada em negrito — se vazio mostra em cinza
+    doc.setFont("helvetica", "bold");
     if (variation) {
       doc.setTextColor(17, 24, 39);
       doc.text(`VARIACAO : ${variation}`, infoX, infoY);

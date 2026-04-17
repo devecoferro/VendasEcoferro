@@ -58,6 +58,8 @@ import {
   getMLOrderDocuments,
   mapMLOrdersToProcessingResults,
   mapMLOrderToSaleData,
+  getStockLocations,
+  getMLConnectionStatus,
   type MLDashboardDeposit,
   type MLNFeResponse,
   type MLOrderDocumentsResponse,
@@ -988,9 +990,43 @@ export default function MercadoLivrePage() {
     });
   }, []);
 
+  // Enriquece SaleData com localização (Corredor/Estante/Nível) buscando do ml_stock
+  // por SKU. Isso permite que a etiqueta mostre automaticamente onde o produto está.
+  const enrichSaleWithLocations = useCallback(async (sale: ReturnType<typeof mapMLOrderToSaleData>) => {
+    try {
+      const conn = await getMLConnectionStatus();
+      if (!conn?.id) return sale;
+      const skus = [sale.sku, ...(sale.groupedItems || []).map((i) => i.sku)].filter(Boolean) as string[];
+      if (skus.length === 0) return sale;
+
+      const locations = await getStockLocations(conn.id, skus);
+      const topLoc = sale.sku ? locations[sale.sku] : null;
+
+      return {
+        ...sale,
+        locationCorridor: topLoc?.corridor || null,
+        locationShelf: topLoc?.shelf || null,
+        locationLevel: topLoc?.level || null,
+        groupedItems: (sale.groupedItems || []).map((item) => {
+          const loc = item.sku ? locations[item.sku] : null;
+          return {
+            ...item,
+            locationCorridor: loc?.corridor || null,
+            locationShelf: loc?.shelf || null,
+            locationLevel: loc?.level || null,
+          };
+        }),
+      };
+    } catch {
+      return sale;
+    }
+  }, []);
+
   const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
     try {
-      await exportSalePdf(mapMLOrderToSaleData(order));
+      const sale = mapMLOrderToSaleData(order);
+      const enriched = await enrichSaleWithLocations(sale);
+      await exportSalePdf(enriched);
     } catch (caughtError) {
       toast.error(
         caughtError instanceof Error
@@ -998,7 +1034,7 @@ export default function MercadoLivrePage() {
           : "Falha ao gerar a etiqueta interna Ecoferro."
       );
     }
-  }, []);
+  }, [enrichSaleWithLocations]);
 
   const handlePrintMlLabelsAndNFeBulk = useCallback(
     async (ordersToPrint: MLOrder[]) => {
