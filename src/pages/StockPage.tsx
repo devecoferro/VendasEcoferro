@@ -571,26 +571,41 @@ export default function StockPage() {
         ) : (
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full text-sm">
+              <colgroup>
+                <col style={{ width: "30%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "9%" }} />
+              </colgroup>
               <thead className="border-b bg-muted/40">
                 <tr>
-                  <th className="px-4 py-3 text-left">
+                  <th className="px-3 py-3 text-left">
                     <SortBtn label="Produto" col="title" />
                   </th>
-                  <th className="px-4 py-3 text-left hidden sm:table-cell">SKU</th>
-                  <th className="px-4 py-3 text-center hidden lg:table-cell">Corredor</th>
-                  <th className="px-4 py-3 text-center hidden lg:table-cell">Estante</th>
-                  <th className="px-4 py-3 text-center hidden lg:table-cell">Nível</th>
-                  <th className="px-4 py-3 text-right">
+                  <th className="px-3 py-3 text-left hidden sm:table-cell">SKU</th>
+                  <th className="px-3 py-3 text-center hidden lg:table-cell">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Localização
+                    </span>
+                    <div className="text-[10px] font-normal text-muted-foreground/70 mt-0.5">
+                      Cor • Est • Nív
+                    </div>
+                  </th>
+                  <th className="px-3 py-3 text-right">
                     <SortBtn label="Disponível" col="available_quantity" />
                   </th>
-                  <th className="px-4 py-3 text-right hidden md:table-cell">
+                  <th className="px-3 py-3 text-right hidden md:table-cell">
                     <SortBtn label="Vendido" col="sold_quantity" />
                   </th>
-                  <th className="px-4 py-3 text-right hidden lg:table-cell">
+                  <th className="px-3 py-3 text-right hidden lg:table-cell">
                     <SortBtn label="Preço" col="price" />
                   </th>
-                  <th className="px-4 py-3 text-center hidden md:table-cell">Status</th>
-                  <th className="px-4 py-3 text-right">Ações</th>
+                  <th className="px-3 py-3 text-center hidden md:table-cell">Status</th>
+                  <th className="px-3 py-3 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -602,7 +617,7 @@ export default function StockPage() {
                       key={item.item_id}
                       className="hover:bg-muted/30 transition-colors"
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3">
                         <div className="flex items-center gap-3">
                           {item.thumbnail ? (
                             <img
@@ -617,30 +632,35 @@ export default function StockPage() {
                             </div>
                           )}
                           <div className="min-w-0">
-                            <p className="font-medium truncate max-w-xs">{item.title ?? "—"}</p>
-                            <p className="text-xs text-muted-foreground">ID: {item.item_id}</p>
+                            <p className="font-medium truncate text-sm">{item.title ?? "—"}</p>
+                            <p className="text-[10px] text-muted-foreground truncate">ID: {item.item_id}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">
+                      <td className="px-3 py-3 text-muted-foreground hidden sm:table-cell">
                         {item.sku ? (
-                          item.sku
+                          <span className="font-mono text-xs">{item.sku}</span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-destructive text-xs font-semibold">
                             <AlertTriangle className="h-3 w-3" /> SEM SKU
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
-                        {item.location_corridor || "—"}
+                      <td className="px-3 py-3 text-center hidden lg:table-cell">
+                        {item.location_corridor || item.location_shelf || item.location_level ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-primary/10 text-primary px-2 py-0.5 text-xs font-semibold">
+                            <MapPin className="h-3 w-3" />
+                            {[
+                              item.location_corridor || "—",
+                              item.location_shelf || "—",
+                              item.location_level || "—",
+                            ].join(" • ")}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
-                        {item.location_shelf || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
-                        {item.location_level || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right font-semibold">
+                      <td className="px-3 py-3 text-right font-semibold">
                         <span
                           className={
                             isOut
@@ -656,10 +676,10 @@ export default function StockPage() {
                           )}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right text-muted-foreground hidden md:table-cell">
+                      <td className="px-3 py-3 text-right text-muted-foreground hidden md:table-cell">
                         {item.sold_quantity}
                       </td>
-                      <td className="px-4 py-3 text-right hidden lg:table-cell">
+                      <td className="px-3 py-3 text-right hidden lg:table-cell">
                         {item.price != null
                           ? item.price.toLocaleString("pt-BR", {
                               style: "currency",
@@ -667,7 +687,7 @@ export default function StockPage() {
                             })
                           : "—"}
                       </td>
-                      <td className="px-4 py-3 text-center hidden md:table-cell">
+                      <td className="px-3 py-3 text-center hidden md:table-cell">
                         <Badge
                           variant={
                             item.status === "active"
@@ -681,7 +701,7 @@ export default function StockPage() {
                           {item.status ?? "—"}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-3 py-3">
                         <div className="flex gap-1 justify-end">
                           <Button
                             size="sm"
