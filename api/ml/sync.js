@@ -821,6 +821,238 @@ export async function runActiveOrdersRefresh({ connectionId }) {
   return { success: true, totalRefreshed };
 }
 
+// ─── Hard Heal: Re-fetch specific order IDs from ML API ──────────────────
+// Usado pelo autoHealDrift quando drift persiste (bug de classificação ou
+// dados corrompidos em pedidos específicos). Em vez de refazer busca por
+// status (active refresh), vai DIRETO em /orders/{id} e /shipments/{id}
+// pra garantir que o raw_data do DB seja idêntico ao que o ML retorna AGORA.
+//
+// Diferente do runMercadoLivreSync (que pagina por filtros), este busca
+// lista específica de order IDs em paralelo, em chunks de até 10.
+//
+// Retorna { success, totalRefreshed, errors, attempted }.
+const REFRESH_BY_IDS_CONCURRENCY = 10;
+
+export async function refreshMLOrdersByIds({ connectionId, orderIds }) {
+  const ids = Array.isArray(orderIds)
+    ? [...new Set(orderIds.map((v) => String(v).trim()).filter(Boolean))]
+    : [];
+  if (ids.length === 0) {
+    return { success: true, totalRefreshed: 0, attempted: 0, errors: [] };
+  }
+
+  const baseConnection = getConnectionById(connectionId);
+  if (!baseConnection?.seller_id) {
+    return {
+      success: false,
+      totalRefreshed: 0,
+      attempted: ids.length,
+      errors: [{ order_id: null, message: "Connection not found" }],
+    };
+  }
+
+  let connection = await ensureValidAccessToken(baseConnection);
+  const sellerStores = await getSellerStores(
+    connection.access_token,
+    String(connection.seller_id)
+  );
+  const storesById = new Map();
+  const storesByNodeId = new Map();
+  for (const store of sellerStores) {
+    if (store?.id) storesById.set(String(store.id), store);
+    if (store?.network_node_id) storesByNodeId.set(String(store.network_node_id), store);
+  }
+
+  const itemImageCache = new Map();
+  const shipmentSnapshotCache = new Map();
+  const shipmentSlaCache = new Map();
+  const billingInfoCache = new Map();
+
+  const errors = [];
+  let totalRefreshed = 0;
+
+  // Processa em chunks de REFRESH_BY_IDS_CONCURRENCY com fetch paralelo
+  for (let i = 0; i < ids.length; i += REFRESH_BY_IDS_CONCURRENCY) {
+    const chunk = ids.slice(i, i + REFRESH_BY_IDS_CONCURRENCY);
+
+    // 1. GET /orders/{id} pra cada ID do chunk
+    const orderResults = await Promise.all(
+      chunk.map(async (orderId) => {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
+            headers: { Authorization: `Bearer ${connection.access_token}` },
+          });
+          if (!r.ok) {
+            const text = await r.text().catch(() => "");
+            errors.push({
+              order_id: orderId,
+              message: `GET /orders/${orderId} → ${r.status}: ${text.slice(0, 200)}`,
+            });
+            return null;
+          }
+          return await r.json();
+        } catch (err) {
+          errors.push({
+            order_id: orderId,
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        }
+      })
+    );
+
+    const validOrders = orderResults.filter((o) => o && o.id);
+    if (validOrders.length === 0) continue;
+
+    // 2. Pra cada order, busca shipment + sla + billing em paralelo
+    const chunkRecords = await Promise.all(
+      validOrders.map(async (order) => {
+        try {
+          const orderId = String(order.id);
+          const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
+
+          const [shipmentSnapshot, shipmentSlaSnapshot] = await Promise.all([
+            getShipmentSnapshot(connection.access_token, shippingId, shipmentSnapshotCache),
+            getShipmentSlaSnapshot(connection.access_token, shippingId, shipmentSlaCache),
+          ]);
+
+          const billingInfoSnapshot = shouldFetchBillingInfo(order, shipmentSnapshot)
+            ? await getOrderBillingInfoSnapshot(
+                connection.access_token,
+                orderId,
+                billingInfoCache
+              )
+            : { available: false, status: "skipped", data: null };
+
+          const shipmentReceiverName =
+            typeof shipmentSnapshot?.receiver_name === "string"
+              ? shipmentSnapshot.receiver_name
+              : null;
+          const buyerNameFromOrder = order.buyer?.first_name
+            ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
+            : null;
+          const buyerName =
+            shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+          const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
+          if (orderItems.length === 0) return [];
+
+          const itemRecords = await Promise.all(
+            orderItems.map(async (item, itemIndex) => {
+              const itemId = item.item?.id || null;
+              const productImageUrl = await getItemImageUrl(
+                connection.access_token,
+                itemId,
+                itemImageCache
+              );
+              const depositSnapshot = buildDepositSnapshot(
+                order,
+                item,
+                shipmentSnapshot,
+                storesById,
+                storesByNodeId
+              );
+              const recordId = `${orderId}:${itemId || item.item?.seller_sku || itemIndex}`;
+
+              const qty = item.quantity || 1;
+              const unitPrice = item.unit_price ?? null;
+              const fullUnitPrice = item.full_unit_price ?? null;
+              const isSingleItem = orderItems.length === 1;
+              const currencyId = order.currency_id || null;
+              let amount = null;
+              if (unitPrice != null && unitPrice > 0) {
+                amount = Number((Math.round(unitPrice * qty * 100) / 100).toFixed(2));
+              } else if (fullUnitPrice != null && fullUnitPrice > 0) {
+                amount = Number((Math.round(fullUnitPrice * qty * 100) / 100).toFixed(2));
+              } else if (
+                isSingleItem &&
+                typeof order.total_amount === "number" &&
+                order.total_amount > 0
+              ) {
+                const shippingCost = order.shipping?.cost ?? 0;
+                const productAmount = order.total_amount - shippingCost;
+                amount = Number(
+                  (Math.round(Math.max(productAmount, 0) * 100) / 100).toFixed(2)
+                );
+              } else if (typeof order.total_amount === "number" && order.total_amount > 0) {
+                const totalItems = orderItems.reduce((s, it) => s + (it.quantity || 1), 0);
+                amount = Number(
+                  (Math.round((order.total_amount * qty / totalItems) * 100) / 100).toFixed(2)
+                );
+              }
+
+              return {
+                id: recordId,
+                connection_id: connection.id,
+                order_id: orderId,
+                sale_number: orderId,
+                sale_date: order.date_created,
+                buyer_name: buyerName,
+                buyer_nickname: order.buyer?.nickname || null,
+                item_title: item.item?.title || null,
+                item_id: itemId,
+                product_image_url: productImageUrl,
+                sku: item.item?.seller_sku || null,
+                quantity: qty,
+                amount,
+                currency_id: currencyId,
+                order_status: order.status || null,
+                shipping_id: shippingId,
+                raw_data: {
+                  ...order,
+                  order_item_index: itemIndex,
+                  order_item_snapshot: item,
+                  shipment_snapshot: shipmentSnapshot,
+                  sla_snapshot: shipmentSlaSnapshot,
+                  deposit_snapshot: depositSnapshot,
+                  billing_info_snapshot: billingInfoSnapshot.data,
+                  billing_info_status: billingInfoSnapshot.status,
+                  billing_info_error_status: billingInfoSnapshot.error_status ?? null,
+                  billing_info_error_message: billingInfoSnapshot.error_message ?? null,
+                },
+              };
+            })
+          );
+          return itemRecords;
+        } catch (err) {
+          errors.push({
+            order_id: String(order.id),
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return [];
+        }
+      })
+    );
+
+    // 3. Flatten + upsert (substitui registros antigos pra garantir que
+    //    items removidos do pedido também saem do DB). upsertOrders já faz
+    //    JSON.stringify no raw_data — aqui passamos como objeto mesmo.
+    const flatRecords = chunkRecords.flat().filter(Boolean);
+    if (flatRecords.length > 0) {
+      const orderIdsInChunk = [...new Set(flatRecords.map((r) => r.order_id))];
+      try {
+        replaceOrdersByOrderIds(orderIdsInChunk, flatRecords);
+        totalRefreshed += orderIdsInChunk.length;
+      } catch (err) {
+        errors.push({
+          order_id: orderIdsInChunk.join(","),
+          message: `upsert: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  }
+
+  // Invalida caches pra que próxima leitura veja dados frescos
+  invalidateDashboardCache();
+  invalidateOrdersCache();
+
+  return {
+    success: errors.length === 0 || totalRefreshed > 0,
+    totalRefreshed,
+    attempted: ids.length,
+    errors,
+  };
+}
+
 export default async function handler(request, response) {
   if (request.method !== "POST") {
     return response.status(405).json({ success: false, error: "Method not allowed" });

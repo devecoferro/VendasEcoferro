@@ -17,6 +17,7 @@ import {
   Wifi,
   WifiOff,
   XCircle,
+  Zap,
 } from "lucide-react";
 import {
   CHIP_BUCKET_LABELS,
@@ -25,10 +26,12 @@ import {
   fetchChipDriftHistory,
   fetchOrdersDivergence,
   triggerAutoHeal,
+  triggerHardHeal,
   type AutoHealResponse,
   type ChipBucketCounts,
   type ChipCountDiff,
   type ChipDriftHistoryEntry,
+  type HardHealResponse,
   type OrdersDivergenceResponse,
 } from "@/services/mlDiagnosticsService";
 
@@ -145,6 +148,9 @@ export default function MLDiagnosticsPage() {
   const [healing, setHealing] = useState(false);
   const [healResult, setHealResult] = useState<AutoHealResponse | null>(null);
 
+  const [hardHealing, setHardHealing] = useState(false);
+  const [hardHealResult, setHardHealResult] = useState<HardHealResponse | null>(null);
+
   const [ordersDiff, setOrdersDiff] = useState<OrdersDivergenceResponse | null>(null);
   const [ordersDiffLoading, setOrdersDiffLoading] = useState(false);
 
@@ -260,7 +266,7 @@ export default function MLDiagnosticsPage() {
         );
       } else {
         toast.error(
-          `Drift persistente após refresh — provável bug de classificação (investigar pedidos divergentes)`
+          `Drift persistente após refresh — tente "Hard Heal" pra reclassificar pedido-a-pedido`
         );
       }
       await loadHistory();
@@ -268,6 +274,48 @@ export default function MLDiagnosticsPage() {
       toast.error(err instanceof Error ? err.message : "Auto-heal falhou");
     } finally {
       setHealing(false);
+    }
+  }, [tolerance, loadHistory]);
+
+  const handleHardHeal = useCallback(async () => {
+    try {
+      setHardHealing(true);
+      setHardHealResult(null);
+      toast.info(
+        "Hard heal: reclassificando pedidos divergentes direto do ML — pode demorar 20-60s..."
+      );
+      const hard = await triggerHardHeal({ tolerance, max: 200 });
+      setHardHealResult(hard);
+      if (hard.after) setResult(hard.after);
+      if (hard.healed) {
+        toast.success(
+          hard.reason === "ALREADY_IN_SYNC"
+            ? "Já estava sincronizado."
+            : `Drift corrigido via hard-heal (${hard.orders_refreshed} pedidos reclassificados)`
+        );
+      } else if (
+        hard.reason === "ML_API_UNAVAILABLE" ||
+        hard.reason === "ML_API_UNAVAILABLE_AFTER_REFRESH"
+      ) {
+        toast.error("ML API indisponível — tente de novo em alguns segundos");
+      } else if (hard.reason === "NO_ORDER_LEVEL_DIVERGENCE") {
+        toast.warning(
+          "Chips divergem mas nenhum pedido individual identificado como divergente — provavelmente bug de pack dedup no agregado"
+        );
+      } else if (hard.reason === "PARTIALLY_HEALED") {
+        toast.warning(
+          `Drift reduzido mas não zerou (${hard.before.max_abs_diff}→${hard.after?.max_abs_diff ?? "?"}, ${hard.orders_refreshed}/${hard.divergences_before} reclassificados)`
+        );
+      } else {
+        toast.error(
+          `Bug de lógica de classificação — re-fetch pedido-a-pedido não resolveu. ${hard.divergences_before} pedidos divergentes identificados.`
+        );
+      }
+      await loadHistory();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Hard-heal falhou");
+    } finally {
+      setHardHealing(false);
     }
   }, [tolerance, loadHistory]);
 
@@ -468,7 +516,11 @@ export default function MLDiagnosticsPage() {
                     variant="outline"
                     className="gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
                     onClick={handleAutoHeal}
-                    disabled={healing || result.status === "ML_API_UNAVAILABLE"}
+                    disabled={
+                      healing ||
+                      hardHealing ||
+                      result.status === "ML_API_UNAVAILABLE"
+                    }
                     title="Força refresh dos pedidos ativos e re-verifica — corrige drift de timing"
                   >
                     {healing ? (
@@ -477,6 +529,25 @@ export default function MLDiagnosticsPage() {
                       <Heart className="h-3.5 w-3.5" />
                     )}
                     Forçar auto-heal
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"
+                    onClick={handleHardHeal}
+                    disabled={
+                      hardHealing ||
+                      healing ||
+                      result.status === "ML_API_UNAVAILABLE"
+                    }
+                    title="Hard heal: identifica pedidos divergentes e re-busca cada um via ML API — reclassifica pedido-a-pedido (lento, ~20-60s)"
+                  >
+                    {hardHealing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Zap className="h-3.5 w-3.5" />
+                    )}
+                    Hard heal
                   </Button>
                   <Button
                     size="sm"
@@ -577,9 +648,66 @@ export default function MLDiagnosticsPage() {
                 {healResult.after ? ` → ${healResult.after.max_abs_diff}` : ""}
                 {healResult.reason === "PERSISTENT_CLASSIFICATION_BUG" ? (
                   <span className="mt-1 block font-medium text-red-700">
-                    Próximo passo: clique em "Ver pedidos divergentes" para
-                    identificar exatamente quais pedidos estão em buckets
-                    errados. Provável bug em classifyCrossDockingOrder ou classifyFulfillmentOrder.
+                    Próximo passo: clique em "Hard heal" para reclassificar pedido-a-pedido,
+                    ou em "Ver pedidos divergentes" para investigar.
+                  </span>
+                ) : null}
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
+
+        {/* ─── Resultado do Hard-Heal ─── */}
+        {hardHealResult ? (
+          <Card
+            className={
+              hardHealResult.healed
+                ? "border-emerald-300 bg-emerald-50"
+                : hardHealResult.reason === "PARTIALLY_HEALED"
+                  ? "border-amber-300 bg-amber-50"
+                  : hardHealResult.reason === "NO_ORDER_LEVEL_DIVERGENCE"
+                    ? "border-amber-300 bg-amber-50"
+                    : "border-red-300 bg-red-50"
+            }
+          >
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">
+                Hard-heal: {
+                  hardHealResult.reason === "ALREADY_IN_SYNC" ? "Já sincronizado" :
+                  hardHealResult.reason === "RESOLVED_AFTER_HARD_REFRESH" ? "Drift resolvido via reclassificação" :
+                  hardHealResult.reason === "PARTIALLY_HEALED" ? "Parcialmente corrigido" :
+                  hardHealResult.reason === "PERSISTENT_CLASSIFICATION_LOGIC_BUG" ? "Bug de lógica de classificação" :
+                  hardHealResult.reason === "NO_ORDER_LEVEL_DIVERGENCE" ? "Drift agregado sem divergência individual (pack dedup?)" :
+                  "ML API indisponível"
+                }
+              </CardTitle>
+              <CardDescription>
+                {hardHealResult.orders_refreshed}/{hardHealResult.divergences_before} pedidos reclassificados.{" "}
+                max |diff|: {hardHealResult.before.max_abs_diff}
+                {hardHealResult.after ? ` → ${hardHealResult.after.max_abs_diff}` : ""}
+                {hardHealResult.patterns && hardHealResult.patterns.length > 0 ? (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {hardHealResult.patterns.slice(0, 6).map((p) => (
+                      <Badge
+                        key={p.pattern}
+                        variant="outline"
+                        className="text-xs"
+                      >
+                        {p.pattern} × {p.count}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+                {hardHealResult.reason === "PERSISTENT_CLASSIFICATION_LOGIC_BUG" ? (
+                  <span className="mt-2 block font-medium text-red-700">
+                    Re-fetch pedido-a-pedido não zerou o diff. Isso é bug no
+                    algoritmo de classificação interno (não é dado stale).
+                    Investigar classifyCrossDockingOrder / classifyFulfillmentOrder em api/ml/dashboard.js.
+                  </span>
+                ) : null}
+                {hardHealResult.errors && hardHealResult.errors.length > 0 ? (
+                  <span className="mt-2 block text-xs text-red-600">
+                    {hardHealResult.errors.length} erro(s) durante o refresh (primeiro: {hardHealResult.errors[0]?.message.slice(0, 120)})
                   </span>
                 ) : null}
               </CardDescription>

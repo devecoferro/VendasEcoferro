@@ -22,6 +22,7 @@ import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlDiagnosticsHandler, {
   computeChipCountsDiff,
   autoHealDrift,
+  hardHealDrift,
   saveChipDriftSnapshot,
   pruneChipDriftHistory,
 } from "../api/ml/diagnostics.js";
@@ -399,6 +400,10 @@ const CHIP_DRIFT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos (baseline I
 // Auto-heal cooldown: se drift persiste, nao adianta re-disparar active refresh
 // a cada 30s — gasta ML API atoa. Cooldown de 3min entre auto-heals.
 const AUTO_HEAL_COOLDOWN_MS = 3 * 60 * 1000;
+// Hard-heal cooldown: mais caro (2×N ML API calls), so roda quando soft-heal
+// falhou com PERSISTENT_CLASSIFICATION_BUG ou PARTIALLY_HEALED.
+// Cooldown de 10min pra nao martelar a API.
+const HARD_HEAL_COOLDOWN_MS = 10 * 60 * 1000;
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
@@ -412,6 +417,7 @@ let chipDriftSnapshotRunning = false;
 let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapshot gravado
 let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
 let lastAutoHealAt = 0; // epoch ms do ultimo auto-heal disparado
+let lastHardHealAt = 0; // epoch ms do ultimo hard-heal disparado
 
 async function autoSyncOrders() {
   if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
@@ -507,6 +513,7 @@ async function autoChipDriftSnapshot() {
     const now = Date.now();
     let finalResult = result;
     let healOutcome = null;
+    let hardHealOutcome = null;
     if (
       result.status === "DRIFT_DETECTED" &&
       now - lastAutoHealAt >= AUTO_HEAL_COOLDOWN_MS
@@ -528,9 +535,49 @@ async function autoChipDriftSnapshot() {
           onDriftHealed(heal.refreshed_orders, result.max_abs_diff, heal.after?.max_abs_diff ?? 0).catch(() => {});
         } else {
           log.warn(
-            `Auto-heal FALHOU: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? result.max_abs_diff}) — provavel bug de classificacao, investigar em /ml-diagnostics`
+            `Auto-heal FALHOU: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? result.max_abs_diff})`
           );
-          onDriftPersistent(heal.refreshed_orders, heal.after?.max_abs_diff ?? result.max_abs_diff, heal.reason).catch(() => {});
+          // ESCALATION: soft heal não resolveu → dispara hard heal
+          // (pedido-a-pedido via /orders/{id} + /shipments/{id}, sobrescreve raw_data).
+          // Cooldown maior (10min) pra evitar gastar ML API atoa se o bug for
+          // realmente na lógica de classificação.
+          const shouldEscalateToHardHeal =
+            (heal.reason === "PERSISTENT_CLASSIFICATION_BUG" ||
+              heal.reason === "PARTIALLY_HEALED") &&
+            now - lastHardHealAt >= HARD_HEAL_COOLDOWN_MS;
+          if (shouldEscalateToHardHeal) {
+            lastHardHealAt = now;
+            log.info(
+              `Escalando pra hard-heal (reclassificação pedido-a-pedido via ML API)`
+            );
+            try {
+              const hard = await hardHealDrift({ tolerance: 2, maxOrdersToRefresh: 200 });
+              hardHealOutcome = hard;
+              if (hard.after) finalResult = hard.after;
+              if (hard.healed) {
+                log.info(
+                  `Hard-heal SUCESSO: ${hard.reason} (${hard.orders_refreshed} pedidos reclassificados, ${hard.divergences_before} divergentes identificados, max_abs_diff ${result.max_abs_diff}→${hard.after?.max_abs_diff ?? 0})`
+                );
+                onDriftHealed(hard.orders_refreshed, result.max_abs_diff, hard.after?.max_abs_diff ?? 0).catch(() => {});
+              } else {
+                const patterns = (hard.patterns || [])
+                  .slice(0, 5)
+                  .map((p) => `${p.pattern}×${p.count}`)
+                  .join(", ");
+                log.warn(
+                  `Hard-heal FALHOU: ${hard.reason} (${hard.orders_refreshed}/${hard.divergences_before} reclassificados, max_abs_diff ${result.max_abs_diff}→${hard.after?.max_abs_diff ?? result.max_abs_diff}) — BUG DE CÓDIGO na classificação. Padrões: ${patterns || "none"}`
+                );
+                onDriftPersistent(hard.orders_refreshed, hard.after?.max_abs_diff ?? result.max_abs_diff, hard.reason).catch(() => {});
+              }
+            } catch (hardErr) {
+              log.error(
+                "Hard-heal falhou",
+                hardErr instanceof Error ? hardErr : new Error(String(hardErr))
+              );
+            }
+          } else {
+            onDriftPersistent(heal.refreshed_orders, heal.after?.max_abs_diff ?? result.max_abs_diff, heal.reason).catch(() => {});
+          }
         }
       } catch (healErr) {
         log.error(
@@ -553,7 +600,13 @@ async function autoChipDriftSnapshot() {
     if (!shouldPersist) return;
 
     let source;
-    if (healOutcome) {
+    if (hardHealOutcome) {
+      source = hardHealOutcome.healed
+        ? "cron_hard_healed"
+        : hardHealOutcome.reason === "PARTIALLY_HEALED"
+          ? "cron_hard_partial"
+          : "cron_hard_persistent";
+    } else if (healOutcome) {
       source = healOutcome.healed
         ? "cron_auto_healed"
         : healOutcome.reason === "PARTIALLY_HEALED"
@@ -576,7 +629,7 @@ async function autoChipDriftSnapshot() {
     };
     if (isHeartbeat) lastChipDriftHeartbeatAt = now;
 
-    if ((statusChanged || diffChanged) && !healOutcome) {
+    if ((statusChanged || diffChanged) && !healOutcome && !hardHealOutcome) {
       if (finalResult.status === "DRIFT_DETECTED") {
         log.warn(
           `Chip drift detectado (${source}): max_abs_diff=${finalResult.max_abs_diff} diff=${JSON.stringify(finalResult.diff)}`

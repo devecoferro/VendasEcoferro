@@ -107,6 +107,27 @@ export interface AutoHealResponse {
   after: ChipCountDiff | null;
 }
 
+export type HardHealReason =
+  | "ALREADY_IN_SYNC"
+  | "RESOLVED_AFTER_HARD_REFRESH"
+  | "PARTIALLY_HEALED"
+  | "PERSISTENT_CLASSIFICATION_LOGIC_BUG"
+  | "NO_ORDER_LEVEL_DIVERGENCE"
+  | "ML_API_UNAVAILABLE"
+  | "ML_API_UNAVAILABLE_AFTER_REFRESH";
+
+export interface HardHealResponse {
+  healed: boolean;
+  reason: HardHealReason;
+  orders_refreshed: number;
+  divergences_before: number;
+  patterns: OrdersDivergencePattern[];
+  before: ChipCountDiff;
+  after: ChipCountDiff | null;
+  errors: Array<{ order_id: string | null; message: string }>;
+  timestamp: string;
+}
+
 export interface FetchChipDiffParams {
   tolerance?: number;
   includeBreakdown?: boolean;
@@ -116,7 +137,7 @@ export interface FetchChipDiffParams {
 }
 
 function buildDiagnosticsUrl(
-  action: "verify" | "history" | "orders-diff" | "heal",
+  action: "verify" | "history" | "orders-diff" | "heal" | "hard-heal",
   params?: Record<string, string | number | boolean | null | undefined>
 ): string {
   const query = new URLSearchParams();
@@ -216,6 +237,34 @@ export async function triggerAutoHeal(
     );
   }
   return (await response.json()) as AutoHealResponse;
+}
+
+/**
+ * Hard heal: identifica pedidos divergentes via computeOrdersDivergence e
+ * re-busca cada um via ML API direto, sobrescrevendo raw_data no DB com a
+ * fonte de verdade do Mercado Livre. Lento (~N*2 ML API calls) mas é a
+ * correção profunda quando o soft heal não resolve.
+ */
+export async function triggerHardHeal(
+  params: { tolerance?: number; max?: number } = {}
+): Promise<HardHealResponse> {
+  const url = buildDiagnosticsUrl("hard-heal", {
+    tolerance: params.tolerance,
+    max: params.max,
+  });
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    throw new Error(
+      payload?.error || `Hard-heal failed (HTTP ${response.status})`
+    );
+  }
+  return (await response.json()) as HardHealResponse;
 }
 
 export const CHIP_BUCKET_LABELS: Record<keyof ChipBucketCounts, string> = {

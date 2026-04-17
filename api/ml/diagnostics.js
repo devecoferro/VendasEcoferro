@@ -3,7 +3,7 @@ import {
   fetchMLLiveChipBucketsDetailed,
   invalidateDashboardCache,
 } from "./dashboard.js";
-import { runActiveOrdersRefresh } from "./sync.js";
+import { runActiveOrdersRefresh, refreshMLOrdersByIds } from "./sync.js";
 import { listConnections } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { db } from "../_lib/db.js";
@@ -361,6 +361,190 @@ export async function autoHealDrift(options = {}) {
 }
 
 /**
+ * Hard auto-heal: reclassificação forçada a partir da fonte de verdade (ML).
+ *
+ * Diferente do autoHealDrift (que faz busca por shipping_status), este:
+ *   1. Roda computeOrdersDivergence pra identificar EXATAMENTE quais pedidos
+ *      estão em buckets diferentes (source: app vs ML)
+ *   2. Re-busca CADA pedido divergente via GET /orders/{id} + /shipments/{id}
+ *   3. Sobrescreve raw_data no DB com a resposta atual do ML (fonte de verdade)
+ *   4. Invalida cache e re-verifica
+ *
+ * Usado quando autoHealDrift retorna PERSISTENT_CLASSIFICATION_BUG (active
+ * refresh já foi feito mas drift continua) — sinal de que o DB está com
+ * raw_data desatualizado pra alguns pedidos específicos, ou o pedido caiu
+ * fora dos filtros de status do active refresh.
+ *
+ * Custo: 2×N ML API calls (N = pedidos divergentes). Cooldown recomendado:
+ * 5min por connection_id.
+ *
+ * Retorna {
+ *   healed, reason, orders_refreshed, divergences_before,
+ *   patterns, before, after, errors
+ * }
+ */
+export async function hardHealDrift(options = {}) {
+  const { tolerance = DEFAULT_TOLERANCE, maxOrdersToRefresh = 200 } = options;
+  const timestamp = new Date().toISOString();
+
+  const before = await computeChipCountsDiff({
+    tolerance,
+    includeBreakdown: false,
+    fresh: true,
+  });
+
+  if (before.status === "ML_API_UNAVAILABLE") {
+    return {
+      healed: false,
+      reason: "ML_API_UNAVAILABLE",
+      orders_refreshed: 0,
+      divergences_before: 0,
+      patterns: [],
+      before,
+      after: null,
+      errors: [],
+      timestamp,
+    };
+  }
+  if (before.status === "IN_SYNC") {
+    return {
+      healed: true,
+      reason: "ALREADY_IN_SYNC",
+      orders_refreshed: 0,
+      divergences_before: 0,
+      patterns: [],
+      before,
+      after: null,
+      errors: [],
+      timestamp,
+    };
+  }
+
+  // Identifica EXATAMENTE quais pedidos estão mal classificados
+  const divergence = await computeOrdersDivergence({
+    fresh: true,
+    limit: maxOrdersToRefresh,
+  });
+
+  if (!divergence.divergences || divergence.divergences.length === 0) {
+    // Chips divergem mas nenhum pedido divergente individual identificado —
+    // pode ser timing de cache ou bug no nivel agregado (pack dedup).
+    return {
+      healed: false,
+      reason: "NO_ORDER_LEVEL_DIVERGENCE",
+      orders_refreshed: 0,
+      divergences_before: 0,
+      patterns: [],
+      before,
+      after: before,
+      errors: [],
+      timestamp,
+    };
+  }
+
+  const divergentOrderIds = divergence.divergences.map((d) => d.order_id);
+  const patterns = divergence.patterns || [];
+
+  // Mapeia order_id → connection_id pra chamar refresh no connection certo
+  const connectionByOrderId = new Map();
+  try {
+    const placeholders = divergentOrderIds.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT order_id, connection_id FROM ml_orders WHERE order_id IN (${placeholders})`
+      )
+      .all(...divergentOrderIds);
+    for (const row of rows) {
+      connectionByOrderId.set(String(row.order_id), row.connection_id);
+    }
+  } catch (err) {
+    // DB lookup failed — best-effort; segue com connection default se houver só 1
+  }
+
+  // Se todos os pedidos divergentes não estão no banco (ex: ML tem em today
+  // mas app não tem o pedido), fallback pra conexão mais recente
+  const connections = listConnections().filter((c) => c?.id);
+  const defaultConnectionId = connections[0]?.id || null;
+
+  // Agrupa por connection_id
+  const orderIdsByConnection = new Map();
+  for (const orderId of divergentOrderIds) {
+    const connId = connectionByOrderId.get(orderId) || defaultConnectionId;
+    if (!connId) continue;
+    if (!orderIdsByConnection.has(connId)) orderIdsByConnection.set(connId, []);
+    orderIdsByConnection.get(connId).push(orderId);
+  }
+
+  const allErrors = [];
+  let totalRefreshed = 0;
+
+  for (const [connId, ids] of orderIdsByConnection.entries()) {
+    try {
+      const result = await refreshMLOrdersByIds({
+        connectionId: connId,
+        orderIds: ids,
+      });
+      totalRefreshed += result.totalRefreshed || 0;
+      if (Array.isArray(result.errors) && result.errors.length > 0) {
+        allErrors.push(...result.errors.slice(0, 10));
+      }
+    } catch (err) {
+      allErrors.push({
+        order_id: null,
+        message: `connection ${connId}: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  invalidateDashboardCache();
+
+  const after = await computeChipCountsDiff({
+    tolerance,
+    includeBreakdown: false,
+    fresh: true,
+  });
+
+  if (after.status === "ML_API_UNAVAILABLE") {
+    return {
+      healed: false,
+      reason: "ML_API_UNAVAILABLE_AFTER_REFRESH",
+      orders_refreshed: totalRefreshed,
+      divergences_before: divergentOrderIds.length,
+      patterns,
+      before,
+      after,
+      errors: allErrors,
+      timestamp,
+    };
+  }
+
+  const healed = after.status === "IN_SYNC";
+  let reason;
+  if (healed) {
+    reason = "RESOLVED_AFTER_HARD_REFRESH";
+  } else if (after.max_abs_diff < before.max_abs_diff) {
+    reason = "PARTIALLY_HEALED";
+  } else {
+    // Mesmo após re-fetch pedido-a-pedido da fonte de verdade, o diff
+    // persiste. Isso indica bug na lógica de classificação do dashboard
+    // (não é dado stale). Precisa intervenção no código.
+    reason = "PERSISTENT_CLASSIFICATION_LOGIC_BUG";
+  }
+
+  return {
+    healed,
+    reason,
+    orders_refreshed: totalRefreshed,
+    divergences_before: divergentOrderIds.length,
+    patterns,
+    before,
+    after,
+    errors: allErrors,
+    timestamp,
+  };
+}
+
+/**
  * Persists a diff snapshot into ml_chip_drift_history.
  * Silent on failure (best-effort telemetry).
  */
@@ -482,6 +666,39 @@ export default async function handler(request, response) {
             : result.reason === "PARTIALLY_HEALED"
               ? "heal_partial"
               : "heal_persistent";
+          saveChipDriftSnapshot(result.after, afterSource);
+        }
+      } catch {
+        // best-effort
+      }
+      return response.status(200).json(result);
+    }
+
+    if (action === "hard-heal") {
+      // Auto-correção profunda: identifica pedidos divergentes via
+      // computeOrdersDivergence e re-busca cada um via ML API direto,
+      // sobrescrevendo raw_data no DB com a fonte de verdade.
+      // Custoso (~2×N ML API calls). Usar quando autoHealDrift (soft)
+      // não resolveu.
+      if (method !== "POST") {
+        return response.status(405).json({ error: "Use POST para action=hard-heal" });
+      }
+      const tolerance = Number(request.query?.tolerance || DEFAULT_TOLERANCE);
+      const maxOrdersToRefresh = Math.max(
+        1,
+        Math.min(1000, Number(request.query?.max || 200))
+      );
+      const result = await hardHealDrift({ tolerance, maxOrdersToRefresh });
+      try {
+        if (result.before && result.before.status !== "ML_API_UNAVAILABLE") {
+          saveChipDriftSnapshot(result.before, "hard_heal_before");
+        }
+        if (result.after && result.after.status !== "ML_API_UNAVAILABLE") {
+          const afterSource = result.healed
+            ? "hard_heal_resolved"
+            : result.reason === "PARTIALLY_HEALED"
+              ? "hard_heal_partial"
+              : "hard_heal_persistent";
           saveChipDriftSnapshot(result.after, afterSource);
         }
       } catch {
