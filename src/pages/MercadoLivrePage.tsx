@@ -1024,11 +1024,15 @@ export default function MercadoLivrePage() {
     }
   }, []);
 
+  // Ref com os orders atuais — atualizada via useEffect abaixo, depois que
+  // permittedOrders é declarado. Evita TDZ (Cannot access before initialization).
+  const permittedOrdersRef = useRef<MLOrder[]>([]);
+
   const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
     try {
       // Busca todos os orders do mesmo pack e unifica em uma só etiqueta.
       // Se não tem pack ou tem só 1 order no pack, comporta-se normal.
-      const packOrders = findOrdersInSamePack(order, permittedOrders);
+      const packOrders = findOrdersInSamePack(order, permittedOrdersRef.current);
       const sale = mapUnifiedPackSaleData(packOrders);
       const enriched = await enrichSaleWithLocations(sale);
       await exportSalePdf(enriched);
@@ -1039,7 +1043,7 @@ export default function MercadoLivrePage() {
           : "Falha ao gerar a etiqueta interna Ecoferro."
       );
     }
-  }, [enrichSaleWithLocations, permittedOrders]);
+  }, [enrichSaleWithLocations]);
 
   const handlePrintMlLabelsAndNFeBulk = useCallback(
     async (ordersToPrint: MLOrder[]) => {
@@ -1361,6 +1365,9 @@ export default function MercadoLivrePage() {
     () => orders.filter((order) => canAccessLocation(getDepositInfo(order).label)),
     [canAccessLocation, orders]
   );
+  // Mantém ref sincronizada para handlers que usam permittedOrders
+  // sem incluí-lo no array de deps (evita TDZ por hoisting).
+  permittedOrdersRef.current = permittedOrders;
 
   const orderMap = useMemo(
     () => new Map(permittedOrders.map((order) => [order.id, order])),
