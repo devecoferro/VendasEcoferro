@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { getLatestConnection } from "./_lib/storage.js";
+import { db } from "../_lib/db.js";
 import createLogger from "../_lib/logger.js";
 
 const log = createLogger("sync-leads");
@@ -197,6 +198,109 @@ async function syncLeadsToWebsite(token, sellerId) {
   };
 }
 
+// ── Sync compradores dos pedidos como leads ─────────────────────
+// Extrai dados reais (nome, CPF, endereço) do billing_info dos pedidos
+// e insere como leads com source='other'. Esses dados vêm das etiquetas.
+async function syncBuyersAsLeads(connectionId, token, supabase) {
+  const rows = db.prepare(`
+    SELECT DISTINCT order_id, buyer_name, buyer_nickname, raw_data
+    FROM ml_orders
+    WHERE connection_id = ?
+      AND raw_data IS NOT NULL
+      AND json_extract(raw_data, '$.billing_info_snapshot.buyer.billing_info.name') IS NOT NULL
+    GROUP BY buyer_nickname
+    ORDER BY sale_date DESC
+    LIMIT 300
+  `).all(connectionId);
+
+  if (rows.length === 0) return { buyers_fetched: 0, buyers_inserted: 0, buyers_skipped: 0 };
+
+  // Dedup contra leads existentes por nome
+  const { data: existingLeads } = await supabase
+    .from("leads")
+    .select("name, metadata")
+    .limit(2000);
+
+  const existingNames = new Set(
+    (existingLeads || []).map(l => l.name?.toLowerCase()).filter(Boolean)
+  );
+  const existingBuyerIds = new Set(
+    (existingLeads || []).map(l => l.metadata?.ml_buyer_id).filter(Boolean)
+  );
+
+  let inserted = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    let rawData = {};
+    try {
+      rawData = typeof row.raw_data === "string" ? JSON.parse(row.raw_data) : row.raw_data || {};
+    } catch { continue; }
+
+    const billing = rawData.billing_info_snapshot?.buyer?.billing_info || {};
+    const addr = billing.address || {};
+    const ident = billing.identification || {};
+    const buyerId = rawData.billing_info_snapshot?.buyer?.cust_id;
+
+    const firstName = (billing.name || "").trim();
+    const lastName = (billing.last_name || "").trim();
+    const fullName = [firstName, lastName].filter(Boolean).join(" ") || row.buyer_name;
+
+    if (!fullName) { skipped++; continue; }
+    if (existingNames.has(fullName.toLowerCase())) { skipped++; continue; }
+    if (buyerId && existingBuyerIds.has(String(buyerId))) { skipped++; continue; }
+
+    // Buscar telefone real via GET /orders/{id} (pode retornar se app certificado)
+    let phone = null;
+    let email = null;
+    try {
+      const oR = await fetch(`https://api.mercadolibre.com/orders/${row.order_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (oR.ok) {
+        const oD = await oR.json();
+        const bp = oD.buyer?.phone;
+        phone = bp ? [bp.area_code, bp.number].filter(Boolean).join("") : null;
+        email = oD.buyer?.email || null;
+        // Se telefone mascarado, ignorar
+        if (phone === "XXXXXXX" || phone === "") phone = null;
+        // Se email mascarado (@mail.mercadolivre), ignorar
+        if (email && email.includes("@mail.mercadolivre")) email = null;
+      }
+    } catch { /* best effort */ }
+
+    const cpf = ident.number ? String(ident.number).trim() : null;
+    const city = addr.city_name || "";
+    const state = addr.state_name || addr.state || "";
+
+    const lead = {
+      name: fullName,
+      phone,
+      email,
+      source: "other",
+      message: `Comprador ML — ${cpf ? (ident.type || "CPF") + ": " + cpf : ""}${city ? " | " + city + "/" + state : ""}`,
+      status: "new",
+      consent: false,
+      metadata: {
+        ml_buyer_id: buyerId ? String(buyerId) : null,
+        ml_order_id: row.order_id,
+        cpf_cnpj: cpf,
+        doc_type: ident.type || null,
+        address: addr.street_name ? `${addr.street_name}, ${addr.street_number || ""} - ${addr.neighborhood || ""}, ${city}/${state} ${addr.zip_code || ""}` : null,
+      },
+    };
+
+    const { error } = await supabase.from("leads").insert(lead);
+    if (!error) {
+      inserted++;
+      existingNames.add(fullName.toLowerCase());
+      if (buyerId) existingBuyerIds.add(String(buyerId));
+    }
+  }
+
+  return { buyers_fetched: rows.length, buyers_inserted: inserted, buyers_skipped: skipped };
+}
+
 export default async function handler(request, response) {
   if (request.method !== "POST") {
     return response.status(405).json({ error: "Use POST para sincronizar leads." });
@@ -211,12 +315,25 @@ export default async function handler(request, response) {
     }
 
     const validConnection = await ensureValidAccessToken(connection);
-    const result = await syncLeadsToWebsite(
+
+    // Sync perguntas (questions) + compradores (orders) como leads
+    const questionsResult = await syncLeadsToWebsite(
       validConnection.access_token,
       String(validConnection.seller_id)
     );
 
-    return response.status(200).json(result);
+    // Sync compradores dos pedidos como leads
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+    const buyersResult = await syncBuyersAsLeads(
+      connection.id,
+      validConnection.access_token,
+      supabase
+    );
+
+    return response.status(200).json({
+      ...questionsResult,
+      ...buyersResult,
+    });
   } catch (error) {
     log.error("Sync leads falhou", error instanceof Error ? error : new Error(String(error)));
     return response.status(500).json({
