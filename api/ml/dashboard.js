@@ -495,9 +495,18 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // in_packing_list: pedido está na lista de separação do dia.
-    // ML Seller Center classifica como "Envios de hoje".
-    if (substatus === "in_packing_list") {
+    // Substatuses operacionais → "Envios de hoje" (alinhado com ML Seller Center).
+    // ML coloca em "hoje" todos os substatuses que indicam ação imediata do vendedor:
+    // in_packing_list, ready_for_pickup, ready_to_pack, ready_to_print,
+    // in_warehouse, packed (sem checar SLA — ML já considerou).
+    if (
+      substatus === "in_packing_list" ||
+      substatus === "ready_for_pickup" ||
+      substatus === "ready_to_pack" ||
+      substatus === "ready_to_print" ||
+      substatus === "in_warehouse" ||
+      substatus === "packed"
+    ) {
       return "today";
     }
 
@@ -505,21 +514,6 @@ function classifyCrossDockingOrder(order, todayKey) {
     // ML Seller Center mantém em "Próximos dias".
     if (substatus === "in_hub") {
       return "upcoming";
-    }
-
-    // Pronto para coleta — envios de hoje (coletor vem buscar)
-    if (substatus === "ready_for_pickup") {
-      return "today";
-    }
-
-    // Empacotado: pronto para envio. Usa SLA para decidir hoje/próximos.
-    if (substatus === "packed") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
-      return "today";
     }
 
     // invoice_pending: vendedor ainda precisa emitir NF-e.
@@ -613,14 +607,14 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
 
   // Fulfillment: ready_to_ship e handling são os status operacionais principais.
   if (status === "ready_to_ship" || status === "handling") {
-    // "ready_to_pack" = ML está ativamente preparando o pedido → sempre "hoje"
-    if (substatus === "ready_to_pack") {
-      return "today";
-    }
-
-    // "packed" = ML já empacotou no centro de distribuição → vai sair hoje.
-    // ML Seller Center mostra esses em "Envios de hoje" independente do SLA.
-    if (substatus === "packed") {
+    // Substatuses operacionais → "Envios de hoje" (alinhado com ML Seller Center).
+    if (
+      substatus === "ready_to_pack" ||
+      substatus === "packed" ||
+      substatus === "ready_to_print" ||
+      substatus === "in_packing_list" ||
+      substatus === "ready_for_pickup"
+    ) {
       return "today";
     }
 
