@@ -50,6 +50,7 @@ import mlLeadsHandler from "../api/ml/leads.js";
 import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import mlSyncCustomersHandler from "../api/ml/sync-customers.js";
 import mlFixBrandsHandler from "../api/ml/fix-brands.js";
+import { runAutoEmitNfe } from "../api/nfe/_lib/auto-emit-nfe.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
   onSyncFailed,
@@ -736,6 +737,28 @@ app.listen(APP_PORT, APP_HOST, () => {
     );
     // Primeiro prune 5min apos boot
     setTimeout(autoChipDriftPrune, 5 * 60 * 1000);
+
+    // Auto-emit NF-e: a cada 30s, emite automaticamente NF-e de pedidos
+    // invoice_pending que já passaram 30s desde que ML sinalizou.
+    // Sem overlap: se execução anterior ainda está rodando, skip.
+    let autoEmitNfeRunning = false;
+    const AUTO_EMIT_NFE_INTERVAL_MS = 30_000;
+    log.info(`Auto-emit NF-e iniciado (intervalo: ${AUTO_EMIT_NFE_INTERVAL_MS / 1000}s, delay 30s após invoice_pending)`);
+    setInterval(async () => {
+      if (autoEmitNfeRunning) return;
+      autoEmitNfeRunning = true;
+      try {
+        await runAutoEmitNfe();
+      } catch (err) {
+        log.error("Auto-emit NF-e falhou", err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        autoEmitNfeRunning = false;
+      }
+    }, AUTO_EMIT_NFE_INTERVAL_MS);
+    // Primeira execução 2min após boot (dá tempo dos syncs pegarem dados frescos)
+    setTimeout(async () => {
+      try { await runAutoEmitNfe(); } catch { /* logged */ }
+    }, 2 * 60 * 1000);
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
