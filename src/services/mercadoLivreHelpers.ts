@@ -1135,6 +1135,16 @@ export function getOperationalSummaryRows(
   orders: MLOrder[],
   activeBucket: ShipmentBucket
 ): MLDashboardSummaryRow[] {
+  // PRIORIDADE: calcular summary rows com os orders LOCAIS (que batem com a lista).
+  // Assim o summary row e a lista usam a MESMA fonte, evitando bugs onde o chip
+  // mostra N pedidos mas a lista fica vazia.
+  if (orders.length > 0) {
+    return deposit.logistic_type === "fulfillment"
+      ? buildFulfillmentSummaryRows(orders, activeBucket)
+      : buildCrossDockingSummaryRows(orders);
+  }
+
+  // FALLBACK: se não há orders (loading ou vazio), usar summary do backend
   const summaryRowsByBucket =
     deposit.internal_operational_summary_rows_by_bucket?.[activeBucket] ||
     deposit.summary_rows_by_bucket?.[activeBucket];
@@ -1145,19 +1155,13 @@ export function getOperationalSummaryRows(
     return summaryRowsByBucket;
   }
 
-  if (orders.length === 0) {
-    if (Array.isArray(deposit.summary_rows) && deposit.summary_rows.length > 0) {
-      return deposit.summary_rows;
-    }
-
-    return deposit.logistic_type === "fulfillment"
-      ? buildFulfillmentSummaryRows([], activeBucket)
-      : buildCrossDockingSummaryRows([]);
+  if (Array.isArray(deposit.summary_rows) && deposit.summary_rows.length > 0) {
+    return deposit.summary_rows;
   }
 
   return deposit.logistic_type === "fulfillment"
-    ? buildFulfillmentSummaryRows(orders, activeBucket)
-    : buildCrossDockingSummaryRows(orders);
+    ? buildFulfillmentSummaryRows([], activeBucket)
+    : buildCrossDockingSummaryRows([]);
 }
 
 export function getOperationalCardPresentation(
