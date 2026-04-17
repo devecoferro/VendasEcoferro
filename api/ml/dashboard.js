@@ -883,16 +883,56 @@ function buildCrossDockingSummaryRows(orders, todayKey) {
 }
 
 function buildFulfillmentSummaryRows(orders, activeBucket) {
-  const label =
-    activeBucket === "in_transit"
-      ? "Em transito"
-      : activeBucket === "finalized"
-        ? "Finalizadas"
-        : activeBucket === "cancelled"
-          ? "Canceladas"
-          : "No centro de distribuicao";
+  // Para Full, subcategorias dependem do bucket ativo
+  if (activeBucket === "today" || activeBucket === "upcoming") {
+    // Hoje / Próximos dias para Full = "No centro de distribuição" (tudo junto)
+    return [{ key: "fulfillment_warehouse", label: "No centro de distribuicao", count: orders.length }];
+  }
 
-  return [{ key: "fulfillment", label, count: orders.length }];
+  if (activeBucket === "in_transit") {
+    let waitingPickup = 0;
+    let fullInTransit = 0;
+    for (const order of orders) {
+      const { substatus } = getShipmentStatus(order);
+      if (substatus === "waiting_for_withdrawal") waitingPickup += 1;
+      else fullInTransit += 1;
+    }
+    return [
+      { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
+      { key: "fulfillment_in_transit", label: "A caminho - Full", count: fullInTransit },
+    ].filter((r) => r.count > 0);
+  }
+
+  if (activeBucket === "finalized") {
+    let complaints = 0, delivered = 0, notDelivered = 0, cancelled = 0;
+    let returnsCompleted = 0, returnsIncomplete = 0;
+    for (const order of orders) {
+      const { status, substatus } = getShipmentStatus(order);
+      if (status === "cancelled") { cancelled += 1; continue; }
+      if (status === "returned") {
+        if (substatus === "completed" || substatus === "delivered") returnsCompleted += 1;
+        else returnsIncomplete += 1;
+        complaints += 1;
+        continue;
+      }
+      if (status === "not_delivered") { notDelivered += 1; continue; }
+      if (status === "delivered") { delivered += 1; continue; }
+    }
+    return [
+      { key: "complaints", label: "Com reclamacao ou mediacao", count: complaints },
+      { key: "delivered", label: "Entregues", count: delivered },
+      { key: "not_delivered", label: "Nao entregues", count: notDelivered },
+      { key: "cancelled", label: "Canceladas", count: cancelled },
+      { key: "returns_completed", label: "Devolucoes concluidas", count: returnsCompleted },
+      { key: "returns_incomplete", label: "Devolucoes nao concluidas", count: returnsIncomplete },
+    ].filter((r) => r.count > 0);
+  }
+
+  if (activeBucket === "cancelled") {
+    return [{ key: "cancelled", label: "Canceladas", count: orders.length }];
+  }
+
+  return [{ key: "fulfillment_warehouse", label: "No centro de distribuicao", count: orders.length }];
 }
 
 function buildEmptyDepositEntry(info) {

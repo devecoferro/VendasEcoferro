@@ -989,9 +989,56 @@ function buildFulfillmentSummaryRows(
   orders: MLOrder[],
   activeBucket: ShipmentBucket
 ): MLDashboardSummaryRow[] {
-  const label = getOperationalSummaryLabel("fulfillment", activeBucket);
+  if (activeBucket === "today" || activeBucket === "upcoming") {
+    return [{ key: "fulfillment", label: "No centro de distribuição", count: orders.length }];
+  }
 
-  return [{ key: "fulfillment", label, count: orders.length }];
+  if (activeBucket === "in_transit") {
+    let waitingPickup = 0;
+    let fullInTransit = 0;
+    for (const order of orders) {
+      const substatus = String(getShipmentSnapshot(order).substatus || "").toLowerCase();
+      if (substatus === "waiting_for_withdrawal") waitingPickup += 1;
+      else fullInTransit += 1;
+    }
+    return [
+      { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
+      { key: "fulfillment", label: "A caminho - Full", count: fullInTransit },
+    ].filter((r) => r.count > 0);
+  }
+
+  if (activeBucket === "finalized") {
+    let complaints = 0, delivered = 0, notDelivered = 0, cancelled = 0;
+    let returnsCompleted = 0, returnsIncomplete = 0;
+    for (const order of orders) {
+      const snapshot = getShipmentSnapshot(order);
+      const status = String(snapshot.status || "").toLowerCase();
+      const substatus = String(snapshot.substatus || "").toLowerCase();
+      if (status === "cancelled") { cancelled += 1; continue; }
+      if (status === "returned") {
+        if (substatus === "completed" || substatus === "delivered") returnsCompleted += 1;
+        else returnsIncomplete += 1;
+        complaints += 1;
+        continue;
+      }
+      if (status === "not_delivered") { notDelivered += 1; continue; }
+      if (status === "delivered") { delivered += 1; continue; }
+    }
+    return [
+      { key: "complaints", label: "Com reclamação ou mediação", count: complaints },
+      { key: "delivered", label: "Entregues", count: delivered },
+      { key: "not_delivered", label: "Não entregues", count: notDelivered },
+      { key: "cancelled", label: "Canceladas", count: cancelled },
+      { key: "returns_completed", label: "Devoluções concluídas", count: returnsCompleted },
+      { key: "returns_incomplete", label: "Devoluções não concluídas", count: returnsIncomplete },
+    ].filter((r) => r.count > 0);
+  }
+
+  if (activeBucket === "cancelled") {
+    return [{ key: "cancelled", label: "Canceladas", count: orders.length }];
+  }
+
+  return [{ key: "fulfillment", label: "No centro de distribuição", count: orders.length }];
 }
 
 export function getOperationalSummaryLabel(
