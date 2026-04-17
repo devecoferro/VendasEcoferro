@@ -49,6 +49,7 @@ import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
 import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import mlSyncCustomersHandler from "../api/ml/sync-customers.js";
+import mlFixBrandsHandler from "../api/ml/fix-brands.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
   onSyncFailed,
@@ -328,6 +329,7 @@ app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(re
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
 app.all("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
 app.all("/api/ml/sync-customers", syncLimiter, (req, res) => mlSyncCustomersHandler(req, res));
+app.post("/api/ml/fix-brands", syncLimiter, (req, res) => mlFixBrandsHandler(req, res));
 
 // ─── Obsidian API ──────────────────────────────────────────────────
 app.all("/api/obsidian", apiLimiter, (req, res) => obsidianHandler(req, res));
