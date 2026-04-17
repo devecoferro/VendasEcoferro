@@ -20,6 +20,7 @@ const ML_LEAD_ENDPOINTS = (sellerId) => [
   { name: "leads_search", url: `https://api.mercadolibre.com/leads/search?seller_id=${sellerId}` },
   { name: "questions", url: `https://api.mercadolibre.com/questions/search?seller_id=${sellerId}&status=unanswered&sort_fields=date_created&sort_types=DESC&limit=50` },
   { name: "messages", url: `https://api.mercadolibre.com/messages/search?seller_id=${sellerId}&limit=50` },
+  { name: "order_buyer", url: null }, // testado dinamicamente com order_id
   { name: "myfeeds", url: `https://api.mercadolibre.com/myfeeds/v2/users/${sellerId}/leads` },
 ];
 
@@ -90,6 +91,51 @@ export default async function handler(request, response) {
     const offset = Number(request.query?.offset) || 0;
 
     const discover = request.query?.discover === "true";
+    const testOrder = request.query?.test_order;
+
+    // Modo teste: buscar dados REAIS do comprador de um pedido
+    if (testOrder) {
+      const headers = { Authorization: `Bearer ${token}` };
+      const results = {};
+
+      // 1. GET /orders/{id} → buyer.phone, buyer.email
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/orders/${testOrder}`, { headers });
+        const d = await r.json();
+        results.order_buyer = {
+          status: r.status,
+          buyer_id: d.buyer?.id,
+          buyer_nickname: d.buyer?.nickname,
+          buyer_first_name: d.buyer?.first_name,
+          buyer_last_name: d.buyer?.last_name,
+          buyer_email: d.buyer?.email,
+          buyer_phone: d.buyer?.phone,
+        };
+      } catch (e) { results.order_buyer = { error: e.message }; }
+
+      // 2. Pegar shipping_id do pedido
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/orders/${testOrder}`, { headers });
+        const d = await r.json();
+        const shipId = d.shipping?.id;
+        if (shipId) {
+          // 3. GET /shipments/{id} → receiver_address com telefone
+          const sr = await fetch(`https://api.mercadolibre.com/shipments/${shipId}`, { headers });
+          const sd = await sr.json();
+          results.shipment_receiver = {
+            status: sr.status,
+            receiver_name: sd.receiver_address?.receiver_name,
+            receiver_phone: sd.receiver_address?.receiver_phone,
+            receiver_city: sd.receiver_address?.city?.name,
+            receiver_state: sd.receiver_address?.state?.name,
+            receiver_zip: sd.receiver_address?.zip_code,
+          };
+        }
+      } catch (e) { results.shipment_receiver = { error: e.message }; }
+
+      return response.status(200).json({ seller_id: sellerId, test_order: testOrder, ...results });
+    }
+
     const data = await fetchMLLeads(token, sellerId, { limit, offset, discover });
 
     return response.status(200).json({
