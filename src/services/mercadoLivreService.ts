@@ -953,6 +953,38 @@ export interface MLStockItem {
   model: string | null;
   vehicle_year: string | null;
   synced_at: string;
+  location_corridor?: string | null;
+  location_shelf?: string | null;
+  location_level?: string | null;
+  location_notes?: string | null;
+}
+
+export async function updateMLStockItem(
+  connectionId: string,
+  itemId: string,
+  updates: Partial<Pick<MLStockItem, "sku" | "title" | "location_corridor" | "location_shelf" | "location_level" | "location_notes">>
+): Promise<void> {
+  const { response, data } = await fetchJsonWithTimeout<{ success?: boolean; error?: string }>(
+    `/api/ml/stock?connection_id=${encodeURIComponent(connectionId)}&item_id=${encodeURIComponent(itemId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    },
+    "Timeout ao atualizar produto.",
+    15000
+  );
+  if (!response.ok) throw new Error(data?.error || "Falha ao atualizar produto.");
+}
+
+export async function deleteMLStockItem(connectionId: string, itemId: string): Promise<void> {
+  const { response, data } = await fetchJsonWithTimeout<{ success?: boolean; error?: string }>(
+    `/api/ml/stock?connection_id=${encodeURIComponent(connectionId)}&item_id=${encodeURIComponent(itemId)}`,
+    { method: "DELETE" },
+    "Timeout ao excluir produto.",
+    15000
+  );
+  if (!response.ok) throw new Error(data?.error || "Falha ao excluir produto.");
 }
 
 export async function getMLStock(connectionId: string): Promise<{ items: MLStockItem[]; stale: boolean }> {

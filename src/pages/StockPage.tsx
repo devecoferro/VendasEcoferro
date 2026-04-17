@@ -10,8 +10,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getMLConnectionStatus, getMLStock, syncMLStock, syncStockToWebsite, type MLStockItem } from "@/services/mercadoLivreService";
-import { AlertCircle, ExternalLink, Filter, Globe, Loader2, Package, RefreshCw, Search, TrendingDown, X } from "lucide-react";
+import { getMLConnectionStatus, getMLStock, syncMLStock, syncStockToWebsite, updateMLStockItem, deleteMLStockItem, type MLStockItem } from "@/services/mercadoLivreService";
+import { AlertCircle, ExternalLink, Filter, Globe, Loader2, Package, Pencil, RefreshCw, Search, Trash2, TrendingDown, X, MapPin, AlertTriangle } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 
 type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
 type SortDir = "asc" | "desc";
@@ -34,6 +37,10 @@ export default function StockPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("available_quantity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [onlyMissingSku, setOnlyMissingSku] = useState(false);
+  const [editing, setEditing] = useState<MLStockItem | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<MLStockItem | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
     getMLConnectionStatus()
@@ -181,6 +188,11 @@ export default function StockPage() {
       result = result.filter((item) => item.status === statusFilter);
     }
 
+    // Filtro: apenas produtos sem SKU (não sincronizados)
+    if (onlyMissingSku) {
+      result = result.filter((item) => !item.sku || item.sku.trim() === "");
+    }
+
     return [...result].sort((a, b) => {
       let va: string | number | null = a[sortKey] ?? null;
       let vb: string | number | null = b[sortKey] ?? null;
@@ -193,7 +205,48 @@ export default function StockPage() {
         ? (va as number) - (vb as number)
         : (vb as number) - (va as number);
     });
-  }, [items, search, brandFilter, modelFilter, yearFilter, statusFilter, sortKey, sortDir]);
+  }, [items, search, brandFilter, modelFilter, yearFilter, statusFilter, onlyMissingSku, sortKey, sortDir]);
+
+  const missingSkuCount = useMemo(
+    () => items.filter((i) => !i.sku || i.sku.trim() === "").length,
+    [items]
+  );
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!editing || !connectionId) return;
+    setSavingEdit(true);
+    try {
+      await updateMLStockItem(connectionId, editing.item_id, {
+        sku: editing.sku,
+        location_corridor: editing.location_corridor,
+        location_shelf: editing.location_shelf,
+        location_level: editing.location_level,
+        location_notes: editing.location_notes,
+      });
+      toast.success("Produto atualizado!");
+      // Atualiza local state sem reload
+      setItems((prev) =>
+        prev.map((i) => (i.item_id === editing.item_id ? { ...i, ...editing } : i))
+      );
+      setEditing(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar");
+    } finally {
+      setSavingEdit(false);
+    }
+  }, [editing, connectionId]);
+
+  const handleDelete = useCallback(async () => {
+    if (!confirmDelete || !connectionId) return;
+    try {
+      await deleteMLStockItem(connectionId, confirmDelete.item_id);
+      toast.success("Produto removido do estoque local");
+      setItems((prev) => prev.filter((i) => i.item_id !== confirmDelete.item_id));
+      setConfirmDelete(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao excluir");
+    }
+  }, [confirmDelete, connectionId]);
 
   const stockStats = useMemo(() => {
     const active = items.filter((i) => i.status === "active").length;
@@ -319,6 +372,19 @@ export default function StockPage() {
                 {stockStats.outOfStock}
               </p>
             </div>
+            <button
+              type="button"
+              onClick={() => setOnlyMissingSku((prev) => !prev)}
+              className={`rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 ${onlyMissingSku ? "border-destructive bg-destructive/5" : ""}`}
+              title="Mostrar só produtos sem SKU"
+            >
+              <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" /> Sem SKU
+              </p>
+              <p className={`text-2xl font-bold ${missingSkuCount > 0 ? "text-destructive" : "text-foreground"}`}>
+                {missingSkuCount}
+              </p>
+            </button>
           </div>
         )}
 
@@ -511,6 +577,9 @@ export default function StockPage() {
                     <SortBtn label="Produto" col="title" />
                   </th>
                   <th className="px-4 py-3 text-left hidden sm:table-cell">SKU</th>
+                  <th className="px-4 py-3 text-center hidden lg:table-cell">Corredor</th>
+                  <th className="px-4 py-3 text-center hidden lg:table-cell">Estante</th>
+                  <th className="px-4 py-3 text-center hidden lg:table-cell">Nível</th>
                   <th className="px-4 py-3 text-right">
                     <SortBtn label="Disponível" col="available_quantity" />
                   </th>
@@ -521,6 +590,7 @@ export default function StockPage() {
                     <SortBtn label="Preço" col="price" />
                   </th>
                   <th className="px-4 py-3 text-center hidden md:table-cell">Status</th>
+                  <th className="px-4 py-3 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -553,7 +623,22 @@ export default function StockPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">
-                        {item.sku ?? "—"}
+                        {item.sku ? (
+                          item.sku
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-destructive text-xs font-semibold">
+                            <AlertTriangle className="h-3 w-3" /> SEM SKU
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
+                        {item.location_corridor || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
+                        {item.location_shelf || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-center text-sm text-muted-foreground hidden lg:table-cell">
+                        {item.location_level || "—"}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold">
                         <span
@@ -596,6 +681,28 @@ export default function StockPage() {
                           {item.status ?? "—"}
                         </Badge>
                       </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1 justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setEditing({ ...item })}
+                            className="h-8 w-8 p-0"
+                            title="Editar SKU / Localização"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setConfirmDelete(item)}
+                            className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            title="Remover do estoque local"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -603,6 +710,94 @@ export default function StockPage() {
             </table>
           </div>
         )}
+
+        {/* Dialog de edição */}
+        <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="h-5 w-5" /> Editar Produto
+              </DialogTitle>
+            </DialogHeader>
+            {editing && (
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Produto</Label>
+                  <p className="text-sm font-medium">{editing.title}</p>
+                </div>
+                <div>
+                  <Label>SKU</Label>
+                  <Input
+                    value={editing.sku || ""}
+                    onChange={(e) => setEditing({ ...editing, sku: e.target.value })}
+                    placeholder="Ex: YA075"
+                  />
+                </div>
+                <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                  <MapPin className="h-4 w-4" /> Localização no Depósito
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <Label>Corredor</Label>
+                    <Input
+                      value={editing.location_corridor || ""}
+                      onChange={(e) => setEditing({ ...editing, location_corridor: e.target.value })}
+                      placeholder="A"
+                    />
+                  </div>
+                  <div>
+                    <Label>Estante</Label>
+                    <Input
+                      value={editing.location_shelf || ""}
+                      onChange={(e) => setEditing({ ...editing, location_shelf: e.target.value })}
+                      placeholder="3"
+                    />
+                  </div>
+                  <div>
+                    <Label>Nível</Label>
+                    <Input
+                      value={editing.location_level || ""}
+                      onChange={(e) => setEditing({ ...editing, location_level: e.target.value })}
+                      placeholder="5"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label>Observações</Label>
+                  <Input
+                    value={editing.location_notes || ""}
+                    onChange={(e) => setEditing({ ...editing, location_notes: e.target.value })}
+                    placeholder="Ex: Gaveta B4 da estante 3"
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
+              <Button onClick={handleSaveEdit} disabled={savingEdit}>
+                {savingEdit ? "Salvando..." : "Salvar"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog de confirmação de exclusão */}
+        <Dialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-destructive" /> Remover do Estoque
+              </DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Remover <strong>{confirmDelete?.title}</strong> do estoque local? O item será re-criado no próximo sync do Mercado Livre se ainda estiver ativo lá.
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setConfirmDelete(null)}>Cancelar</Button>
+              <Button variant="destructive" onClick={handleDelete}>Remover</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </AppLayout>
   );

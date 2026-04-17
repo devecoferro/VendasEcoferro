@@ -352,15 +352,31 @@ async function syncStock(connection) {
 function getStockFromDb(connectionId) {
   return db
     .prepare(
-      `SELECT item_id, sku, title, available_quantity, sold_quantity,
+      `SELECT id, item_id, sku, title, available_quantity, sold_quantity,
               total_quantity, status, condition, listing_type, price, thumbnail,
-              brand, model, vehicle_year, synced_at
+              brand, model, vehicle_year, synced_at,
+              location_corridor, location_shelf, location_level, location_notes
        FROM ml_stock
        WHERE connection_id = ?
        ORDER BY available_quantity DESC`
     )
     .all(connectionId);
 }
+
+// Aplica a migration de location se ainda não foi aplicada (tolerante)
+function ensureLocationColumns() {
+  try {
+    const cols = db.prepare("PRAGMA table_info(ml_stock)").all();
+    const names = new Set(cols.map((c) => c.name));
+    const stmts = [];
+    if (!names.has("location_corridor")) stmts.push("ALTER TABLE ml_stock ADD COLUMN location_corridor TEXT");
+    if (!names.has("location_shelf")) stmts.push("ALTER TABLE ml_stock ADD COLUMN location_shelf TEXT");
+    if (!names.has("location_level")) stmts.push("ALTER TABLE ml_stock ADD COLUMN location_level TEXT");
+    if (!names.has("location_notes")) stmts.push("ALTER TABLE ml_stock ADD COLUMN location_notes TEXT");
+    for (const s of stmts) db.prepare(s).run();
+  } catch { /* ignore */ }
+}
+ensureLocationColumns();
 
 export default async function mlStockHandler(req, res) {
   const profile = requireAuthenticatedProfile(req, res);
@@ -382,6 +398,50 @@ export default async function mlStockHandler(req, res) {
       const connection = await ensureValidAccessToken(baseConnection);
       const totalSynced = await syncStock(connection);
       return res.json({ success: true, total_synced: totalSynced });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // PATCH /api/ml/stock?connection_id=X&item_id=Y → editar (localização, SKU)
+  if (req.method === "PATCH") {
+    try {
+      const itemId = req.query.item_id;
+      if (!itemId) return res.status(400).json({ error: "item_id obrigatório" });
+
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      const allowed = ["sku", "title", "location_corridor", "location_shelf", "location_level", "location_notes"];
+      const updates = {};
+      for (const k of allowed) {
+        if (k in body) updates[k] = body[k] === "" ? null : body[k];
+      }
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "Nenhum campo válido para atualizar" });
+      }
+
+      const setClauses = Object.keys(updates).map((k) => `${k} = @${k}`).join(", ");
+      const now = nowIso();
+      db.prepare(
+        `UPDATE ml_stock SET ${setClauses}, updated_at = @updated_at WHERE connection_id = @connection_id AND item_id = @item_id`
+      ).run({ ...updates, updated_at: now, connection_id: connectionId, item_id: String(itemId) });
+
+      return res.json({ success: true });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // DELETE /api/ml/stock?connection_id=X&item_id=Y → excluir do estoque local
+  if (req.method === "DELETE") {
+    try {
+      const itemId = req.query.item_id;
+      if (!itemId) return res.status(400).json({ error: "item_id obrigatório" });
+
+      const result = db.prepare(
+        "DELETE FROM ml_stock WHERE connection_id = ? AND item_id = ?"
+      ).run(connectionId, String(itemId));
+
+      return res.json({ success: true, deleted: result.changes });
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
