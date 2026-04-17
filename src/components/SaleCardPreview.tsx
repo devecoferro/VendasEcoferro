@@ -211,6 +211,10 @@ export function SaleCardPreview({
           amount: sale.amount,
           productImageUrl: productImageSrc,
           productImageData: sale.productImageData,
+          variation: sale.variation,
+          locationCorridor: sale.locationCorridor,
+          locationShelf: sale.locationShelf,
+          locationLevel: sale.locationLevel,
         },
       ];
 
@@ -290,7 +294,7 @@ export function SaleCardPreview({
 
                     {shouldShowObservation && <ObservationBlock text={labelObservation} />}
 
-                    <div className="flex flex-wrap items-end gap-8 pt-2">
+                    <div className="flex flex-wrap items-end gap-6 pt-2">
                       <div className="w-fit shrink-0">
                         <QRCodePreview
                           value={sale.saleQrcodeValue}
@@ -305,12 +309,28 @@ export function SaleCardPreview({
                         />
                       </div>
 
-                      <div className="flex min-h-[104px] min-w-[120px] flex-1 items-end justify-center pb-1 md:justify-start">
+                      <div className="flex min-h-[104px] items-end justify-center pb-1 md:justify-start">
                         <img
                           src={ECOFERRO_LOGO_URL}
                           alt="Logo EcoFerro"
                           className="h-[68px] w-[96px] object-contain"
                         />
+                      </div>
+
+                      {/* Bloco CORREDOR / ESTANTE / NIVEL / VARIAÇÃO */}
+                      <div className="flex flex-col justify-center min-h-[104px] text-slate-800 font-bold">
+                        <p className="text-[14px] leading-tight">
+                          CORREDOR : {item.locationCorridor || sale.locationCorridor || ""}
+                        </p>
+                        <p className="text-[14px] leading-tight mt-1">
+                          ESTANTE : {item.locationShelf || sale.locationShelf || ""}
+                        </p>
+                        <p className="text-[14px] leading-tight mt-1">
+                          NIVEL : {item.locationLevel || sale.locationLevel || ""}
+                        </p>
+                        <p className="text-[15px] leading-tight mt-1 font-bold">
+                          VARIAÇÃO : {item.variation || sale.variation || ""}
+                        </p>
                       </div>
                     </div>
                   </div>

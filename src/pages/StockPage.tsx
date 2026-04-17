@@ -569,43 +569,38 @@ export default function StockPage() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
+          <div className="rounded-lg border">
+            <table className="w-full text-sm table-fixed">
               <colgroup>
-                <col style={{ width: "30%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "9%" }} />
+                <col className="w-[36%]" />
+                <col className="w-[12%]" />
+                <col className="w-[14%]" />
+                <col className="w-[9%]" />
+                <col className="w-[8%] hidden md:table-column" />
+                <col className="w-[10%] hidden lg:table-column" />
+                <col className="w-[8%] hidden md:table-column" />
+                <col className="w-[11%]" />
               </colgroup>
               <thead className="border-b bg-muted/40">
                 <tr>
-                  <th className="px-3 py-3 text-left">
+                  <th className="px-2 py-3 text-left text-xs">
                     <SortBtn label="Produto" col="title" />
                   </th>
-                  <th className="px-3 py-3 text-left hidden sm:table-cell">SKU</th>
-                  <th className="px-3 py-3 text-center hidden lg:table-cell">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Localização
-                    </span>
-                    <div className="text-[10px] font-normal text-muted-foreground/70 mt-0.5">
-                      Cor • Est • Nív
-                    </div>
+                  <th className="px-2 py-3 text-left text-xs hidden sm:table-cell">SKU</th>
+                  <th className="px-2 py-3 text-center text-xs hidden lg:table-cell">
+                    Localização
                   </th>
-                  <th className="px-3 py-3 text-right">
-                    <SortBtn label="Disponível" col="available_quantity" />
+                  <th className="px-2 py-3 text-right text-xs">
+                    <SortBtn label="Disp." col="available_quantity" />
                   </th>
-                  <th className="px-3 py-3 text-right hidden md:table-cell">
-                    <SortBtn label="Vendido" col="sold_quantity" />
+                  <th className="px-2 py-3 text-right text-xs hidden md:table-cell">
+                    <SortBtn label="Vend." col="sold_quantity" />
                   </th>
-                  <th className="px-3 py-3 text-right hidden lg:table-cell">
+                  <th className="px-2 py-3 text-right text-xs hidden lg:table-cell">
                     <SortBtn label="Preço" col="price" />
                   </th>
-                  <th className="px-3 py-3 text-center hidden md:table-cell">Status</th>
-                  <th className="px-3 py-3 text-right">Ações</th>
+                  <th className="px-2 py-3 text-center text-xs hidden md:table-cell">Status</th>
+                  <th className="px-2 py-3 text-right text-xs">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -617,50 +612,52 @@ export default function StockPage() {
                       key={item.item_id}
                       className="hover:bg-muted/30 transition-colors"
                     >
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-3">
+                      <td className="px-2 py-2">
+                        <div className="flex items-center gap-2">
                           {item.thumbnail ? (
                             <img
                               src={item.thumbnail}
                               alt=""
-                              className="h-9 w-9 rounded object-cover flex-shrink-0"
+                              className="h-8 w-8 rounded object-cover flex-shrink-0"
                               loading="lazy"
                             />
                           ) : (
-                            <div className="h-9 w-9 rounded bg-muted flex items-center justify-center flex-shrink-0">
-                              <Package className="h-4 w-4 text-muted-foreground" />
+                            <div className="h-8 w-8 rounded bg-muted flex items-center justify-center flex-shrink-0">
+                              <Package className="h-3 w-3 text-muted-foreground" />
                             </div>
                           )}
-                          <div className="min-w-0">
-                            <p className="font-medium truncate text-sm">{item.title ?? "—"}</p>
-                            <p className="text-[10px] text-muted-foreground truncate">ID: {item.item_id}</p>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium truncate text-xs">{item.title ?? "—"}</p>
+                            <p className="text-[10px] text-muted-foreground truncate">
+                              {item.item_id}
+                            </p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-muted-foreground hidden sm:table-cell">
+                      <td className="px-2 py-2 text-muted-foreground hidden sm:table-cell">
                         {item.sku ? (
                           <span className="font-mono text-xs">{item.sku}</span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-destructive text-xs font-semibold">
+                          <span className="inline-flex items-center gap-1 text-destructive text-[10px] font-semibold">
                             <AlertTriangle className="h-3 w-3" /> SEM SKU
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-center hidden lg:table-cell">
+                      <td className="px-2 py-2 text-center hidden lg:table-cell">
                         {item.location_corridor || item.location_shelf || item.location_level ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-primary/10 text-primary px-2 py-0.5 text-xs font-semibold">
-                            <MapPin className="h-3 w-3" />
+                          <span className="inline-flex items-center gap-1 rounded bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-semibold">
+                            <MapPin className="h-2.5 w-2.5" />
                             {[
                               item.location_corridor || "—",
                               item.location_shelf || "—",
                               item.location_level || "—",
-                            ].join(" • ")}
+                            ].join("•")}
                           </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-right font-semibold">
+                      <td className="px-2 py-2 text-right font-semibold text-xs">
                         <span
                           className={
                             isOut
@@ -676,10 +673,10 @@ export default function StockPage() {
                           )}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-right text-muted-foreground hidden md:table-cell">
+                      <td className="px-2 py-2 text-right text-muted-foreground text-xs hidden md:table-cell">
                         {item.sold_quantity}
                       </td>
-                      <td className="px-3 py-3 text-right hidden lg:table-cell">
+                      <td className="px-2 py-2 text-right text-xs hidden lg:table-cell">
                         {item.price != null
                           ? item.price.toLocaleString("pt-BR", {
                               style: "currency",
@@ -687,7 +684,7 @@ export default function StockPage() {
                             })
                           : "—"}
                       </td>
-                      <td className="px-3 py-3 text-center hidden md:table-cell">
+                      <td className="px-2 py-2 text-center hidden md:table-cell">
                         <Badge
                           variant={
                             item.status === "active"
@@ -696,30 +693,30 @@ export default function StockPage() {
                               ? "secondary"
                               : "outline"
                           }
-                          className="text-xs"
+                          className="text-[10px] px-1.5"
                         >
                           {item.status ?? "—"}
                         </Badge>
                       </td>
-                      <td className="px-3 py-3">
-                        <div className="flex gap-1 justify-end">
+                      <td className="px-2 py-2">
+                        <div className="flex gap-0.5 justify-end">
                           <Button
                             size="sm"
                             variant="ghost"
                             onClick={() => setEditing({ ...item })}
-                            className="h-8 w-8 p-0"
+                            className="h-7 w-7 p-0"
                             title="Editar SKU / Localização"
                           >
-                            <Pencil className="h-4 w-4" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <Button
                             size="sm"
                             variant="ghost"
                             onClick={() => setConfirmDelete(item)}
-                            className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
                             title="Remover do estoque local"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </td>
