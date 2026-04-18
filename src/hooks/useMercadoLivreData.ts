@@ -55,7 +55,10 @@ interface MercadoLivreDataState {
 
 const DEFAULT_AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 const DATA_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
-const DEFAULT_PAGE_SIZE = 300;
+// 1000 pedidos por batch (backend aceita até 5000, ~1-2MB JSON).
+// Com base típica de 1200-1500 pedidos, carrega em 1-2 requests só —
+// reduz o tempo de "Atualizando base" drasticamente.
+const DEFAULT_PAGE_SIZE = 1000;
 
 const mercadoLivreDataCache = new Map<
   string,
