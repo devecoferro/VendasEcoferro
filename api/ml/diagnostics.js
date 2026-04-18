@@ -218,7 +218,12 @@ export async function computeOrdersDivergence(options = {}) {
   }
 
   // ─── Lado App ────────────────────────────────────────
-  // Lê a classificacao interna do payload do dashboard
+  // Lê a classificacao interna do payload do dashboard.
+  // ⚠️ deposit.order_ids_by_bucket guarda DB row ids (formato
+  // "${mlOrderId}:${itemId}"), não ML order ids. Como o lado ML usa
+  // ML order ids puros, precisamos EXTRAIR o ml_order_id do db_row_id
+  // (split por ":") pra os dois lados usarem a mesma chave.
+  // Sem isso, a comparação gera 100% falsos divergentes.
   const payload = await buildDashboardPayload({ allowCache: !fresh });
   const appBucketOfOrder = new Map();
   const deposits = Array.isArray(payload.deposits) ? payload.deposits : [];
@@ -231,8 +236,13 @@ export async function computeOrdersDivergence(options = {}) {
       const ids = idsByBucket[bucket];
       if (!Array.isArray(ids)) continue;
       for (const id of ids) {
-        const str = String(id);
-        if (!appBucketOfOrder.has(str)) appBucketOfOrder.set(str, bucket);
+        const raw = String(id);
+        // DB row id = "${mlOrderId}:${itemId}"; ML order id é o prefixo.
+        // Se não tiver ":", já é um ML order id puro.
+        const mlOrderId = raw.includes(":") ? raw.split(":")[0] : raw;
+        if (!appBucketOfOrder.has(mlOrderId)) {
+          appBucketOfOrder.set(mlOrderId, bucket);
+        }
       }
     }
   }
