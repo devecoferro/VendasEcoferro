@@ -381,8 +381,14 @@ function ensureLocationColumns() {
 ensureLocationColumns();
 
 export default async function mlStockHandler(req, res) {
-  const profile = requireAuthenticatedProfile(req, res);
-  if (!profile) return;
+  try {
+    await requireAuthenticatedProfile(req);
+  } catch (error) {
+    const statusCode = error?.statusCode || 401;
+    return res.status(statusCode).json({
+      error: error instanceof Error ? error.message : "Sessao invalida.",
+    });
+  }
 
   const connectionId = req.query.connection_id;
   if (!connectionId) {

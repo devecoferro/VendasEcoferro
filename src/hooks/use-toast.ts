@@ -3,7 +3,8 @@ import * as React from "react";
 import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
 
 const TOAST_LIMIT = 1;
-const TOAST_REMOVE_DELAY = 1000000;
+// 5 segundos (era 1_000_000 = ~16min, vazamento cumulativo de memória).
+const TOAST_REMOVE_DELAY = 5000;
 
 type ToasterToast = ToastProps & {
   id: string;
@@ -174,7 +175,9 @@ function useToast() {
         listeners.splice(index, 1);
       }
     };
-  }, [state]);
+    // Deps []: subscribe/unsubscribe APENAS no mount/unmount. Antes era
+    // [state] e causava re-subscribe a cada mudança de toast.
+  }, []);
 
   return {
     ...state,

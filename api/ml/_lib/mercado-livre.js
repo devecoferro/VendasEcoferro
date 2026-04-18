@@ -12,7 +12,15 @@ export function isTokenExpiringSoon(tokenExpiresAt) {
   return expiresAt.getTime() <= Date.now() + 60 * 1000;
 }
 
-export async function refreshMercadoLivreToken(connectionId) {
+// ─── Mutex de refresh token por connection_id ─────────────────────────
+// ML rotaciona o refresh_token a cada chamada a /oauth/token — usar o mesmo
+// refresh_token em duas chamadas simultâneas invalida a primeira, quebrando
+// toda a conexão até OAuth manual. Esse Map de promises inflight garante
+// que apenas UMA refresh roda por connection_id; chamadas concorrentes
+// aguardam a mesma promise e recebem o novo token.
+const refreshInflight = new Map();
+
+async function doRefreshToken(connectionId) {
   ensureMercadoLivreCredentials();
 
   const connection = getConnectionById(connectionId);
@@ -46,6 +54,20 @@ export async function refreshMercadoLivreToken(connectionId) {
     refresh_token: payload.refresh_token,
     token_expires_at: new Date(Date.now() + payload.expires_in * 1000).toISOString(),
   });
+}
+
+export async function refreshMercadoLivreToken(connectionId) {
+  const key = String(connectionId);
+  const existing = refreshInflight.get(key);
+  if (existing) return existing;
+
+  const promise = doRefreshToken(connectionId).finally(() => {
+    if (refreshInflight.get(key) === promise) {
+      refreshInflight.delete(key);
+    }
+  });
+  refreshInflight.set(key, promise);
+  return promise;
 }
 
 export async function ensureValidAccessToken(connection) {

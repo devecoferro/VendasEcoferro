@@ -339,6 +339,17 @@ export function clearSessionCookie(response) {
   appendSetCookie(response, buildExpiredSessionCookie());
 }
 
+// Guard: só permite re-sync de password no startup (via ensureDefaultAdmin()
+// chamado de server/index.js). Requests normais de auth NÃO devem sobrescrever
+// a senha do admin — isso criava um backdoor permanente (AUTH-5).
+let _allowPasswordSync = false;
+export function enableDefaultAdminPasswordSync() {
+  _allowPasswordSync = true;
+}
+export function disableDefaultAdminPasswordSync() {
+  _allowPasswordSync = false;
+}
+
 export async function ensureDefaultAdmin() {
   if (!DEFAULT_ADMIN_USERNAME || !DEFAULT_ADMIN_PASSWORD) {
     return null;
@@ -347,17 +358,19 @@ export async function ensureDefaultAdmin() {
   const existingProfile = getProfileRowByUsername(DEFAULT_ADMIN_USERNAME);
 
   if (existingProfile) {
-    // Sincronizar senha com env var — garante que credenciais sempre funcionam
-    // após redeploy, mesmo se o hash no banco ficou dessincronizado.
-    const passwordMatches = verifyPassword(DEFAULT_ADMIN_PASSWORD, existingProfile.password_hash);
-    if (!passwordMatches) {
-      const newHash = createPasswordHash(DEFAULT_ADMIN_PASSWORD);
-      db.prepare(
-        `UPDATE app_user_profiles SET password_hash = ?, active = 1, updated_at = ? WHERE id = ?`
-      ).run(newHash, nowIso(), existingProfile.id);
-      console.log(`[auth] Admin password synced from env vars for user "${DEFAULT_ADMIN_USERNAME}".`);
+    // Sincronizar senha APENAS no startup (quando _allowPasswordSync = true).
+    // Em requests normais, não reescreve a senha — protege contra backdoor.
+    if (_allowPasswordSync) {
+      const passwordMatches = verifyPassword(DEFAULT_ADMIN_PASSWORD, existingProfile.password_hash);
+      if (!passwordMatches) {
+        const newHash = createPasswordHash(DEFAULT_ADMIN_PASSWORD);
+        db.prepare(
+          `UPDATE app_user_profiles SET password_hash = ?, active = 1, updated_at = ? WHERE id = ?`
+        ).run(newHash, nowIso(), existingProfile.id);
+        console.log(`[auth] Admin password synced from env vars for user "${DEFAULT_ADMIN_USERNAME}" (startup only).`);
+      }
     }
-    // Garantir que está ativo
+    // Garantir que está ativo (safe pra ser chamado sempre)
     if (!existingProfile.active) {
       db.prepare(
         `UPDATE app_user_profiles SET active = 1, updated_at = ? WHERE id = ?`
@@ -418,8 +431,8 @@ export function getProfileByUsername(_dbInstance, username) {
 }
 
 export async function authenticateUser(username, password, response) {
-  await ensureDefaultAdmin();
-
+  // NÃO chamar ensureDefaultAdmin aqui — é chamado uma vez no startup
+  // (server/index.js). Chamar em cada login permite backdoor de senha via env.
   const profile = getProfileRowByUsername(username);
   if (!profile || !profile.active) {
     const error = new Error("Usuario ou senha invalidos.");
@@ -439,7 +452,8 @@ export async function authenticateUser(username, password, response) {
 }
 
 export async function getAuthenticatedProfile(request) {
-  await ensureDefaultAdmin();
+  // NÃO chamar ensureDefaultAdmin aqui (ver authenticateUser).
+  // Evita scryptSync pesado em cada request autenticado.
   removeExpiredSessions();
 
   const sessionToken = getSessionToken(request);

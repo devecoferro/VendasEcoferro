@@ -282,6 +282,116 @@ export function upsertNfeDocument(record) {
   return getNfeDocumentByOrderId(sellerId, orderId);
 }
 
+/**
+ * Tenta adquirir lock para emitir NF-e de um pedido. Evita race condition
+ * entre generateNfe() (HTTP manual) e runAutoEmitNfe() (cron) emitindo
+ * duas NF-es para o mesmo pedido.
+ *
+ * Estratégia: INSERT de registro com status "emitting". Se já existir
+ * (UNIQUE constraint em seller_id + order_id), retorna false. Se o registro
+ * existente tem status terminal (authorized, error, cancelled), também
+ * retorna false — emissão já concluída ou já falhou definitivamente.
+ *
+ * Retorna:
+ *   { acquired: true, existing: null } → OK pra prosseguir com emissão
+ *   { acquired: false, existing: {...} } → outro processo já emitindo
+ *                                            OU já existe NF-e autorizada
+ */
+export function acquireNfeEmissionLock({ sellerId, orderId, connectionId, mlOrderId }) {
+  const sid = normalizeNullable(sellerId);
+  const oid = normalizeNullable(orderId);
+  const mlOid = normalizeNullable(mlOrderId) || oid;
+  if (!sid || !oid || !mlOid) {
+    throw new Error("sellerId/orderId obrigatórios pra lock de NF-e.");
+  }
+
+  // Verifica se já existe registro
+  const existing = getNfeDocumentByOrderId(sid, oid);
+
+  if (existing) {
+    const existingStatus = String(existing.status || "").toLowerCase();
+    // Estados em que NÃO pode disparar nova emissão:
+    //   - authorized: já emitida com sucesso
+    //   - emitting: outro processo está no meio da emissão
+    //   - pending_configuration: emitida mas aguardando ML
+    if (
+      existingStatus === "authorized" ||
+      existingStatus === "emitting" ||
+      existingStatus === "pending_configuration"
+    ) {
+      return { acquired: false, existing };
+    }
+    // Estados recuperáveis (error, cancelled): permite nova tentativa,
+    // mas faz UPDATE do status pra "emitting" antes.
+    try {
+      const timestamp = nowIso();
+      db.prepare(
+        `UPDATE nfe_documents
+         SET status = 'emitting',
+             updated_at = ?,
+             error_code = NULL,
+             error_message = NULL
+         WHERE seller_id = ? AND order_id = ? AND status IN ('error', 'cancelled')`
+      ).run(timestamp, sid, oid);
+      return { acquired: true, existing };
+    } catch {
+      return { acquired: false, existing };
+    }
+  }
+
+  // Não existe: INSERT novo com status "emitting"
+  try {
+    const timestamp = nowIso();
+    db.prepare(
+      `INSERT INTO nfe_documents (
+        id,
+        connection_id,
+        seller_id,
+        order_id,
+        ml_order_id,
+        status,
+        source,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'emitting', 'lock', ?, ?)`
+    ).run(
+      randomUUID(),
+      connectionId || null,
+      sid,
+      oid,
+      mlOid,
+      timestamp,
+      timestamp
+    );
+    return { acquired: true, existing: null };
+  } catch (err) {
+    // UNIQUE constraint: outro processo inseriu no mesmo instante
+    return { acquired: false, existing: getNfeDocumentByOrderId(sid, oid) };
+  }
+}
+
+/**
+ * Libera o lock se o processo falhar antes de gravar resultado final.
+ * Remove registro com status="emitting" que foi criado por acquireLock.
+ * NÃO remove registros com resultado (authorized, error, pending_configuration).
+ */
+export function releaseNfeEmissionLock(sellerId, orderId) {
+  const sid = normalizeNullable(sellerId);
+  const oid = normalizeNullable(orderId);
+  if (!sid || !oid) return;
+  try {
+    db.prepare(
+      `DELETE FROM nfe_documents
+       WHERE seller_id = ?
+         AND order_id = ?
+         AND status = 'emitting'
+         AND source = 'lock'`
+    ).run(sid, oid);
+  } catch {
+    // best-effort
+  }
+}
+
 export function saveNfeDanfeFile(sellerId, invoiceId, buffer) {
   const storageKey = buildNfeDanfeStorageKey(sellerId, invoiceId);
   writeDocumentFile(storageKey, buffer);

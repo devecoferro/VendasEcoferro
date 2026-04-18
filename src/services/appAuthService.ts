@@ -26,13 +26,29 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return await Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      window.setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]);
+/**
+ * fetchWithTimeout: fetch com AbortController + timer limpo no finally.
+ * Substitui o antigo `withTimeout(Promise, ...)` que NÃO abortava o fetch
+ * original e vazava setTimeout quando a promise resolvia antes do timer.
+ */
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function authenticatedFetch<T>(
@@ -65,8 +81,9 @@ export async function signInWithUsername(
     throw new Error("Informe um usuario valido.");
   }
 
-  const response = await withTimeout(
-    fetch("/api/app-auth", {
+  const response = await fetchWithTimeout(
+    "/api/app-auth",
+    {
       method: "POST",
       credentials: "include",
       headers: {
@@ -77,7 +94,7 @@ export async function signInWithUsername(
         username: normalizedUsername,
         password,
       }),
-    }),
+    },
     REMOTE_AUTH_TIMEOUT_MS,
     "Timeout ao autenticar no painel."
   );
@@ -98,8 +115,9 @@ export async function signOutRemote(): Promise<void> {
 }
 
 export async function getCurrentRemoteUser(): Promise<AuthUser | null> {
-  const response = await withTimeout(
-    fetch("/api/app-auth", {
+  const response = await fetchWithTimeout(
+    "/api/app-auth",
+    {
       method: "POST",
       credentials: "include",
       headers: {
@@ -108,7 +126,7 @@ export async function getCurrentRemoteUser(): Promise<AuthUser | null> {
       body: JSON.stringify({
         action: "session",
       }),
-    }),
+    },
     REMOTE_AUTH_TIMEOUT_MS,
     "Timeout ao verificar sessao."
   );

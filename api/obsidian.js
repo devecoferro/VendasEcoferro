@@ -35,8 +35,19 @@ import {
   generateDailyReport,
   logProblem,
 } from "./_lib/obsidian-sync.js";
+import { requireAuthenticatedProfile } from "./_lib/auth-server.js";
 
 export default async function obsidianHandler(req, res) {
+  try {
+    await requireAuthenticatedProfile(req);
+  } catch (error) {
+    const statusCode = error?.statusCode || 401;
+    return res.status(statusCode).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Sessao invalida.",
+    });
+  }
+
   try {
     const action = req.query.action || req.body?.action;
 

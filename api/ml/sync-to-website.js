@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { db } from "../_lib/db.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { getConnectionById } from "./_lib/storage.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import createLogger from "../_lib/logger.js";
 
 const log = createLogger("sync-to-website");
@@ -253,6 +254,16 @@ async function getMLAccessToken() {
 
 // ── Handler principal ────────────────────────────────────────────
 export async function handleSyncToWebsite(req, res) {
+  try {
+    await requireAuthenticatedProfile(req);
+  } catch (error) {
+    const statusCode = error?.statusCode || 401;
+    return res.status(statusCode).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Sessao invalida.",
+    });
+  }
+
   if (!SUPABASE_KEY) {
     return res.status(500).json({
       success: false,

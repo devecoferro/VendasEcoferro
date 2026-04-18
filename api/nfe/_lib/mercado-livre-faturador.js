@@ -16,6 +16,8 @@ import {
   saveNfeDanfeFile,
   saveNfeXmlFile,
   upsertNfeDocument,
+  acquireNfeEmissionLock,
+  releaseNfeEmissionLock,
 } from "./nfe-storage.js";
 
 const NFE_SOURCE = "mercado_livre_faturador";
@@ -1002,6 +1004,36 @@ export async function generateNfe(orderId) {
       action: "blocked",
       nfe: buildNfeResponse(blocked, context),
       readiness,
+    };
+  }
+
+  // ─── Lock de emissão ───────────────────────────────────────────
+  // Evita race condition: manual (HTTP) + auto-emit (cron) emitindo pra
+  // mesmo pedido. Insere registro com status "emitting" ANTES do POST.
+  // Se outro processo já está emitindo ou já emitiu, aborta.
+  const lockResult = acquireNfeEmissionLock({
+    sellerId: context.seller_id,
+    orderId: context.order_id,
+    connectionId: context.connection?.id || null,
+    mlOrderId: context.ml_order_id || context.order_id,
+  });
+  if (!lockResult.acquired) {
+    const existingStatus = String(lockResult.existing?.status || "unknown").toLowerCase();
+    return {
+      status: "ok",
+      action:
+        existingStatus === "authorized" ? "noop_existing_invoice" : "blocked",
+      nfe: lockResult.existing
+        ? buildNfeResponse(lockResult.existing, context)
+        : null,
+      readiness: {
+        allowed: false,
+        status: "concurrent_emission",
+        note:
+          existingStatus === "emitting"
+            ? "Emissão em andamento por outro processo."
+            : `NF-e já existe com status ${existingStatus}.`,
+      },
     };
   }
 

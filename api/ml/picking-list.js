@@ -25,6 +25,7 @@
 //   porque cada order_id tem sua própria NF-e e etiqueta.
 
 import { db } from "../_lib/db.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 
 /**
  * Busca pedidos que precisam de ação operacional AGORA.
@@ -150,8 +151,9 @@ function buildOrdersList(orders) {
   });
 }
 
-export default function handler(request, response) {
+export default async function handler(request, response) {
   try {
+    await requireAuthenticatedProfile(request);
     const actionableOrders = getActionableOrders();
     const pickingList = buildPickingList(actionableOrders);
     const ordersList = buildOrdersList(actionableOrders);

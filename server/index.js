@@ -15,6 +15,11 @@ import {
 import { isTokenExpiringSoon } from "../api/ml/_lib/mercado-livre.js";
 import createLogger from "../api/_lib/logger.js";
 import { startAutoBackup, stopAutoBackup, runBackup } from "../api/_lib/backup.js";
+import {
+  ensureDefaultAdmin,
+  enableDefaultAdminPasswordSync,
+  disableDefaultAdminPasswordSync,
+} from "../api/_lib/auth-server.js";
 import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
 import mlAuthHandler from "../api/ml/auth.js";
@@ -160,132 +165,6 @@ app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
-// ─── DEBUG: Test ML API endpoints (temporary — remover após validação) ──
-app.get("/api/debug/ml-api-test", async (_req, res) => {
-  try {
-    const { getLatestConnection } = await import("../api/ml/_lib/storage.js");
-    const { ensureValidAccessToken } = await import("../api/ml/_lib/mercado-livre.js");
-    const conn = getLatestConnection();
-    const valid = await ensureValidAccessToken(conn);
-    if (!valid?.access_token) return res.json({ error: "no token" });
-    const token = valid.access_token;
-    const sid = String(valid.seller_id);
-    const h = { Authorization: `Bearer ${token}` };
-    const results = {};
-
-    // Test 1: orders/search with substatus filter
-    const substatusTests = [
-      ["rts_ready_for_pickup", `shipping.status=ready_to_ship&shipping.substatus=ready_for_pickup`],
-      ["rts_picked_up", `shipping.status=ready_to_ship&shipping.substatus=picked_up`],
-      ["rts_in_warehouse", `shipping.status=ready_to_ship&shipping.substatus=in_warehouse`],
-      ["rts_all", `shipping.status=ready_to_ship`],
-      ["pending_all", `shipping.status=pending`],
-      ["shipped_all", `shipping.status=shipped`],
-    ];
-    for (const [label, qs] of substatusTests) {
-      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&${qs}&limit=1`, { headers: h });
-      const j = await r.json();
-      results[label] = { status: r.status, total: j.paging?.total, error: j.message };
-    }
-
-    // Test 2: check shipping fields in order response
-    const sampleR = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&limit=1`, { headers: h });
-    const sampleD = await sampleR.json();
-    if (sampleD.results?.[0]) {
-      results.sample_order_shipping = sampleD.results[0].shipping;
-      results.sample_order_tags = sampleD.results[0].tags;
-    }
-
-    // Test 3: shipments single - get full details
-    if (sampleD.results?.[0]?.shipping?.id) {
-      const shipId = sampleD.results[0].shipping.id;
-      const r3 = await fetch(`https://api.mercadolibre.com/shipments/${shipId}`, { headers: h });
-      const j3 = await r3.json();
-      results.shipments_single = { status: r3.status, shipping_status: j3.status, substatus: j3.substatus, keys: Object.keys(j3).slice(0, 20) };
-    }
-
-    // Test 5: Get ALL substatus totals for ready_to_ship
-    const rtsSubstatuses = [
-      "ready_for_pickup", "in_warehouse", "ready_to_pack", "packed",
-      "picked_up", "authorized_by_carrier", "handling", "manufacturing",
-      "ready_to_print", "printed", "stale", "waiting_for_carrier",
-    ];
-    results.rts_substatus_breakdown = {};
-    let rtsSubTotal = 0;
-    for (const sub of rtsSubstatuses) {
-      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&shipping.substatus=${sub}&limit=1`, { headers: h });
-      const j = await r.json();
-      const total = j.paging?.total || 0;
-      if (total > 0) results.rts_substatus_breakdown[sub] = total;
-      rtsSubTotal += total;
-    }
-    results.rts_substatus_total = rtsSubTotal;
-    results.rts_all_total = results.rts_all.total;
-    results.rts_unaccounted = results.rts_all.total - rtsSubTotal;
-
-    // Test 6: Get ALL substatus totals for shipped
-    const shippedSubstatuses = [
-      "out_for_delivery", "receiver_absent", "not_visited", "at_customs",
-      "waiting_for_withdrawal", "in_transit", "delivered", "soon_deliver",
-      "returned_to_sender", "returning_to_sender",
-    ];
-    results.shipped_substatus_breakdown = {};
-    let shippedSubTotal = 0;
-    for (const sub of shippedSubstatuses) {
-      const r = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=shipped&shipping.substatus=${sub}&limit=1`, { headers: h });
-      const j = await r.json();
-      const total = j.paging?.total || 0;
-      if (total > 0) results.shipped_substatus_breakdown[sub] = total;
-      shippedSubTotal += total;
-    }
-    results.shipped_substatus_total = shippedSubTotal;
-    results.shipped_all_total = results.shipped_all.total;
-
-    // Test 4: orders/{id} for full shipping details
-    if (sampleD.results?.[0]?.id) {
-      const ordId = sampleD.results[0].id;
-      const r4 = await fetch(`https://api.mercadolibre.com/orders/${ordId}`, { headers: h });
-      const j4 = await r4.json();
-      results.single_order_shipping = j4.shipping;
-    }
-
-    // Test 7: Get actual substatuses from /shipments/{id} for a sample of rts orders
-    const sampleSize = 50;
-    const rtsR = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sid}&shipping.status=ready_to_ship&limit=${sampleSize}&sort=date_desc`, { headers: h });
-    const rtsD = await rtsR.json();
-    const rtsOrders = rtsD.results || [];
-    const shipIds = [...new Set(rtsOrders.map(o => o.shipping?.id).filter(Boolean))];
-
-    const substatusCounts = {};
-    const statusCounts = {};
-    let shipmentsSampled = 0;
-
-    // Batch 10 at a time
-    for (let i = 0; i < Math.min(shipIds.length, 30); i++) {
-      const sr = await fetch(`https://api.mercadolibre.com/shipments/${shipIds[i]}`, { headers: h });
-      if (sr.ok) {
-        const sj = await sr.json();
-        const key = sj.status + '/' + sj.substatus;
-        statusCounts[key] = (statusCounts[key] || 0) + 1;
-        substatusCounts[sj.substatus] = (substatusCounts[sj.substatus] || 0) + 1;
-        shipmentsSampled++;
-      }
-    }
-
-    results.shipment_sample = {
-      sampled: shipmentsSampled,
-      total_rts_orders: rtsOrders.length,
-      unique_shipping_ids: shipIds.length,
-      status_substatus_distribution: statusCounts,
-      substatus_distribution: substatusCounts,
-    };
-
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.get("/api/health/dependencies", (_req, res) => {
   const payload = safeDependencyHealth();
   res.status(payload.ok ? 200 : 500).json(payload);
@@ -407,20 +286,39 @@ const HARD_HEAL_COOLDOWN_MS = 10 * 60 * 1000;
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
+// Watchdog: máximo que um cron pode rodar antes de ser considerado stuck.
+// Se ultrapassar esse prazo, o lock é forçadamente resetado pra permitir
+// próxima execução (o sync original continua rodando em background mas
+// não bloqueia mais novos ticks).
+const CRON_STUCK_TIMEOUT_MS = 5 * 60 * 1000;
+
 let autoSyncRunning = false;
+let autoSyncStartedAt = 0;
 let activeRefreshRunning = false;
+let activeRefreshStartedAt = 0;
 let autoSyncIntervalId = null;
 let activeRefreshIntervalId = null;
 let chipDriftSnapshotIntervalId = null;
 let chipDriftPruneIntervalId = null;
 let chipDriftSnapshotRunning = false;
+let chipDriftSnapshotStartedAt = 0;
 let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapshot gravado
 let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
 let lastAutoHealAt = 0; // epoch ms do ultimo auto-heal disparado
 let lastHardHealAt = 0; // epoch ms do ultimo hard-heal disparado
 
 async function autoSyncOrders() {
-  if (autoSyncRunning) return; // Evita overlap se o sync anterior ainda esta rodando
+  // Watchdog: se autoSyncRunning está true há mais de 5min, considera stuck
+  // e reseta flag (promise original pode continuar em bg, mas não bloqueia).
+  if (autoSyncRunning) {
+    if (Date.now() - autoSyncStartedAt > CRON_STUCK_TIMEOUT_MS) {
+      log.warn(`Auto-sync stuck por ${Math.round((Date.now() - autoSyncStartedAt) / 1000)}s — resetando flag`);
+      autoSyncRunning = false;
+    } else {
+      return;
+    }
+  }
+  autoSyncStartedAt = Date.now();
 
   try {
     autoSyncRunning = true;
@@ -456,7 +354,15 @@ async function autoSyncOrders() {
 // Exemplo: pedido shipped→delivered que nao aparece no incremental sync
 // porque o ML nao atualiza date_last_updated do ponto de vista do seller.
 async function autoRefreshActiveOrders() {
-  if (activeRefreshRunning) return;
+  if (activeRefreshRunning) {
+    if (Date.now() - activeRefreshStartedAt > CRON_STUCK_TIMEOUT_MS) {
+      log.warn(`Active refresh stuck por ${Math.round((Date.now() - activeRefreshStartedAt) / 1000)}s — resetando flag`);
+      activeRefreshRunning = false;
+    } else {
+      return;
+    }
+  }
+  activeRefreshStartedAt = Date.now();
 
   try {
     activeRefreshRunning = true;
@@ -494,7 +400,15 @@ async function autoRefreshActiveOrders() {
 // Throttle de auto-heal: so roda 1x a cada AUTO_HEAL_COOLDOWN_MS para nao
 // sobrecarregar a ML API caso o bug seja persistente.
 async function autoChipDriftSnapshot() {
-  if (chipDriftSnapshotRunning) return;
+  if (chipDriftSnapshotRunning) {
+    if (Date.now() - chipDriftSnapshotStartedAt > CRON_STUCK_TIMEOUT_MS) {
+      log.warn(`Chip drift snapshot stuck — resetando flag`);
+      chipDriftSnapshotRunning = false;
+    } else {
+      return;
+    }
+  }
+  chipDriftSnapshotStartedAt = Date.now();
 
   try {
     chipDriftSnapshotRunning = true;
@@ -674,6 +588,8 @@ async function autoChipDriftPrune() {
 // 4. Fecha o banco de dados corretamente
 // 5. Encerra o processo
 let isShuttingDown = false;
+let httpServer = null; // preenchido após app.listen()
+let shutdownExitCode = 0;
 
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
@@ -681,71 +597,114 @@ async function gracefulShutdown(signal) {
 
   log.info(`Shutdown iniciado (${signal})`);
 
-  // Para auto-sync, active refresh e auto-backup
-  if (autoSyncIntervalId) {
-    clearInterval(autoSyncIntervalId);
-    autoSyncIntervalId = null;
+  // 1. Para de aceitar novas conexões HTTP
+  if (httpServer) {
+    await new Promise((resolve) => {
+      try {
+        httpServer.close((err) => {
+          if (err) log.error("Erro ao fechar httpServer", err);
+          resolve();
+        });
+      } catch (err) {
+        log.error("Exception ao fechar httpServer", err);
+        resolve();
+      }
+    });
+    log.info("HTTP server fechado (sem aceitar novas conexões)");
   }
-  if (activeRefreshIntervalId) {
-    clearInterval(activeRefreshIntervalId);
-    activeRefreshIntervalId = null;
-  }
-  if (chipDriftSnapshotIntervalId) {
-    clearInterval(chipDriftSnapshotIntervalId);
-    chipDriftSnapshotIntervalId = null;
-  }
-  if (chipDriftPruneIntervalId) {
-    clearInterval(chipDriftPruneIntervalId);
-    chipDriftPruneIntervalId = null;
-  }
+
+  // 2. Para todos os intervalos/crons
+  if (autoSyncIntervalId) clearInterval(autoSyncIntervalId);
+  if (activeRefreshIntervalId) clearInterval(activeRefreshIntervalId);
+  if (chipDriftSnapshotIntervalId) clearInterval(chipDriftSnapshotIntervalId);
+  if (chipDriftPruneIntervalId) clearInterval(chipDriftPruneIntervalId);
+  autoSyncIntervalId = null;
+  activeRefreshIntervalId = null;
+  chipDriftSnapshotIntervalId = null;
+  chipDriftPruneIntervalId = null;
   stopAutoBackup();
 
-  // Aguarda sync atual terminar (max 15s)
+  // 3. Aguarda todas operações atuais terminarem (max 30s)
   const shutdownStart = Date.now();
-  while ((autoSyncRunning || activeRefreshRunning) && Date.now() - shutdownStart < 15000) {
+  while (
+    (autoSyncRunning ||
+      activeRefreshRunning ||
+      chipDriftSnapshotRunning) &&
+    Date.now() - shutdownStart < 30000
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  if (autoSyncRunning || activeRefreshRunning || chipDriftSnapshotRunning) {
+    log.warn("Shutdown: algumas operações não terminaram no prazo de 30s");
+  }
 
-  // Backup final antes de fechar
+  // 4. Backup final antes de fechar
   try {
     log.info("Backup final antes do shutdown");
     await runBackup();
   } catch (error) {
     log.error("Falha no backup final", error);
+    shutdownExitCode = 1;
     onBackupFailed(error).catch(() => {});
   }
 
-  // Fecha o banco de dados
+  // 5. Fecha o banco de dados
   try {
     db.close();
     log.info("Banco de dados fechado");
   } catch (error) {
     log.error("Erro ao fechar banco", error);
+    shutdownExitCode = 1;
   }
 
-  log.info("Shutdown concluido");
-  process.exit(0);
+  log.info(`Shutdown concluido (exit ${shutdownExitCode})`);
+  process.exit(shutdownExitCode);
 }
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
-// Captura erros nao tratados para nao derrubar silenciosamente
+// Uncaught errors: logar E encerrar processo (estado interno pode estar
+// corrupto — Coolify restart policy relança container).
 process.on("uncaughtException", (error) => {
-  log.error("Uncaught exception", error);
+  log.error("Uncaught exception — iniciando shutdown", error);
   onUnhandledError("Uncaught Exception", error).catch(() => {});
+  shutdownExitCode = 1;
+  // Timeout de segurança: se graceful não completa em 20s, força exit
+  setTimeout(() => {
+    log.error("Graceful shutdown timeout após uncaughtException — forçando exit(1)");
+    process.exit(1);
+  }, 20000).unref();
+  gracefulShutdown("uncaughtException").catch(() => process.exit(1));
 });
 
 process.on("unhandledRejection", (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
   log.error("Unhandled rejection", err);
   onUnhandledError("Unhandled Rejection", err).catch(() => {});
+  // Unhandled rejection não corrompe necessariamente o state, mas é sinal
+  // de bug — loga sem derrubar (comportamento atual, menos agressivo que
+  // uncaughtException).
 });
 
 // ─── Start ──────────────────────────────────────────────────────────
-app.listen(APP_PORT, APP_HOST, () => {
+httpServer = app.listen(APP_PORT, APP_HOST, () => {
   log.info(`EcoFerro running on ${APP_HOST}:${APP_PORT}`);
   onServerStart(APP_PORT).catch(() => {});
+
+  // Inicializa admin default APENAS no startup (com permissão pra sync password).
+  // Depois desabilita o sync pra evitar backdoor em requests normais.
+  try {
+    enableDefaultAdminPasswordSync();
+    ensureDefaultAdmin().catch((err) => {
+      log.error("ensureDefaultAdmin falhou no startup", err instanceof Error ? err : new Error(String(err)));
+    }).finally(() => {
+      disableDefaultAdminPasswordSync();
+    });
+  } catch (err) {
+    log.error("Erro ao inicializar admin default", err instanceof Error ? err : new Error(String(err)));
+    disableDefaultAdminPasswordSync();
+  }
 
   // Limpa vendas antigas (anteriores ao piso 2026-04-01) no boot. Idempotente
   // — nas execucoes seguintes, zero linhas sao removidas.
