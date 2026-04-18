@@ -482,22 +482,26 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
-  // Cancelamento pelo comprador: ML atualiza order.status="cancelled"
-  // IMEDIATAMENTE, mas shipment.status ainda pode ser ready_to_ship por
-  // alguns minutos/horas (shipping service propaga com delay). Nesses
-  // casos o ML Seller Center já mostra "Venda cancelada. Não envie.",
-  // mas sem esse check o pedido apareceria em "Envios de hoje" no app.
-  // Checar ANTES de tudo: order.status tem prioridade sobre shipment.
+  // Cancelamento: ML Seller Center UI conta cancelados de hoje em "Finalizadas".
+  // Nossa classificação agora redireciona pra "finalized" e o filtro de data
+  // (linha ~1983 do loop principal) mantém só os de hoje.
   const rawOrderStatus = normalizeState(
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return "cancelled";
+    return "finalized";
   }
 
-  // shipping.status=pending: pedido pago que ainda não recebeu label.
-  // ML Seller Center mostra em "Próximos dias" (aguardando processamento).
+  // shipping.status=pending: pedido pago aguardando processamento.
+  // ALINHAMENTO COM ML UI: se SLA já é HOJE (ou passado), pedido aparece em
+  // "Envios de hoje" (urgência). Caso contrário, "Próximos dias".
   if (status === "pending") {
+    if (
+      dates.operationalDueDateKey &&
+      isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+    ) {
+      return "today";
+    }
     return "upcoming";
   }
 
@@ -584,10 +588,9 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "finalized";
   }
 
-  // Canceladas ganham aba propria ("Canceladas") no frontend — sem o filtro
-  // de data que limita "Finalizadas" ao dia atual.
+  // Cancelled via shipment.status: ML UI conta em Finalizadas (filtro de data).
   if (status === "cancelled") {
-    return "cancelled";
+    return "finalized";
   }
 
   // Devolvidas ficam em Finalizadas (pos-venda concluido).
@@ -608,18 +611,23 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.handlingDateKey ||
     dates.saleDateKey;
 
-  // Cancelamento pelo comprador: mesmo fix do classifyCrossDockingOrder —
-  // order.status tem prioridade sobre shipment.status, que pode demorar
-  // a propagar o cancelamento.
+  // Cancelamento: ML UI conta em Finalizadas (filtro de data aplicado depois).
   const rawOrderStatus = normalizeState(
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return "cancelled";
+    return "finalized";
   }
 
   // shipping.status=pending: pedido pago aguardando processamento no fulfillment.
+  // ALINHAMENTO COM ML UI: pending com SLA hoje já vai pra "Envios de hoje".
   if (status === "pending") {
+    if (
+      dates.operationalDueDateKey &&
+      isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+    ) {
+      return "today";
+    }
     return "upcoming";
   }
 
@@ -684,7 +692,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   if (status === "cancelled") {
-    return "cancelled";
+    return "finalized";
   }
 
   if (status === "returned") {
@@ -1506,6 +1514,17 @@ function deduplicateOrdersToPacks(orders) {
         shipping_status: "",
         ml_order_ids: [], // ⚠️ ML order IDs, NÃO DB row ids
         date_created: order.date_created,
+        // SLA usado pelo ML UI pra classificar pending (today vs upcoming)
+        sla_iso:
+          order.shipping?.estimated_delivery_limit?.date ||
+          (typeof order.shipping?.estimated_delivery_limit === "string"
+            ? order.shipping.estimated_delivery_limit
+            : null) ||
+          order.shipping?.estimated_delivery_final?.date ||
+          (typeof order.shipping?.estimated_delivery_final === "string"
+            ? order.shipping.estimated_delivery_final
+            : null) ||
+          null,
       });
     }
     const pack = packs.get(key);
@@ -1623,22 +1642,48 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       fetchAllOrdersByShippingStatus(token, sellerId, "not_delivered", 3),
     ]);
 
-    // ── FILTRAR PEDIDOS CANCELADOS ──────────────────────────────────────
-    // Um pedido pode ter order.status=cancelled mas shipping.status ainda
-    // ser ready_to_ship ou shipped (ML nem sempre atualiza o shipping).
-    // Sem esse filtro, o pedido aparece em "Envios de hoje" E "Canceladas"
-    // simultaneamente → double-counting. ML Seller Center NÃO mostra
-    // pedidos cancelados nos chips de shipping.
+    // ── FILTRAR + CLASSIFICAR PEDIDOS CANCELADOS ───────────────────────
+    // ML UI: cancelled de HOJE → "Finalizadas" / cancelled antigo → ignora
+    // Filtramos cancelled dos buckets operacionais e, se cancelado hoje,
+    // adicionamos em "finalized".
     const isCancelled = (o) => o.status === "cancelled";
     const pendingOrders = pendingRaw.filter((o) => !isCancelled(o));
     const rtsOrders = rtsRaw.filter((o) => !isCancelled(o));
     const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
     const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
+
+    // Cancelados de hoje (de qualquer shipping status) → Finalizadas.
+    // Deduplica por pack (não contar 2x o mesmo pedido que aparece em
+    // pending E ready_to_ship).
+    const cancelledOrdersSeen = new Set();
+    const allRawOrders = [...pendingRaw, ...rtsRaw, ...shippedRaw, ...notDeliveredRaw];
+    const cancelledToday = [];
+    for (const order of allRawOrders) {
+      if (!isCancelled(order)) continue;
+      const key = order.pack_id
+        ? String(order.pack_id)
+        : order.shipping?.id
+          ? `s:${order.shipping.id}`
+          : `o:${order.id}`;
+      if (cancelledOrdersSeen.has(key)) continue;
+      cancelledOrdersSeen.add(key);
+      // status_history está em /shipments, mas order.last_updated é o proxy
+      const cancelDate = order.date_closed || order.last_updated || order.date_created;
+      const cancelKey = cancelDate ? getDateKey(cancelDate) : null;
+      if (cancelKey === todayKey) {
+        cancelledToday.push(order);
+      }
+    }
+    for (const order of cancelledToday) {
+      addMlOrderIds("finalized", [String(order.id)]);
+    }
+
     const cancelledFiltered = {
       pending: pendingRaw.length - pendingOrders.length,
       rts: rtsRaw.length - rtsOrders.length,
       shipped: shippedRaw.length - shippedOrders.length,
       nd: notDeliveredRaw.length - notDeliveredOrders.length,
+      today_finalized: cancelledToday.length,
     };
 
     const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
@@ -1658,9 +1703,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
-    // Pending → upcoming
+    // Pending: ML UI conta em "Envios de hoje" se SLA já é hoje ou passado,
+    // caso contrário em "Próximos dias". SLA armazenado no pack durante
+    // deduplicateOrdersToPacks.
     for (const [, pack] of pendingPacks) {
-      addMlOrderIds("upcoming", pack.ml_order_ids);
+      const slaKey = pack.sla_iso ? getSlaDateKey(pack.sla_iso) : null;
+      if (slaKey && slaKey <= todayKey) {
+        addMlOrderIds("today", pack.ml_order_ids);
+      } else {
+        addMlOrderIds("upcoming", pack.ml_order_ids);
+      }
     }
 
     // Ready to ship → classificação por substatus + data SLA.
