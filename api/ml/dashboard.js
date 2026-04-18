@@ -1977,22 +1977,28 @@ export async function buildDashboardPayload(options = {}) {
       if (!bucket || !OPERATIONAL_BUCKETS.includes(bucket)) {
         // Keep walking. Native ML buckets are computed separately.
       } else {
+        // Dedup global por bucket — o mesmo envio não pode ser contado 2x.
+        // Fallback pack_id → shipping_id → order_id para que pedidos SEM
+        // pack_id mas com múltiplos items (cada item é 1 row no DB) contem
+        // como 1 só. Sem esse fallback, pedido com 3 items incrementa 3x.
+        // Alinhado com padrão já usado em outras partes do código (linha 1471).
         const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
-        // Dedup global por pack+bucket (não por depósito) — o mesmo pack
-        // não pode ser contado 2x mesmo que apareça em depósitos diferentes
-        const packDedupeKey = packId ? `${bucket}:${packId}` : null;
-        const isPackAlreadyCounted = packDedupeKey && countedPacks.has(packDedupeKey);
+        const shippingId = order.shipping_id ? String(order.shipping_id) : null;
+        const mlOrderId = order.order_id ? String(order.order_id) : null;
+        const dedupeId = packId || shippingId || mlOrderId;
+        const dedupeKey = dedupeId ? `${bucket}:${dedupeId}` : null;
+        const isAlreadyCounted = dedupeKey && countedPacks.has(dedupeKey);
 
         // Always track order IDs (for grid display).
         // ⚠️ order.id aqui é DB row id (fetchStoredOrders), NÃO ML order id.
         deposit.order_ids_by_bucket[bucket].push(order.id);
         deposit.native_order_ids_by_bucket[bucket].push(order.id);
 
-        // Only increment count once per pack (or always for non-pack orders)
-        if (!isPackAlreadyCounted) {
+        // Só incrementa count 1x por envio (pack/shipping/order)
+        if (!isAlreadyCounted) {
           deposit.counts[bucket] += 1;
           deposit.native_counts[bucket] += 1;
-          if (packDedupeKey) countedPacks.add(packDedupeKey);
+          if (dedupeKey) countedPacks.add(dedupeKey);
         }
       }
     }
