@@ -598,18 +598,23 @@ function validateGenerationReadiness(context, existingRecord, extraChecks = []) 
       blocking: false,
       value: context.billing_info_status || "missing",
     }),
+    // NFE-5: documento fiscal e endereço mínimo são BLOQUEANTES — ML Faturador
+    // sempre rejeita emissões sem esses campos. Pré-bloquear aqui evita:
+    //  - Gasto de quota ML pra emissões que vão falhar
+    //  - Status "error" recorrente em recentlyProcessed provocando retentativa
+    //    a cada 10min indefinidamente
     buildReadinessCheck({
       key: "buyer_identification",
       label: "Comprador possui documento fiscal",
       passed: hasBuyerIdentification,
-      blocking: false,
+      blocking: true,
       value: buyerBilling.identification.type || null,
     }),
     buildReadinessCheck({
       key: "buyer_address",
       label: "Comprador possui endereco fiscal minimo",
       passed: hasBuyerAddress,
-      blocking: false,
+      blocking: true,
       value: buyerBilling.address.zip_code || null,
     }),
     buildReadinessCheck({

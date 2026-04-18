@@ -32,8 +32,9 @@ export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
   const map = new Map<string, SeparationItem>();
 
   for (const order of orders) {
-    const rawItems: any[] = Array.isArray((order.raw_data as any)?.order_items)
-      ? ((order.raw_data as any).order_items as any[])
+    const rawData = order.raw_data as { order_items?: unknown[] } | null | undefined;
+    const rawItems: Array<Record<string, unknown>> = Array.isArray(rawData?.order_items)
+      ? (rawData.order_items as Array<Record<string, unknown>>)
       : [];
     const items: MLOrderItem[] =
       Array.isArray(order.items) && order.items.length > 0

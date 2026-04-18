@@ -519,8 +519,9 @@ import { extractVariationFromRawItem } from "./mercadoLivreHelpers";
 export function mapMLOrderToSaleData(order: MLOrder) {
   const { saleDate, saleTime } = formatSaleDate(order.sale_date);
   const primaryItem = order.items?.[0];
-  const rawOrderItems: any[] = Array.isArray((order.raw_data as any)?.order_items)
-    ? ((order.raw_data as any).order_items as any[])
+  const rawData = order.raw_data as { order_items?: unknown[] } | null | undefined;
+  const rawOrderItems: Array<Record<string, unknown>> = Array.isArray(rawData?.order_items)
+    ? (rawData.order_items as Array<Record<string, unknown>>)
     : [];
   const groupedItems: SaleItemData[] = (order.items || []).map((item, idx) => {
     const rawItem = rawOrderItems[idx];
@@ -579,8 +580,8 @@ export function mapMLOrderToSaleData(order: MLOrder) {
 
 // Retorna o pack_id de um order (se existir)
 export function getOrderPackId(order: MLOrder): string | null {
-  const raw = (order.raw_data as any) || {};
-  const pid = raw?.pack_id;
+  const raw = (order.raw_data as { pack_id?: unknown } | null | undefined) || {};
+  const pid = raw.pack_id;
   return pid ? String(pid) : null;
 }
 

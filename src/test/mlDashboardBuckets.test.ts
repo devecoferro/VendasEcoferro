@@ -54,14 +54,18 @@ describe("classifyCrossDockingOrder", () => {
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("today");
   });
 
-  it("moves in_hub orders to in_transit even when the SLA is overdue", () => {
+  it("keeps in_hub orders in upcoming (aligned with ML Seller Center)", () => {
+    // ALINHAMENTO COM ML: in_hub (pedido no hub do transportador) fica em
+    // "Próximos dias" no ML Seller Center, mesmo com SLA vencido. O pedido
+    // já saiu da responsabilidade do vendedor, não precisa de ação imediata.
+    // Antes o teste esperava "in_transit" (comportamento divergente do ML).
     const order = buildOrder({
       shipmentSubstatus: "in_hub",
       expectedDate: "2026-04-02T00:00:00.000-03:00",
     });
 
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe(
-      "in_transit"
+      "upcoming"
     );
   });
 
