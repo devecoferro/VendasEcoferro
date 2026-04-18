@@ -224,9 +224,11 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
 
     // ─── LAYOUT SIMPLIFICADO + FONTES EM NEGRITO ───────────────────
     // Tudo em helvetica bold, com hierarquia por tamanho.
+    // titleFont reduzido em 20% pra evitar que nomes longos (2 linhas)
+    // empurrem o #numero-da-venda pra cima do logo Eg / QR da venda.
     let textY = rowTop + 2.8;
     const skuFont = veryCompactRows ? 6 : compactRows ? 7 : 8.5;
-    const titleFont = veryCompactRows ? 7 : compactRows ? 8 : 9.8;
+    const titleFont = veryCompactRows ? 5.6 : compactRows ? 6.4 : 7.8;
     const customerFont = veryCompactRows ? 6.4 : compactRows ? 7.4 : 9;
     const nicknameFont = veryCompactRows ? 5.8 : compactRows ? 6.6 : 7.8;
     const saleNumberFont = veryCompactRows ? 5.8 : compactRows ? 6.6 : 7.8;
@@ -265,6 +267,18 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
     doc.text(sale.customerNickname || "-", centerX, textY, { maxWidth: maxTextW });
     textY += compactRows ? 3.2 : 4;
 
+    // Pré-calcula posição do QR da venda (e logo lateral) pra poder fazer
+    // safe-guard de overlap antes de desenhar o número da venda.
+    const saleQrSize = veryCompactRows ? 10.5 : compactRows ? 12.8 : 18.5;
+    const saleQrX = centerX;
+    const saleQrY = rowBottom - saleQrSize - (compactRows ? 4.8 : 6.6);
+
+    // Safe-guard: se o nome do produto é longo e empurrou o textY pra
+    // baixo, o #numero-da-venda e a data caem em cima do logo Eg.
+    // Clampa textY pra ficar ACIMA do saleQrY com margem mínima.
+    const saleNumberMaxY = saleQrY - (compactRows ? 1.8 : 2.4);
+    if (textY > saleNumberMaxY) textY = saleNumberMaxY;
+
     // #Number + Data
     const saleNumberText = `#${sale.saleNumber || "-"}`;
     doc.setFont("helvetica", "bold");
@@ -282,10 +296,6 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       textY,
       { maxWidth: Math.max(10, maxTextW - saleNumberWidth - 3) }
     );
-
-    const saleQrSize = veryCompactRows ? 10.5 : compactRows ? 12.8 : 18.5;
-    const saleQrX = centerX;
-    const saleQrY = rowBottom - saleQrSize - (compactRows ? 4.8 : 6.6);
     const showObservation = index === 0 && Boolean(labelObservation);
 
     if (showObservation) {
