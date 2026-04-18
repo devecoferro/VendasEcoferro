@@ -482,6 +482,19 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
+  // Cancelamento pelo comprador: ML atualiza order.status="cancelled"
+  // IMEDIATAMENTE, mas shipment.status ainda pode ser ready_to_ship por
+  // alguns minutos/horas (shipping service propaga com delay). Nesses
+  // casos o ML Seller Center já mostra "Venda cancelada. Não envie.",
+  // mas sem esse check o pedido apareceria em "Envios de hoje" no app.
+  // Checar ANTES de tudo: order.status tem prioridade sobre shipment.
+  const rawOrderStatus = normalizeState(
+    order.raw_data?.status || order.order_status || ""
+  );
+  if (rawOrderStatus === "cancelled") {
+    return "cancelled";
+  }
+
   // shipping.status=pending: pedido pago que ainda não recebeu label.
   // ML Seller Center mostra em "Próximos dias" (aguardando processamento).
   if (status === "pending") {
@@ -598,6 +611,16 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.readyToShipDateKey ||
     dates.handlingDateKey ||
     dates.saleDateKey;
+
+  // Cancelamento pelo comprador: mesmo fix do classifyCrossDockingOrder —
+  // order.status tem prioridade sobre shipment.status, que pode demorar
+  // a propagar o cancelamento.
+  const rawOrderStatus = normalizeState(
+    order.raw_data?.status || order.order_status || ""
+  );
+  if (rawOrderStatus === "cancelled") {
+    return "cancelled";
+  }
 
   // shipping.status=pending: pedido pago aguardando processamento no fulfillment.
   if (status === "pending") {
