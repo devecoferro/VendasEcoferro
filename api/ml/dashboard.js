@@ -529,20 +529,13 @@ function classifyCrossDockingOrder(order, todayKey) {
     }
 
     // invoice_pending: vendedor ainda precisa emitir NF-e.
-    // ML mantém em "Próximos dias" independente do SLA — o pedido
-    // só vai para "Envios de hoje" DEPOIS que a NF-e é emitida
-    // e o substatus muda para ready_for_pickup ou packed.
-    // Se a NFe ja foi emitida no nosso sistema (mas o ML ainda nao
-    // refletiu o substatus), tratamos como "packed": usa SLA.
+    // ALINHAMENTO COM ML: ML sempre classifica invoice_pending em
+    // "Próximos dias" até o substatus mudar pra ready_for_pickup/packed.
+    // Mesmo que a NF-e já tenha sido emitida pelo nosso sistema, o chip
+    // só deve refletir "Envios de hoje" quando o ML propagar o novo
+    // substatus. Manter consistência com fetchMLLiveChipBucketsDetailed
+    // (linha 1676-1685) que retorna sempre upcoming.
     if (substatus === "invoice_pending") {
-      if (hasEmittedInvoice(order)) {
-        if (dates.operationalDueDateKey) {
-          return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-            ? "today"
-            : "upcoming";
-        }
-        return "today";
-      }
       return "upcoming";
     }
 
@@ -558,7 +551,12 @@ function classifyCrossDockingOrder(order, todayKey) {
   // ML Seller Center "Em trânsito" mostra apenas envios recentes com
   // tracking ativo. Pedidos shipped há muitos dias com substatus
   // "out_for_delivery" são stale (provavelmente já entregues sem scan).
+  // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
+  // (fetchMLLiveChipBucketsDetailed linha 1753).
   if (status === "shipped") {
+    if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
+      return "upcoming";
+    }
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       // Só conta como "Em trânsito" se shipped nos últimos 3 dias
       const shippedAge = dates.shippedDateKey
@@ -569,16 +567,14 @@ function classifyCrossDockingOrder(order, todayKey) {
     return null;
   }
 
-  // "in_transit" como status direto — MAS com filtro de idade.
-  // O ML Seller Center NÃO busca in_transit como shipping.status separado.
-  // Pedidos com in_transit no DB local são normalmente shipped que o ML já
-  // entregou. Sem filtro, inflava de 11 (ML real) para 90 (app).
-  // Mesmo tratamento que shipped: só conta se recente (≤ 2 dias do envio).
+  // "in_transit" como status direto — ALINHADO COM ML: não contar.
+  // O ML Seller Center NÃO busca in_transit como shipping.status separado
+  // (fetchMLLiveChipBucketsDetailed só busca pending, ready_to_ship, shipped,
+  // not_delivered). Pedidos com status=in_transit no DB local são
+  // normalmente dados stale — o ML já mudou pra "delivered" mas o app
+  // não sincronizou. Retornar null pra não inflar o chip.
   if (status === "in_transit") {
-    const transitAge = dates.shippedDateKey
-      ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
-      : 999;
-    return transitAge <= 2 ? "in_transit" : null;
+    return null;
   }
 
   // not_delivered: SEMPRE finalized. No ML Seller Center, pedidos com entrega
@@ -628,33 +624,44 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   // Fulfillment: ready_to_ship e handling são os status operacionais principais.
+  // ALINHAMENTO COM ML SELLER CENTER (fetchMLLiveChipBucketsDetailed
+  // linha 1676-1695): mesmas regras, sem exceções por SLA.
   if (status === "ready_to_ship" || status === "handling") {
-    // Substatuses operacionais → "Envios de hoje" (alinhado com ML Seller Center).
+    // Sempre "Próximos dias" (aguardando ação do vendedor ou do ML)
     if (
-      substatus === "ready_to_pack" ||
-      substatus === "packed" ||
+      substatus === "in_hub" ||
+      substatus === "invoice_pending" ||
       substatus === "ready_to_print" ||
-      substatus === "in_packing_list" ||
-      substatus === "ready_for_pickup"
+      substatus === "in_warehouse" ||
+      substatus === "in_packing_list"
+    ) {
+      return "upcoming";
+    }
+
+    // Sempre "Envios de hoje" (pronto para envio/coleta)
+    if (
+      substatus === "ready_for_pickup" ||
+      substatus === "packed" ||
+      substatus === "ready_to_pack"
     ) {
       return "today";
     }
 
-    // "in_warehouse" = pedido no armazém ML aguardando. Usa SLA.
-    if (substatus === "in_warehouse") {
-      if (dates.operationalDueDateKey) {
-        return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-          ? "today"
-          : "upcoming";
-      }
-      return "upcoming";
+    // Substatuses desconhecidos: usa SLA (fallback conservador)
+    if (dates.operationalDueDateKey) {
+      return isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+        ? "today"
+        : "upcoming";
     }
-
     return "upcoming";
   }
 
   // Fulfillment: mesma lógica — só tracking recente = in_transit.
+  // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
   if (status === "shipped") {
+    if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
+      return "upcoming";
+    }
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
@@ -664,12 +671,11 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return null;
   }
 
-  // Fulfillment in_transit: mesma lógica de idade do cross_docking
+  // Fulfillment in_transit: ALINHADO COM ML — não contar.
+  // (Mesma justificativa do cross_docking: ML não busca in_transit como
+  // shipping.status, dados com esse status no DB são stale.)
   if (status === "in_transit") {
-    const transitAge = dates.shippedDateKey
-      ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
-      : 999;
-    return transitAge <= 2 ? "in_transit" : null;
+    return null;
   }
 
   // not_delivered: SEMPRE finalized (pós-venda, não trânsito)
@@ -1994,6 +2000,29 @@ export async function buildDashboardPayload(options = {}) {
         // ML mostra apenas finalizações de hoje (mesmo dia calendário)
         if (!exceptionDateKey || exceptionDateKey < todayKey) {
           continue;
+        }
+      }
+
+      // Canceladas: alinhado com ML Seller Center — só mostra cancelamentos
+      // recentes (≤ 2 dias). ML filtra cancelled do chip live e só os de hoje
+      // aparecem em "Finalizadas". O bucket "Canceladas" no app tem propósito
+      // operacional (ver cancelamentos pra processar reembolso), mas não
+      // deve acumular histórico antigo.
+      if (bucket === "cancelled") {
+        const snapshot = getShipmentSnapshot(order);
+        const statusHistory = snapshot.status_history || {};
+        const cancelDateKey =
+          getDateKey(statusHistory.date_cancelled) || getDateKey(order.sale_date);
+        if (!cancelDateKey) {
+          continue;
+        }
+        // Calcula idade em dias (todayKey - cancelDateKey)
+        const ageDays =
+          (new Date(todayKey + "T12:00:00").getTime() -
+            new Date(cancelDateKey + "T12:00:00").getTime()) /
+          86400000;
+        if (ageDays > 2) {
+          continue; // cancelado há mais de 2 dias → não conta
         }
       }
 
