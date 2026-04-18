@@ -21,7 +21,6 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
 import { getStockLocations, getMLConnectionStatus } from "@/services/mercadoLivreService";
-import type { SaleData } from "@/types/sales";
 import {
   Dialog,
   DialogContent,

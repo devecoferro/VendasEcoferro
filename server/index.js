@@ -4,8 +4,17 @@ import { fileURLToPath } from "node:url";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
 
+import { DB_PATH, validateRequiredEnv } from "../api/_lib/app-config.js";
+
+// Valida env vars críticas ANTES de inicializar DB/crons (fail fast)
+try {
+  validateRequiredEnv();
+} catch (error) {
+  console.error("[server] Boot abortado:", error instanceof Error ? error.message : error);
+  process.exit(1);
+}
+
 import "../api/_lib/db.js";
-import { DB_PATH } from "../api/_lib/app-config.js";
 import { db } from "../api/_lib/db.js";
 import {
   getLatestConnection,
@@ -125,12 +134,31 @@ app.set("trust proxy", 1);
 
 // ─── Rate Limiting ──────────────────────────────────────────────────
 // Protege rotas sensiveis contra brute force e abuso.
-const authLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutos (janela menor)
-  max: 50, // 50 tentativas por janela — autofill do browser gasta várias
+// AUTH-3: Separa login (agressivo) de session/logout (permissivo pro frontend
+// fazer polling de session sem travar o próprio usuário).
+const loginLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 10, // 10 tentativas por IP / 5min pra login (era 50 agregado)
   standardHeaders: true,
   legacyHeaders: false,
-  message: { ok: false, error: "Muitas tentativas. Tente novamente em 5 minutos." },
+  skip: (req) => {
+    // Só limita action=login. Outras actions (session, logout) usam authLimiter.
+    try {
+      const action = req.body?.action || req.query?.action;
+      return action !== "login";
+    } catch {
+      return true;
+    }
+  },
+  message: { ok: false, error: "Muitas tentativas de login. Tente em 5 minutos." },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 200, // session polling/logout pode ser alto
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Muitas requisições. Tente novamente em 5 minutos." },
 });
 
 const apiLimiter = rateLimit({
@@ -171,7 +199,7 @@ app.get("/api/health/dependencies", (_req, res) => {
 });
 
 // ─── Auth (rate limited) ────────────────────────────────────────────
-app.all("/api/app-auth", authLimiter, (req, res) => appAuthHandler(req, res));
+app.all("/api/app-auth", loginLimiter, authLimiter, (req, res) => appAuthHandler(req, res));
 app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
 
 // ─── ML API (rate limited) ──────────────────────────────────────────
@@ -181,7 +209,7 @@ app.all("/api/ml/diagnostics", apiLimiter, (req, res) => mlDiagnosticsHandler(re
 app.all("/api/ml/orders", apiLimiter, (req, res) => mlOrdersHandler(req, res));
 app.all("/api/ml/stores", apiLimiter, (req, res) => mlStoresHandler(req, res));
 app.all("/api/ml/sync", syncLimiter, (req, res) => mlSyncHandler(req, res));
-app.get("/api/ml/sync-events", (req, res) => mlSyncEventsHandler(req, res));
+app.get("/api/ml/sync-events", apiLimiter, (req, res) => mlSyncEventsHandler(req, res));
 app.all("/api/ml/notifications", (req, res) => mlNotificationsHandler(req, res));
 app.all("/api/ml/returns", apiLimiter, (req, res) => mlReturnsHandler(req, res));
 app.all("/api/ml/claims", apiLimiter, (req, res) => mlClaimsHandler(req, res));
@@ -328,7 +356,16 @@ async function autoSyncOrders() {
     for (const connection of connections) {
       if (!connection?.id) continue;
       try {
-        const updatedFrom = connection.last_sync_at || undefined;
+        // MLS-3: aplica margem de 2min no updated_from pra compensar clock skew
+        // entre servidor local e ML. Sem isso, pedidos atualizados no ML com
+        // timestamp alguns segundos antes do last_sync_at podiam sumir.
+        let updatedFrom = connection.last_sync_at || undefined;
+        if (updatedFrom) {
+          const margin = new Date(new Date(updatedFrom).getTime() - 2 * 60 * 1000);
+          if (!Number.isNaN(margin.getTime())) {
+            updatedFrom = margin.toISOString();
+          }
+        }
         await runMercadoLivreSync({
           connectionId: connection.id,
           updatedFrom,

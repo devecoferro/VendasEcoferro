@@ -18,24 +18,50 @@ import { broadcastSyncComplete } from "./sync-events.js";
 // Promise deduplication — prevents duplicate HTTP calls when running in parallel.
 // If two concurrent tasks call cachedFetch with the same key, only one HTTP request fires;
 // the second awaits the same promise.
+// Cada entrada tem TTL (cleanup em 2min) pra evitar que promises pendurads
+// (fetch travado sem timeout) bloqueiem chamadas futuras indefinidamente.
 const inflightPromises = new Map();
+const INFLIGHT_TTL_MS = 120_000;
+
 function cachedFetch(cache, key, fetchFn) {
   if (key == null) return Promise.resolve(null);
   if (cache.has(key)) return Promise.resolve(cache.get(key) ?? null);
-  if (inflightPromises.has(key)) return inflightPromises.get(key);
+  const existing = inflightPromises.get(key);
+  if (existing) {
+    // Descarta entradas muito antigas (possível promise travada)
+    if (Date.now() - existing.startedAt > INFLIGHT_TTL_MS) {
+      inflightPromises.delete(key);
+    } else {
+      return existing.promise;
+    }
+  }
   const promise = fetchFn()
     .then((result) => {
       cache.set(key, result);
       inflightPromises.delete(key);
       return result;
     })
-    .catch((err) => {
+    .catch(() => {
       // Don't cache errors — allow retry on next access
       inflightPromises.delete(key);
       return null;
     });
-  inflightPromises.set(key, promise);
+  inflightPromises.set(key, { promise, startedAt: Date.now() });
   return promise;
+}
+
+// Helper: fetch com timeout usando AbortController. Usado em todas as
+// chamadas ML API pra garantir que fetch pendurado não trava indefinidamente
+// (Node fetch nativo não tem timeout default).
+const FETCH_TIMEOUT_MS = 30_000;
+export async function mlFetch(url, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const ML_PAGE_LIMIT = 50;
@@ -51,8 +77,13 @@ const syncRequestsInFlight = new Map();
 // sistema so precisa operar com vendas de 01/04/2026 em diante.
 const MIN_SYNC_DATE_FROM = "2026-04-01";
 
+const DATE_FROM_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
 function clampDateFrom(value) {
   if (typeof value !== "string" || value.length === 0) return MIN_SYNC_DATE_FROM;
+  // Valida formato YYYY-MM-DD pra evitar strings maliciosas/malformadas
+  // em params de URL da ML API.
+  if (!DATE_FROM_REGEX.test(value)) return MIN_SYNC_DATE_FROM;
   return value < MIN_SYNC_DATE_FROM ? MIN_SYNC_DATE_FROM : value;
 }
 
@@ -401,6 +432,12 @@ export async function runMercadoLivreSync({
     if (store?.network_node_id) storesByNodeId.set(String(store.network_node_id), store);
   }
 
+  // MLS-4: captura timestamp ANTES do loop de fetching. Grava esse valor em
+  // last_sync_at ao final, garantindo que pedidos criados/atualizados DURANTE
+  // o sync (que duram N segundos/minutos) sejam capturados na próxima execução.
+  // Antes, nowIso() era chamado DEPOIS do loop, criando gap silencioso.
+  const syncStartTimestamp = new Date().toISOString();
+
   const itemImageCache = new Map();
   const shipmentSnapshotCache = new Map();
   const shipmentSlaCache = new Map();
@@ -702,9 +739,11 @@ export async function runMercadoLivreSync({
     };
   }
 
+  // MLS-4: usa syncStartTimestamp (capturado ANTES do loop) em vez de nowIso().
+  // Garante que próximo sync incremental veja pedidos criados durante este sync.
   const updatedConnection = skipLastSyncUpdate
     ? connection
-    : updateConnectionLastSync(connection.id);
+    : updateConnectionLastSync(connection.id, syncStartTimestamp);
   invalidateDashboardCache();
   invalidateOrdersCache();
   invalidatePrivateSellerCenterComparisonCache();
@@ -1097,14 +1136,25 @@ export default async function handler(request, response) {
 
     let syncPromise = syncRequestsInFlight.get(connection_id);
     if (!syncPromise) {
-      syncPromise = runMercadoLivreSync({
+      // MLS-2: wrap com timeout de 10min pra evitar que promise travada
+      // bloqueie próximos syncs indefinidamente.
+      const SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+      let timeoutId;
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error("Sync timeout após 10min"));
+        }, SYNC_TIMEOUT_MS);
+      });
+      const actualSync = runMercadoLivreSync({
         connectionId: connection_id,
         dateFrom: date_from,
         dateTo: date_to,
         statusFilter: status_filter,
         updatedFrom: updated_from,
         pageLimit: page_limit,
-      }).finally(() => {
+      });
+      syncPromise = Promise.race([actualSync, timeoutPromise]).finally(() => {
+        if (timeoutId) clearTimeout(timeoutId);
         if (syncRequestsInFlight.get(connection_id) === syncPromise) {
           syncRequestsInFlight.delete(connection_id);
         }

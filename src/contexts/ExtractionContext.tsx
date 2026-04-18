@@ -39,12 +39,17 @@ export function ExtractionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    if (results.length === 0) {
-      window.sessionStorage.removeItem(EXTRACTION_STORAGE_KEY);
-      return;
+    try {
+      if (results.length === 0) {
+        window.sessionStorage.removeItem(EXTRACTION_STORAGE_KEY);
+        return;
+      }
+      // F-M4: try/catch envolve setItem pra capturar QuotaExceededError
+      // (Safari privado + quota cheia). Antes, quebrava o fluxo do app.
+      window.sessionStorage.setItem(EXTRACTION_STORAGE_KEY, JSON.stringify(results));
+    } catch (error) {
+      console.warn("Falha ao persistir extração (quota exceeded?):", error);
     }
-
-    window.sessionStorage.setItem(EXTRACTION_STORAGE_KEY, JSON.stringify(results));
   }, [results]);
 
   const value = useMemo<ExtractionContextType>(

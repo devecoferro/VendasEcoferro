@@ -67,7 +67,9 @@ function formatLog(level, component, message, data = null) {
       entry.error = {
         name: data.name,
         message: data.message,
-        stack: IS_PRODUCTION ? undefined : data.stack,
+        // I-H6: stack trace SEMPRE (incluindo produção). Paths de código não
+        // são PII; sem stack, debugging em prod fica impossível.
+        stack: data.stack,
       };
     } else {
       entry.data = data;

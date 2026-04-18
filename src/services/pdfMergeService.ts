@@ -1,5 +1,13 @@
 import { PDFDocument } from "pdf-lib";
 
+// Constantes de timing (antes eram magic numbers espalhados pelo arquivo)
+const BLOB_URL_REVOKE_LONG_MS = 180_000; // 3 min — PDFs grandes sendo impressos
+const BLOB_URL_REVOKE_MEDIUM_MS = 60_000; // 1 min — downloads em andamento
+const BLOB_URL_REVOKE_SHORT_MS = 30_000; // 30s — blobs efêmeros
+const PRINT_INITIAL_DELAY_MS = 1500;
+const PRINT_RETRY_INTERVAL_MS = 600;
+const PRINT_MAX_ATTEMPTS = 16;
+
 export interface MergeSourceError {
   url: string;
   reason: string;
@@ -148,7 +156,7 @@ export function openPdfBlobForPrint(blob: Blob, filename = "etiquetas-ml.pdf"): 
     link.remove();
   }
   // Libera o objeto apos 60s (tempo suficiente pro browser carregar o PDF).
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_REVOKE_MEDIUM_MS);
 }
 
 /**
@@ -178,7 +186,7 @@ export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): voi
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_REVOKE_SHORT_MS);
     return;
   }
 
@@ -197,7 +205,7 @@ export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): voi
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_REVOKE_MEDIUM_MS);
     return;
   }
 
@@ -205,7 +213,7 @@ export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): voi
   // O Chrome PDF viewer precisa de ~1-2s para carregar o PDF.
   // Tentamos a cada 600ms ate 10s (max 16 tentativas).
   let attempts = 0;
-  const maxAttempts = 16;
+  const maxAttempts = PRINT_MAX_ATTEMPTS;
   let printed = false;
 
   const tryPrint = () => {
@@ -229,14 +237,14 @@ export function autoPrintPdfBlob(blob: Blob, filename = "etiquetas-ml.pdf"): voi
     } catch {
       // PDF ainda nao renderizou — tenta de novo.
       if (attempts < maxAttempts) {
-        setTimeout(tryPrint, 600);
+        setTimeout(tryPrint, PRINT_RETRY_INTERVAL_MS);
       }
     }
   };
 
   // Primeira tentativa apos 1.5s (tempo pro PDF viewer iniciar).
-  setTimeout(tryPrint, 1500);
+  setTimeout(tryPrint, PRINT_INITIAL_DELAY_MS);
 
   // Cleanup da URL apos 3 minutos.
-  setTimeout(() => URL.revokeObjectURL(url), 180_000);
+  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_REVOKE_LONG_MS);
 }

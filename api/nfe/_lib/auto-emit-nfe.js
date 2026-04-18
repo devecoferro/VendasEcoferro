@@ -22,6 +22,17 @@ const MIN_WAIT_MS = 30 * 1000; // 30 segundos
 const recentlyProcessed = new Map(); // order_id → timestamp
 const PROCESSED_TTL_MS = 10 * 60 * 1000;
 
+// Sweep periódico pra evitar crescimento indefinido do Map.
+// Antes, cleanup só acontecia ao consultar order específica (wasRecentlyProcessed);
+// em burst de muitas ordens com consulta esparsa depois, a memória não voltava.
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const cutoff = Date.now() - PROCESSED_TTL_MS;
+  for (const [orderId, ts] of recentlyProcessed.entries()) {
+    if (ts < cutoff) recentlyProcessed.delete(orderId);
+  }
+}, SWEEP_INTERVAL_MS).unref();
+
 function nowMs() {
   return Date.now();
 }
@@ -43,18 +54,27 @@ function markProcessed(orderId) {
 // Busca pedidos com substatus invoice_pending no DB (sincronizados).
 // Considera apenas pedidos recentes (últimos 7 dias) para evitar processar
 // histórico antigo.
+// NFE-3: exclui pedidos que JÁ têm NF-e em nfe_documents com status terminal
+// ou em progresso (authorized/emitting/pending_configuration). Antes, o filtro
+// só olhava raw_data que podia estar stale — causando tentativas redundantes
+// de emissão em cima de NF-es já emitidas manualmente.
 function findInvoicePendingOrders(connectionId) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   return db
     .prepare(
-      `SELECT order_id, sale_date, raw_data
-       FROM ml_orders
-       WHERE connection_id = ?
-         AND sale_date > ?
-         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), '')) = 'ready_to_ship'
-         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.substatus'), '')) = 'invoice_pending'
-         AND lower(COALESCE(json_extract(raw_data, '$.status'), order_status, '')) IN ('paid', 'confirmed')
-       ORDER BY sale_date DESC
+      `SELECT o.order_id, o.sale_date, o.raw_data
+       FROM ml_orders o
+       WHERE o.connection_id = ?
+         AND o.sale_date > ?
+         AND lower(COALESCE(json_extract(o.raw_data, '$.shipment_snapshot.status'), '')) = 'ready_to_ship'
+         AND lower(COALESCE(json_extract(o.raw_data, '$.shipment_snapshot.substatus'), '')) = 'invoice_pending'
+         AND lower(COALESCE(json_extract(o.raw_data, '$.status'), o.order_status, '')) IN ('paid', 'confirmed')
+         AND NOT EXISTS (
+           SELECT 1 FROM nfe_documents n
+            WHERE n.order_id = o.order_id
+              AND lower(COALESCE(n.status, '')) IN ('authorized', 'emitting', 'pending_configuration')
+         )
+       ORDER BY o.sale_date DESC
        LIMIT 100`
     )
     .all(connectionId, sevenDaysAgo);

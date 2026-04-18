@@ -4,6 +4,42 @@
   MLOrder,
 } from "@/services/mercadoLivreService";
 
+// F-M6: extraído pra helper compartilhado. Antes estava duplicado em
+// mercadoLivreService.ts e separationReportService.ts — mudanças precisavam
+// ser feitas em 2 lugares.
+/**
+ * Extrai string legível de variação a partir do raw item do ML.
+ * Pode vir em variation_attributes (array com name+value_name) ou
+ * variation_id (só ID). Retorna string "Cor: Preto | Tamanho: M" ou null.
+ */
+export function extractVariationFromRawItem(
+  rawItem: Record<string, unknown> | null | undefined
+): string | null {
+  if (!rawItem) return null;
+  const item = (rawItem as { item?: { variation_attributes?: unknown } }).item;
+  const varAttrs = item?.variation_attributes;
+  if (!Array.isArray(varAttrs) || varAttrs.length === 0) return null;
+  const formatted = varAttrs
+    .map((attr: unknown) => {
+      const a = attr as {
+        name?: string;
+        id?: string;
+        value_name?: string;
+        value?: { name?: string } | string;
+      };
+      const name = a?.name || a?.id || "";
+      const rawValue = a?.value_name
+        ?? (typeof a?.value === "object" ? a?.value?.name : a?.value)
+        ?? "";
+      const value = String(rawValue || "");
+      if (!value) return null;
+      return name ? `${name}: ${value}` : value;
+    })
+    .filter(Boolean)
+    .join(" | ");
+  return formatted || null;
+}
+
 export type ShipmentBucket =
   | "today"
   | "upcoming"

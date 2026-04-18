@@ -25,22 +25,8 @@ export interface SeparationItem {
 
 // ─── Agrupamento por SKU ────────────────────────────────────────────────
 
-// Extrai variação do raw_data.order_items[i].item.variation_attributes
-function extractVariationFromRawItem(rawItem: any): string | null {
-  if (!rawItem) return null;
-  const varAttrs = rawItem?.item?.variation_attributes;
-  if (Array.isArray(varAttrs) && varAttrs.length > 0) {
-    return varAttrs
-      .map((attr: any) => {
-        const name = attr?.name || attr?.id || "";
-        const value = attr?.value_name || attr?.value?.name || attr?.value || "";
-        return value ? (name ? `${name}: ${value}` : value) : null;
-      })
-      .filter(Boolean)
-      .join(" | ") || null;
-  }
-  return null;
-}
+// F-M6: extractVariationFromRawItem importado de mercadoLivreHelpers
+import { extractVariationFromRawItem } from "./mercadoLivreHelpers";
 
 export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
   const map = new Map<string, SeparationItem>();

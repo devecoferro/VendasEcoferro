@@ -136,7 +136,7 @@ function buildSessionCookie(token) {
     `${APP_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    "SameSite=Strict",
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
 
@@ -152,7 +152,7 @@ function buildExpiredSessionCookie() {
     `${APP_SESSION_COOKIE_NAME}=`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    "SameSite=Strict",
     "Max-Age=0",
   ];
 
@@ -255,8 +255,13 @@ function getSessionToken(request) {
   return cookies[APP_SESSION_COOKIE_NAME] || null;
 }
 
+// AUTH-2: parâmetros scrypt fortalecidos (N=131072 = 2^17, r=8, p=1).
+// Defaults do Node (N=16384) eram fracos pra 2026. maxmem aumentado
+// proporcionalmente (scrypt exige ~128*r*N = 128MB com N=131072).
+const SCRYPT_PARAMS = { N: 131072, r: 8, p: 1, maxmem: 128 * 1024 * 1024 };
+
 export function createPasswordHash(password, salt = randomBytes(16).toString("hex")) {
-  const derivedKey = scryptSync(String(password), salt, 64).toString("hex");
+  const derivedKey = scryptSync(String(password), salt, 64, SCRYPT_PARAMS).toString("hex");
   return `scrypt:${salt}:${derivedKey}`;
 }
 
@@ -269,16 +274,30 @@ export function verifyPassword(password, storedHash) {
   }
 
   const expected = Buffer.from(existingHash, "hex");
-  const received = Buffer.from(
-    scryptSync(String(password), salt, expected.length).toString("hex"),
-    "hex"
-  );
-
-  if (expected.length !== received.length) {
+  // Hashes antigos (criados antes do fortalecimento) não foram rehashed.
+  // verifyPassword tenta com params novos; se falhar por performance/length
+  // mismatch, cai no legacy (default Node params) pra não invalidar sessões
+  // existentes. No próximo login bem-sucedido, a senha pode ser re-hashed.
+  try {
+    const received = Buffer.from(
+      scryptSync(String(password), salt, expected.length, SCRYPT_PARAMS).toString("hex"),
+      "hex"
+    );
+    if (expected.length === received.length && timingSafeEqual(expected, received)) {
+      return true;
+    }
+  } catch {
+    // Fallback pros defaults antigos se cost params mudaram
+  }
+  try {
+    const legacy = Buffer.from(
+      scryptSync(String(password), salt, expected.length).toString("hex"),
+      "hex"
+    );
+    return expected.length === legacy.length && timingSafeEqual(expected, legacy);
+  } catch {
     return false;
   }
-
-  return timingSafeEqual(expected, received);
 }
 
 function createSession(userId) {

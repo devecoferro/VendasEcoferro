@@ -104,9 +104,12 @@ export default async function handler(request, response) {
       topic,
     });
   } catch (error) {
-    return response.status(200).json({
+    // Retorna 500 pra ML fazer retry automaticamente.
+    // Antes retornava 200 com status:error — ML interpretava como sucesso
+    // e não re-enviava a notificação, causando perda silenciosa.
+    return response.status(500).json({
       status: "error",
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: "internal_error",
     });
   }
 }

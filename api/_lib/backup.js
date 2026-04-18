@@ -53,7 +53,26 @@ export async function runBackup() {
     const stats = fs.statSync(backupPath);
     const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
 
-    log.info("Backup concluido", { file: filename, size_mb: sizeMB });
+    // I-H2: integrity check no arquivo gerado. Se backup ficou corrompido,
+    // deleta pra não rotacionar backups bons. Retry manual na próxima janela.
+    try {
+      const BetterSqlite3 = (await import("better-sqlite3")).default;
+      const verifyDb = new BetterSqlite3(backupPath, { readonly: true });
+      try {
+        const check = verifyDb.pragma("integrity_check", { simple: true });
+        if (check !== "ok") {
+          throw new Error(`integrity_check retornou: ${check}`);
+        }
+      } finally {
+        verifyDb.close();
+      }
+    } catch (verifyError) {
+      log.error("Backup corrompido — removendo", verifyError);
+      try { fs.unlinkSync(backupPath); } catch {}
+      throw new Error(`Backup falhou no integrity_check: ${verifyError.message || verifyError}`);
+    }
+
+    log.info("Backup concluido (integrity_check=ok)", { file: filename, size_mb: sizeMB });
 
     cleanOldBackups();
 

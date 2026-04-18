@@ -225,15 +225,24 @@ function buildReadinessPayload({ allowed, status, note, checks }) {
 }
 
 async function fetchMercadoLivreJson(url, accessToken, options = {}) {
-  const response = await fetch(url, {
-    method: options.method || "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  // NFE-4: timeout de 30s via AbortController (Node fetch não tem timeout default)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || 30_000);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: options.method || "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   const text = await response.text().catch(() => "");
   let payload = null;
@@ -1078,23 +1087,39 @@ export async function generateNfe(orderId) {
     };
   }
 
-  const invoiceLookup = await fetchInvoiceByOrder(context);
-  if (invoiceLookup.payload) {
-    const record = await persistInvoiceRecord(context, invoiceLookup, {
-      extraRawPayload: {
-        generate_payload: generateResponse.payload,
-        pack_order_ids: context.pack_order_ids,
-      },
-    });
-
-    return {
-      status: "ok",
-      action: "generate_requested",
-      nfe: buildNfeResponse(record, context),
-      readiness: await resolveGenerationReadiness(context, record),
-    };
+  // NFE-2: polling com backoff por até 30s pra pegar a NF-e logo após a
+  // solicitação. Antes, se o primeiro fetchInvoiceByOrder retornava null,
+  // o status ficava "emitting" indefinidamente sem próxima tentativa
+  // até o usuário recarregar — a NF-e na verdade estava emitida.
+  const POLLING_ATTEMPTS = 5;
+  const POLLING_INTERVALS_MS = [2000, 3000, 5000, 8000, 12000];
+  for (let attempt = 0; attempt < POLLING_ATTEMPTS; attempt++) {
+    const invoiceLookup =
+      attempt === 0
+        ? await fetchInvoiceByOrder(context)
+        : await (async () => {
+            await new Promise((r) => setTimeout(r, POLLING_INTERVALS_MS[attempt - 1]));
+            return fetchInvoiceByOrder(context);
+          })();
+    if (invoiceLookup.payload) {
+      const record = await persistInvoiceRecord(context, invoiceLookup, {
+        extraRawPayload: {
+          generate_payload: generateResponse.payload,
+          pack_order_ids: context.pack_order_ids,
+          polling_attempt: attempt,
+        },
+      });
+      return {
+        status: "ok",
+        action: "generate_requested",
+        nfe: buildNfeResponse(record, context),
+        readiness: await resolveGenerationReadiness(context, record),
+      };
+    }
   }
 
+  // Esgotou polling: NF-e realmente não apareceu. Grava como "emitting" —
+  // próximo tick do auto-emit fará nova tentativa via NFE-1 lock.
   const record = persistErrorRecord(
     context,
     "emitting",

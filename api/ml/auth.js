@@ -126,8 +126,27 @@ export default async function handler(request, response) {
       }
 
       const tokenData = await tokenResponse.json();
+
+      // Validação explícita do payload do ML: user_id, access_token e
+      // expires_in devem estar presentes. Sem isso, strings "undefined"
+      // podiam ir pro DB em caso de payload malformado.
+      if (
+        !tokenData ||
+        typeof tokenData.user_id !== "number" ||
+        typeof tokenData.access_token !== "string" ||
+        !tokenData.access_token ||
+        typeof tokenData.refresh_token !== "string" ||
+        !tokenData.refresh_token ||
+        typeof tokenData.expires_in !== "number" ||
+        !Number.isFinite(tokenData.expires_in)
+      ) {
+        return response.status(502).json({
+          error: "ML returned malformed token payload",
+        });
+      }
+
       const userResponse = await fetch(
-        `https://api.mercadolibre.com/users/${tokenData.user_id}`,
+        `https://api.mercadolibre.com/users/${encodeURIComponent(String(tokenData.user_id))}`,
         {
           headers: {
             Authorization: `Bearer ${tokenData.access_token}`,

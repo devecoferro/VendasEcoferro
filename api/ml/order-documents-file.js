@@ -31,9 +31,11 @@ export default async function handler(request, response) {
     });
 
     response.setHeader("Content-Type", file.contentType || "application/octet-stream");
+    // Sanitiza filename contra header injection (CR/LF/aspas).
+    const safeFilename = String(file.fileName || "download").replace(/[\r\n"\\]/g, "_");
     response.setHeader(
       "Content-Disposition",
-      `${disposition === "attachment" ? "attachment" : "inline"}; filename="${file.fileName}"`
+      `${disposition === "attachment" ? "attachment" : "inline"}; filename="${safeFilename}"`
     );
     return response.status(200).send(file.buffer);
   } catch (error) {

@@ -40,5 +40,43 @@ export function ensureMercadoLivreCredentials() {
   }
 }
 
+/**
+ * I-M5: Valida env vars CRÍTICAS no boot. Fail fast com mensagem clara
+ * em vez de deixar o sync falhar 1 hora depois sem diagnóstico.
+ * I-M6: Rejeita placeholders ("DEFINA_...") vazados de .env.example.
+ */
+const PLACEHOLDER_PREFIXES = ["DEFINA_", "SEU_", "<", "TROQUE"];
+function isPlaceholder(value) {
+  if (!value) return true;
+  const upper = String(value).toUpperCase();
+  return PLACEHOLDER_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
+export function validateRequiredEnv() {
+  const errors = [];
+  const required = {
+    ML_CLIENT_ID,
+    ML_CLIENT_SECRET,
+    APP_DEFAULT_ADMIN_USERNAME,
+    APP_DEFAULT_ADMIN_PASSWORD,
+  };
+  for (const [key, value] of Object.entries(required)) {
+    if (!value) {
+      errors.push(`${key} não configurada`);
+    } else if (isPlaceholder(value)) {
+      errors.push(`${key} contém placeholder (${String(value).slice(0, 10)}…) — defina um valor real`);
+    }
+  }
+  if (String(APP_DEFAULT_ADMIN_PASSWORD || "").length < 8) {
+    errors.push("APP_DEFAULT_ADMIN_PASSWORD deve ter no mínimo 8 caracteres");
+  }
+  if (errors.length > 0) {
+    console.error("\n[config] Validação de env vars falhou:");
+    for (const e of errors) console.error(`  - ${e}`);
+    console.error("");
+    throw new Error(`Configuração inválida: ${errors.length} problema(s)`);
+  }
+}
+
 ensureDataDirectory();
 

@@ -564,7 +564,7 @@ function classifyCrossDockingOrder(order, todayKey) {
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       // Só conta como "Em trânsito" se shipped nos últimos 3 dias
       const shippedAge = dates.shippedDateKey
-        ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+        ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
@@ -672,7 +672,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     }
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
       const shippedAge = dates.shippedDateKey
-        ? (new Date(todayKey + "T12:00:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00").getTime()) / 86400000
+        ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
@@ -1891,26 +1891,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       const sub = shipment ? `${shipment.status}/${shipment.substatus}` : "no_shipment";
       shippedSubBreakdown[sub] = (shippedSubBreakdown[sub] || 0) + 1;
     }
-    console.log(
-      `[ML Live Chips] seller=${sellerId}` +
-        ` | raw_fetched: pending=${pendingRaw.length} rts=${rtsRaw.length}` +
-        ` shipped=${shippedRaw.length} nd=${notDeliveredRaw.length}` +
-        ` | cancelled_filtered: rts=${cancelledFiltered.rts} shipped=${cancelledFiltered.shipped}` +
-        ` pending=${cancelledFiltered.pending} nd=${cancelledFiltered.nd}` +
-        ` | after_filter: pending=${pendingOrders.length} rts=${rtsOrders.length}` +
-        ` shipped=${shippedOrders.length} nd=${notDeliveredOrders.length}` +
-        ` | packs: pending=${pendingPacks.size} rts=${rtsPacks.size}` +
-        ` shipped=${shippedPacks.size} nd=${ndPacks.size}` +
-        ` | shipments: ${shipmentMap.size}/${allShippingIds.size}` +
-        ` (rts_no_shipment=${rtsNoShipment} rts_status_mismatch=${rtsStatusMismatch}` +
-        ` shipped_no_date=${shippedNoDate} shipped_stale=${shippedStale} shipped_normal=${shippedNormal})` +
-        ` | rts_substatus: ${JSON.stringify(rtsSubBreakdown)}` +
-        ` | shipped_substatus: ${JSON.stringify(shippedSubBreakdown)}` +
-        ` | nd_substatus: ${JSON.stringify(ndSubstatusBreakdown)}` +
-        ` | RESULT: today=${result.counts.today} upcoming=${result.counts.upcoming}` +
-        ` in_transit=${result.counts.in_transit} finalized=${result.counts.finalized}` +
-        ` cancelled=${result.counts.cancelled}`
-    );
+    // Log de diagnóstico — apenas quando DEBUG_ML_CHIPS=true pra não
+    // poluir o console em produção (executa a cada 30s).
+    if (process.env.DEBUG_ML_CHIPS === "true") {
+      console.log(
+        `[ML Live Chips] seller=${sellerId}` +
+          ` | raw_fetched: pending=${pendingRaw.length} rts=${rtsRaw.length}` +
+          ` shipped=${shippedRaw.length} nd=${notDeliveredRaw.length}` +
+          ` | RESULT: today=${result.counts.today} upcoming=${result.counts.upcoming}` +
+          ` in_transit=${result.counts.in_transit} finalized=${result.counts.finalized}` +
+          ` cancelled=${result.counts.cancelled}`
+      );
+    }
 
     liveChipDetailedCache.set(cacheKey, {
       data: result,

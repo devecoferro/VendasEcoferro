@@ -1,8 +1,12 @@
 // SSE (Server-Sent Events) para notificar o frontend quando um sync termina.
 // Isso evita polling pesado — o frontend recebe um push e recarrega os dados.
 
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+
 const clients = new Set();
 let lastEventId = 0;
+// Cap de conexões SSE simultâneas pra prevenir abuso de memória.
+const MAX_SSE_CLIENTS = 200;
 
 /**
  * Notifica todos os clientes SSE conectados que um sync foi concluído.
@@ -31,9 +35,25 @@ export function broadcastSyncComplete(details = {}) {
  * Handler SSE — mantém conexão aberta e envia eventos quando sync completa.
  * GET /api/ml/sync-events
  */
-export default function handler(request, response) {
+export default async function handler(request, response) {
   if (request.method !== "GET") {
     return response.status(405).json({ error: "Method not allowed" });
+  }
+
+  // Auth obrigatória: antes qualquer IP podia manter N conexões SSE abertas.
+  try {
+    await requireAuthenticatedProfile(request);
+  } catch (error) {
+    const statusCode = error?.statusCode || 401;
+    return response.status(statusCode).json({
+      error: error instanceof Error ? error.message : "Sessao invalida.",
+    });
+  }
+
+  if (clients.size >= MAX_SSE_CLIENTS) {
+    return response.status(503).json({
+      error: "Muitas conexões SSE. Tente novamente em alguns segundos.",
+    });
   }
 
   // Headers SSE
