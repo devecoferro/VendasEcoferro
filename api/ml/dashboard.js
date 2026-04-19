@@ -493,15 +493,11 @@ function classifyCrossDockingOrder(order, todayKey) {
   }
 
   // shipping.status=pending: pedido pago aguardando processamento.
-  // ALINHAMENTO COM ML UI: se SLA já é HOJE (ou passado), pedido aparece em
-  // "Envios de hoje" (urgência). Caso contrário, "Próximos dias".
+  // Comportamento conservador: SEMPRE "Próximos dias". ML UI mostra pending
+  // em "Próximos dias" na maioria dos casos. Tentativa anterior de usar SLA
+  // pra promover pra "hoje" estava agressiva demais (inflava Envios de hoje
+  // com pedidos ainda não-operacionais).
   if (status === "pending") {
-    if (
-      dates.operationalDueDateKey &&
-      isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-    ) {
-      return "today";
-    }
     return "upcoming";
   }
 
@@ -619,15 +615,10 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "finalized";
   }
 
-  // shipping.status=pending: pedido pago aguardando processamento no fulfillment.
-  // ALINHAMENTO COM ML UI: pending com SLA hoje já vai pra "Envios de hoje".
+  // shipping.status=pending: pedido pago aguardando processamento.
+  // Comportamento conservador: sempre upcoming. Pending no fulfillment está
+  // com ML processando — não é ação do vendedor hoje.
   if (status === "pending") {
-    if (
-      dates.operationalDueDateKey &&
-      isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-    ) {
-      return "today";
-    }
     return "upcoming";
   }
 
@@ -1652,12 +1643,13 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
     const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
 
-    // Cancelados de hoje (de qualquer shipping status) → Finalizadas.
+    // Cancelados dos últimos 7 dias → Finalizadas (alinhado com ML UI).
     // Deduplica por pack (não contar 2x o mesmo pedido que aparece em
     // pending E ready_to_ship).
     const cancelledOrdersSeen = new Set();
     const allRawOrders = [...pendingRaw, ...rtsRaw, ...shippedRaw, ...notDeliveredRaw];
-    const cancelledToday = [];
+    const cancelledRecent = [];
+    const todayMs = new Date(todayKey + "T12:00:00-03:00").getTime();
     for (const order of allRawOrders) {
       if (!isCancelled(order)) continue;
       const key = order.pack_id
@@ -1667,14 +1659,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
           : `o:${order.id}`;
       if (cancelledOrdersSeen.has(key)) continue;
       cancelledOrdersSeen.add(key);
-      // status_history está em /shipments, mas order.last_updated é o proxy
       const cancelDate = order.date_closed || order.last_updated || order.date_created;
       const cancelKey = cancelDate ? getDateKey(cancelDate) : null;
-      if (cancelKey === todayKey) {
-        cancelledToday.push(order);
+      if (!cancelKey) continue;
+      const cancelMs = new Date(cancelKey + "T12:00:00-03:00").getTime();
+      const ageDays = (todayMs - cancelMs) / 86400000;
+      if (ageDays >= 0 && ageDays <= 7) {
+        cancelledRecent.push(order);
       }
     }
-    for (const order of cancelledToday) {
+    for (const order of cancelledRecent) {
       addMlOrderIds("finalized", [String(order.id)]);
     }
 
@@ -1683,7 +1677,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       rts: rtsRaw.length - rtsOrders.length,
       shipped: shippedRaw.length - shippedOrders.length,
       nd: notDeliveredRaw.length - notDeliveredOrders.length,
-      today_finalized: cancelledToday.length,
+      recent_finalized: cancelledRecent.length,
     };
 
     const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
@@ -1843,21 +1837,22 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
     }
 
-    // Finalizadas: not_delivered de hoje.
+    // Finalizadas: not_delivered dos últimos 7 dias (janela ampla alinhada
+    // com bucket "finalized" da classificação interna).
     // NOTA: NÃO incluir "delivered" aqui — ML "Finalizadas" conta apenas
-    // problemas de entrega (not_delivered), não entregas normais do dia.
-    // PACK-DEDUPLICATED: usa deduplicateOrdersToPacks para contar packs, não orders.
+    // problemas de entrega (not_delivered), não entregas normais.
     try {
-      const todayISO = todayKey + "T00:00:00.000-03:00";
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0] + "T00:00:00.000-03:00";
       const ndR = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=not_delivered&order.date_last_updated.from=${todayISO}&limit=50`,
+          `&shipping.status=not_delivered&order.date_last_updated.from=${sevenDaysAgo}&limit=50`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.json()).catch(() => ({ results: [] }));
-      // Filtrar cancelados e deduplicar por pack (como ML conta)
-      const ndTodayOrders = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
-      const ndTodayPacks = deduplicateOrdersToPacks(ndTodayOrders);
-      for (const [, pack] of ndTodayPacks) {
+      const ndRecent = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
+      const ndRecentPacks = deduplicateOrdersToPacks(ndRecent);
+      for (const [, pack] of ndRecentPacks) {
         addMlOrderIds("finalized", pack.ml_order_ids);
       }
     } catch {
@@ -2030,9 +2025,10 @@ export async function buildDashboardPayload(options = {}) {
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
-      // Finalizadas: só mostra pedidos cancelados/devolvidos recentes.
-      // ML Seller Center mostra apenas finalizações do dia atual.
-      // Usa a DATA DA EXCEÇÃO (date_cancelled, date_not_delivered, date_returned).
+      // Finalizadas: mostra pedidos cancelados/devolvidos dos últimos 7 dias.
+      // ML Seller Center inclui finalizações recentes (não só de hoje) pra
+      // rastreabilidade de pós-venda. Antes estava limitado a só hoje —
+      // causava subcontagem massiva (0 vs 8 pedidos do ML).
       if (bucket === "finalized") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
@@ -2041,17 +2037,21 @@ export async function buildDashboardPayload(options = {}) {
           getDateKey(statusHistory.date_not_delivered) ||
           getDateKey(statusHistory.date_returned) ||
           getDateKey(order.sale_date);
-        // ML mostra apenas finalizações de hoje (mesmo dia calendário)
-        if (!exceptionDateKey || exceptionDateKey < todayKey) {
+        if (!exceptionDateKey) {
           continue;
+        }
+        // Janela de 7 dias em calendário BRT
+        const ageDays =
+          (new Date(todayKey + "T12:00:00-03:00").getTime() -
+            new Date(exceptionDateKey + "T12:00:00-03:00").getTime()) /
+          86400000;
+        if (ageDays < 0 || ageDays > 7) {
+          continue; // Futuro ou mais velho que 7 dias: não conta
         }
       }
 
-      // Canceladas: alinhado com ML Seller Center — só mostra cancelamentos
-      // recentes (≤ 2 dias). ML filtra cancelled do chip live e só os de hoje
-      // aparecem em "Finalizadas". O bucket "Canceladas" no app tem propósito
-      // operacional (ver cancelamentos pra processar reembolso), mas não
-      // deve acumular histórico antigo.
+      // Canceladas: janela de 7 dias (mesma do finalized). Bucket separado
+      // pra operacional (rastrear reembolsos em andamento).
       if (bucket === "cancelled") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
@@ -2060,13 +2060,12 @@ export async function buildDashboardPayload(options = {}) {
         if (!cancelDateKey) {
           continue;
         }
-        // Calcula idade em dias (todayKey - cancelDateKey)
         const ageDays =
-          (new Date(todayKey + "T12:00:00").getTime() -
-            new Date(cancelDateKey + "T12:00:00").getTime()) /
+          (new Date(todayKey + "T12:00:00-03:00").getTime() -
+            new Date(cancelDateKey + "T12:00:00-03:00").getTime()) /
           86400000;
-        if (ageDays > 2) {
-          continue; // cancelado há mais de 2 dias → não conta
+        if (ageDays < 0 || ageDays > 7) {
+          continue;
         }
       }
 
