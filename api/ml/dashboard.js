@@ -2267,6 +2267,7 @@ export async function buildDashboardPayload(options = {}) {
   // os cards listados sigam a mesma fonte de verdade (ML Seller Center).
   let mlLiveChipCounts = null;
   let mlLiveChipOrderIds = null;
+  let mlBucketByMlOrderId = null; // ml_order_id → bucket (pra override)
   try {
     const allConnections = listConnections().filter((c) => c?.id);
     const detailedPromises = allConnections.map((c) =>
@@ -2300,28 +2301,35 @@ export async function buildDashboardPayload(options = {}) {
         cancelled: mergedIds.cancelled.size,
       };
 
-      // ── TRADUÇÃO DE IDs ──────────────────────────────────────────
-      // fetchMLLiveChipBucketsDetailed retorna ML order_ids (ex: "2000006549182345")
-      // porque vem da API ML (orders/search). Mas o frontend e o deposit
-      // classification usam o DB row id (coluna `id` de ml_orders, ex: "150").
-      // Se expusermos ML order_ids direto no payload, o frontend faz
-      // operationalOrderIds.has(order.id) e NADA bate — lista vem vazia.
-      //
-      // Solução: traduzir ML order_id → DB row id usando allOrders (que já
-      // está carregado). Pedidos que o ML classifica mas ainda não estão
-      // sincronizados no DB são silenciosamente ignorados — vão aparecer
-      // assim que o próximo sync/auto-heal os trouxer.
-      const mlOrderIdToDbId = new Map();
-      for (const order of allOrders) {
-        if (order.order_id) {
-          mlOrderIdToDbId.set(String(order.order_id), String(order.id));
+      // Mapa ml_order_id → bucket pra override direto (sem tradução).
+      // Cada pedido no deposit._orders tem order.order_id = ML order id.
+      mlBucketByMlOrderId = new Map();
+      for (const bucket of Object.keys(mergedIds)) {
+        for (const mlOrderId of mergedIds[bucket]) {
+          mlBucketByMlOrderId.set(String(mlOrderId), bucket);
         }
       }
 
-      const translateIds = (idSet) =>
-        Array.from(idSet)
-          .map((mlId) => mlOrderIdToDbId.get(mlId))
-          .filter(Boolean);
+      // ── TRADUÇÃO DE IDs pro frontend ─────────────────────────────
+      // Map ML order_id → DB row ids. Pedidos multi-item têm múltiplos
+      // DB row ids pro mesmo ML order_id — incluímos todos.
+      const mlOrderIdToDbIds = new Map();
+      for (const order of allOrders) {
+        if (!order.order_id) continue;
+        const key = String(order.order_id);
+        if (!mlOrderIdToDbIds.has(key)) mlOrderIdToDbIds.set(key, []);
+        mlOrderIdToDbIds.get(key).push(String(order.id));
+      }
+
+      const translateIds = (idSet) => {
+        const out = [];
+        for (const mlId of idSet) {
+          const dbIds = mlOrderIdToDbIds.get(String(mlId));
+          if (!dbIds) continue;
+          for (const dbId of dbIds) out.push(dbId);
+        }
+        return out;
+      };
 
       mlLiveChipOrderIds = {
         today: translateIds(mergedIds.today),
@@ -2334,6 +2342,7 @@ export async function buildDashboardPayload(options = {}) {
   } catch {
     mlLiveChipCounts = null;
     mlLiveChipOrderIds = null;
+    mlBucketByMlOrderId = null;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -2348,8 +2357,7 @@ export async function buildDashboardPayload(options = {}) {
   // operacional). Pedidos do ML que não estão no DB ainda ficam de fora
   // do grid mas contam no chip (via ml_live_chip_counts global).
   // ═══════════════════════════════════════════════════════════════════
-  if (mlLiveChipOrderIds) {
-    const OVERRIDE_BUCKETS = ["today", "upcoming", "in_transit", "finalized", "cancelled"];
+  if (mlBucketByMlOrderId && mlBucketByMlOrderId.size > 0) {
     const makeEmptyCounts = () => ({
       today: 0,
       upcoming: 0,
@@ -2365,25 +2373,20 @@ export async function buildDashboardPayload(options = {}) {
       cancelled: [],
     });
 
-    // Invert: db_id → ml_bucket
-    const mlBucketByDbId = new Map();
-    for (const bucket of OVERRIDE_BUCKETS) {
-      const ids = mlLiveChipOrderIds[bucket] || [];
-      for (const dbId of ids) {
-        mlBucketByDbId.set(String(dbId), bucket);
-      }
-    }
-
     for (const deposit of deposits) {
       const newCounts = makeEmptyCounts();
       const newOrderIds = makeEmptyLists();
       const dedupeInBucket = new Set();
 
       for (const order of (deposit._orders || [])) {
-        const mlBucket = mlBucketByDbId.get(String(order.id));
+        // Busca por ML order_id (mesmo pra todos os items do pedido —
+        // garante que pedidos multi-item batem corretamente).
+        const mlBucket = order.order_id
+          ? mlBucketByMlOrderId.get(String(order.order_id))
+          : null;
         if (!mlBucket || !OPERATIONAL_BUCKETS.includes(mlBucket)) continue;
 
-        // Dedup por pack/shipping/order (mesma regra de antes)
+        // Dedup por pack/shipping/order (evita multi-items contarem 2x).
         const packId = order.raw_data?.pack_id
           ? String(order.raw_data.pack_id)
           : null;
@@ -2403,8 +2406,6 @@ export async function buildDashboardPayload(options = {}) {
       deposit.internal_operational_counts = newCounts;
       deposit.order_ids_by_bucket = newOrderIds;
       deposit.internal_operational_order_ids_by_bucket = newOrderIds;
-      // Total = soma dos buckets operacionais (hoje + upcoming + trânsito +
-      // finalizados + cancelados do dia) — consistente com os chips
       deposit.total_count = Object.values(newCounts).reduce((s, n) => s + n, 0);
       deposit.internal_operational_total_count = deposit.total_count;
     }
