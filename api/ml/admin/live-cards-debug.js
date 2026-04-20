@@ -169,7 +169,15 @@ export default async function handler(request, response) {
 
   if (forceRun) {
     fromCache = false;
-    const result = await scrapeMlSellerCenterFull({ timeoutMs: 30_000 });
+    // Single mode — passa tab e store especificos pra so 1 navegacao
+    // (rapido, ~10-15s vs 60-90s do scrape completo)
+    const singleTab = request.query?.tab ? String(request.query.tab) : null;
+    const singleStore = request.query?.store ? String(request.query.store) : null;
+    const result = await scrapeMlSellerCenterFull({
+      timeoutMs: 30_000,
+      singleTab,
+      singleStore,
+    });
     if (!result.ok) {
       if (format === "html") {
         response.setHeader("Content-Type", "text/html; charset=utf-8");

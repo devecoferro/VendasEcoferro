@@ -436,11 +436,18 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
  * Scrape FULL — navega em cada tab × store e captura tudo.
  * Demora ~30-60s pra cobrir 4 tabs × 3 stores = 12 navegacoes.
  *
+ * Quando `singleTab` e `singleStore` sao especificados, faz APENAS 1
+ * navegacao (~10-15s). Util pra debug rapido sem esperar o full scrape.
+ *
  * Retorna:
  *   { ok: true, tabs: { [tabKey]: { [storeKey]: <captura> } }, capturedAt }
  *   { ok: false, error, message }
  */
-export async function scrapeMlSellerCenterFull({ timeoutMs = 30_000 } = {}) {
+export async function scrapeMlSellerCenterFull({
+  timeoutMs = 30_000,
+  singleTab = null,
+  singleStore = null,
+} = {}) {
   if (!isScraperConfigured()) {
     return { ok: false, error: "no_state", message: "Storage state nao configurado" };
   }
@@ -494,10 +501,14 @@ export async function scrapeMlSellerCenterFull({ timeoutMs = 30_000 } = {}) {
       return { ok: false, error: "session_expired", message: "Session expirada" };
     }
 
-    // Itera tab × store
-    for (const tab of ML_TABS) {
+    // Itera tab × store (ou single se especificado)
+    const tabsToRun = singleTab
+      ? ML_TABS.filter((t) => t.key === singleTab)
+      : ML_TABS;
+    const storesToRun = singleStore ? [singleStore] : ML_STORES;
+    for (const tab of tabsToRun) {
       captures[tab.key] = {};
-      for (const store of ML_STORES) {
+      for (const store of storesToRun) {
         const storeParam = storeToUrlParam(store);
         log.info(`[full-scrape] capturando ${tab.key} × ${store}`);
         try {
