@@ -126,7 +126,17 @@ export function getOrderSubstatus(order, bucket) {
       return "return_pending_review";
     }
     if (isInvoicePending(order)) return "invoice_pending";
-    if (isReadyToPrintLabel(order)) return "ready_to_print";
+    // "Etiquetas pra imprimir" = ainda precisa imprimir
+    if (
+      isReadyToPrintLabel(order) &&
+      shipSubstatus === "ready_to_print"
+    ) {
+      return "ready_to_print";
+    }
+    // "Prontas para enviar" = etiqueta ja impressa, falta dar saida
+    if (shipSubstatus === "printed" || shipSubstatus === "ready_to_ship") {
+      return "printed_ready_to_send";
+    }
     if (
       shipSubstatus === "in_packing_list" ||
       shipSubstatus === "in_hub" ||
@@ -152,6 +162,7 @@ export const SUBSTATUS_LABELS = {
   return_pending_review: "Revisão pendente",
   invoice_pending: "NF-e para gerenciar",
   ready_to_print: "Etiquetas para imprimir",
+  printed_ready_to_send: "Prontas para enviar",
   in_processing: "Em processamento",
   standard_shipping: "Por envio padrão",
   return_in_transit: "A caminho",
@@ -164,4 +175,5 @@ export const SUBSTATUS_LABELS = {
   cancelled_final: "Canceladas",
   returns_completed: "Devoluções concluídas",
   returns_not_completed: "Devoluções não concluídas",
+  with_unread_messages: "Com mensagens não lidas",
 };

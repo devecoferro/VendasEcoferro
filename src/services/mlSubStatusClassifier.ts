@@ -40,12 +40,13 @@ export type MLSection =
 export type MLSubStatus =
   // Envios de hoje > Para enviar
   | "cancelled_no_send"      // Canceladas. Nao enviar
-  | "ready_to_send"          // Prontas para enviar
+  | "ready_to_send"          // Prontas para enviar (today)
   // Envios de hoje > Devolucoes
   | "return_pending_review"  // Revisao pendente
   // Proximos dias > Coleta
   | "invoice_pending"        // NF-e para gerenciar
   | "ready_to_print"         // Etiquetas para imprimir
+  | "printed_ready_to_send"  // Prontas para enviar (upcoming - ja imprimiu etiqueta)
   | "in_processing"          // Em processamento
   | "standard_shipping"      // Por envio padrao
   // Proximos dias > Devolucoes
@@ -62,7 +63,9 @@ export type MLSubStatus =
   | "not_delivered"          // Nao entregues
   | "cancelled_final"        // Canceladas
   | "returns_completed"      // Devolucoes concluidas
-  | "returns_not_completed"; // Devolucoes nao concluidas
+  | "returns_not_completed"  // Devolucoes nao concluidas
+  // Cross-bucket — pode aparecer em qualquer card
+  | "with_unread_messages";  // Com mensagens nao lidas
 
 // ─── Helpers internos ───────────────────────────────────────────────────
 
@@ -198,7 +201,18 @@ export function getOrderSubstatus(
 
     // Coleta
     if (isOrderInvoicePending(order)) return "invoice_pending";
-    if (isOrderReadyToPrintLabel(order)) return "ready_to_print";
+    // "Etiquetas pra imprimir" = ainda precisa imprimir (substatus ready_to_print)
+    if (
+      isOrderReadyToPrintLabel(order) &&
+      shipSubstatus === "ready_to_print"
+    ) {
+      return "ready_to_print";
+    }
+    // "Prontas para enviar" = etiqueta ja impressa, falta apenas dar saida
+    // (substatus printed). E o passo posterior a "Etiquetas pra imprimir".
+    if (shipSubstatus === "printed" || shipSubstatus === "ready_to_ship") {
+      return "printed_ready_to_send";
+    }
     if (
       shipSubstatus === "in_packing_list" ||
       shipSubstatus === "in_hub" ||
@@ -372,6 +386,7 @@ export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   return_pending_review: "Revisão pendente",
   invoice_pending: "NF-e para gerenciar",
   ready_to_print: "Etiquetas para imprimir",
+  printed_ready_to_send: "Prontas para enviar",
   in_processing: "Em processamento",
   standard_shipping: "Por envio padrão",
   return_in_transit: "A caminho",
@@ -384,6 +399,7 @@ export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   cancelled_final: "Canceladas",
   returns_completed: "Devoluções concluídas",
   returns_not_completed: "Devoluções não concluídas",
+  with_unread_messages: "Com mensagens não lidas",
 };
 
 export const SECTION_LABELS: Record<MLSection, string> = {
@@ -409,6 +425,7 @@ export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   return_pending_review: "warning",
   invoice_pending: "warning",
   ready_to_print: "warning",
+  printed_ready_to_send: "warning",
   in_processing: "info",
   standard_shipping: "neutral",
   return_in_transit: "info",
@@ -421,4 +438,5 @@ export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   cancelled_final: "danger",
   returns_completed: "success",
   returns_not_completed: "danger",
+  with_unread_messages: "info",
 };
