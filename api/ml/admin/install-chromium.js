@@ -34,64 +34,104 @@ function escapeHtml(text) {
     .replace(/"/g, "&quot;");
 }
 
-/**
- * Verifica se o Chromium ja esta instalado procurando no diretorio
- * padrao do PLAYWRIGHT_BROWSERS_PATH.
- */
-function isChromiumInstalled() {
+function findExecutable(subPath, names) {
   try {
-    if (!fs.existsSync(PLAYWRIGHT_BROWSERS_PATH)) return { installed: false };
-    const dirs = fs.readdirSync(PLAYWRIGHT_BROWSERS_PATH);
-    const chromiumDir = dirs.find((d) =>
-      d.toLowerCase().includes("chromium")
-    );
-    if (!chromiumDir) return { installed: false, available_dirs: dirs };
-    // Procura o executavel dentro
-    const subPath = path.join(PLAYWRIGHT_BROWSERS_PATH, chromiumDir);
-    let found = null;
-    try {
-      const sub = fs.readdirSync(subPath);
-      // chrome-headless-shell-linux64/chrome-headless-shell ou chromium-XXX/chrome-linux/chrome
-      for (const item of sub) {
-        const inner = path.join(subPath, item);
+    const sub = fs.readdirSync(subPath);
+    for (const item of sub) {
+      const inner = path.join(subPath, item);
+      try {
         if (fs.statSync(inner).isDirectory()) {
           const innerFiles = fs.readdirSync(inner);
           for (const f of innerFiles) {
-            if (
-              f === "chrome-headless-shell" ||
-              f === "chrome" ||
-              f === "headless_shell"
-            ) {
-              found = path.join(inner, f);
-              break;
+            if (names.includes(f)) {
+              return path.join(inner, f);
             }
           }
         }
-        if (found) break;
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Verifica se Chromium e chrome-headless-shell estao instalados.
+ * Playwright 1.49+ por padrao usa chrome-headless-shell quando
+ * headless: true — entao precisamos de AMBOS.
+ */
+function isChromiumInstalled() {
+  try {
+    if (!fs.existsSync(PLAYWRIGHT_BROWSERS_PATH)) {
+      return { installed: false, headless_shell_installed: false };
+    }
+    const dirs = fs.readdirSync(PLAYWRIGHT_BROWSERS_PATH);
+
+    // Chromium normal (chrome-linux64/chrome)
+    const chromiumDir = dirs.find(
+      (d) => d.toLowerCase().startsWith("chromium-") &&
+              !d.toLowerCase().includes("headless_shell")
+    );
+    let chromiumExe = null;
+    if (chromiumDir) {
+      chromiumExe = findExecutable(
+        path.join(PLAYWRIGHT_BROWSERS_PATH, chromiumDir),
+        ["chrome", "chromium"]
+      );
+    }
+
+    // Headless shell (chrome-headless-shell-linux64/chrome-headless-shell)
+    const shellDir = dirs.find((d) =>
+      d.toLowerCase().includes("headless_shell")
+    );
+    let shellExe = null;
+    if (shellDir) {
+      shellExe = findExecutable(
+        path.join(PLAYWRIGHT_BROWSERS_PATH, shellDir),
+        ["chrome-headless-shell", "headless_shell"]
+      );
+    }
+
     return {
-      installed: Boolean(found),
-      directory: subPath,
-      executable: found,
+      installed: Boolean(chromiumExe),
+      headless_shell_installed: Boolean(shellExe),
+      chromium_executable: chromiumExe,
+      shell_executable: shellExe,
+      directory: PLAYWRIGHT_BROWSERS_PATH,
+      available_dirs: dirs,
     };
   } catch (error) {
-    return { installed: false, error: error.message };
+    return {
+      installed: false,
+      headless_shell_installed: false,
+      error: error.message,
+    };
   }
 }
 
 function renderHtml({ message = null, isError = false, output = null } = {}) {
   const status = isChromiumInstalled();
-  const statusBlock = status.installed
+  const allOk = status.installed && status.headless_shell_installed;
+  const partialOk = status.installed || status.headless_shell_installed;
+  const statusBlock = allOk
     ? `<div class="status ok">
-         ✅ Chromium instalado em: <code>${escapeHtml(status.executable || status.directory)}</code>
+         ✅ Chromium + headless-shell instalados:
+         <br><code>${escapeHtml(status.chromium_executable || "")}</code>
+         <br><code>${escapeHtml(status.shell_executable || "")}</code>
        </div>`
-    : `<div class="status missing">
-         ❌ Chromium NAO instalado (esperado em ${escapeHtml(PLAYWRIGHT_BROWSERS_PATH)})
-         ${status.available_dirs ? `<br><small>Diretorios encontrados: ${escapeHtml(JSON.stringify(status.available_dirs))}</small>` : ""}
-       </div>`;
+    : partialOk
+      ? `<div class="status missing" style="background:#fff8e1;border-color:#fde68a;color:#92400e">
+           ⚠ Instalacao PARCIAL — falta um dos browsers:
+           <br>${status.installed ? "✅" : "❌"} chromium ${status.chromium_executable ? `(${escapeHtml(status.chromium_executable)})` : ""}
+           <br>${status.headless_shell_installed ? "✅" : "❌"} chrome-headless-shell ${status.shell_executable ? `(${escapeHtml(status.shell_executable)})` : ""}
+         </div>`
+      : `<div class="status missing">
+           ❌ Chromium NAO instalado (esperado em ${escapeHtml(PLAYWRIGHT_BROWSERS_PATH)})
+           ${status.available_dirs ? `<br><small>Diretorios encontrados: ${escapeHtml(JSON.stringify(status.available_dirs))}</small>` : ""}
+         </div>`;
 
   const messageBlock = message
     ? `<div class="message ${isError ? "error" : "success"}">${escapeHtml(message)}</div>`
@@ -254,30 +294,38 @@ export default async function handler(request, response) {
     );
   }
 
-  // Executa instalacao do Chromium (sem --with-deps porque container
-  // pode nao ter permissao pra apt-get; deps geralmente ja vem via Dockerfile)
+  // Executa instalacao do Chromium + headless-shell (sem --with-deps porque
+  // container pode nao ter permissao pra apt-get; deps geralmente ja vem
+  // via Dockerfile).
+  //
+  // IMPORTANTE: Playwright 1.49+ por padrao usa chrome-headless-shell quando
+  // headless: true. Se so instalar `chromium` o launch falha procurando
+  // `/ms-playwright/chromium_headless_shell-XXXX/chrome-headless-shell-linux64/chrome-headless-shell`
+  // Por isso instalamos AMBOS (chromium + chromium-headless-shell).
   try {
     const env = {
       ...process.env,
       PLAYWRIGHT_BROWSERS_PATH,
     };
+    // Instala em UMA UNICA chamada (mais rapido — compartilha download cache)
     const { stdout, stderr } = await execAsync(
-      `${workingCmd} install chromium 2>&1`,
+      `${workingCmd} install chromium chromium-headless-shell 2>&1`,
       {
         env,
-        timeout: 5 * 60 * 1000,
+        timeout: 8 * 60 * 1000, // 8min — 2 browsers podem demorar mais
         maxBuffer: 10 * 1024 * 1024,
       }
     );
-    const output = `${debugInfo.join("\n")}\n\n=== INSTALL OUTPUT ===\n${stdout || ""}\n${stderr || ""}`.trim();
+    const output = `${debugInfo.join("\n")}\n\n=== INSTALL OUTPUT (chromium + headless-shell) ===\n${stdout || ""}\n${stderr || ""}`.trim();
     const status = isChromiumInstalled();
+    const success = status.installed && status.headless_shell_installed;
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     return response.status(200).send(
       renderHtml({
-        message: status.installed
-          ? "✅ Chromium instalado com sucesso! Agora pode rodar o scraper."
-          : "Comando executado mas Chromium ainda nao detectado. Veja output abaixo.",
-        isError: !status.installed,
+        message: success
+          ? "✅ Chromium + headless-shell instalados! Agora pode rodar o scraper."
+          : `Instalacao parcial: chromium=${status.installed} headless_shell=${status.headless_shell_installed}. Veja output.`,
+        isError: !success,
         output,
       })
     );
