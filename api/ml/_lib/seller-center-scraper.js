@@ -422,14 +422,12 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
 
   let navError = null;
   try {
-    // waitUntil "networkidle" espera 500ms sem requests — garante que
-    // os XHRs internos do ML (que sao chamados APOS o DOM ready,
-    // depois de carregar config dos microfrontends) tenham tempo de
-    // serem capturados.
-    await page.goto(targetUrl, { waitUntil: "networkidle", timeout: timeoutMs });
-    // Wait extra pra capturar XHRs lazy-loaded por interacao
-    // (a tela carrega config primeiro, depois os dados das listagens)
-    await page.waitForTimeout(5000);
+    // domcontentloaded — networkidle nao funciona porque ML mantem SSE
+    // (event-request) aberto o tempo todo, rede nunca fica idle.
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    // Wait generoso (8s) pra dar tempo de a SPA hidratar e os XHRs
+    // de dados serem chamados apos as configs dos microfrontends.
+    await page.waitForTimeout(8000);
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
   } finally {
@@ -544,11 +542,48 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
     }
   }
 
+  // ── Captura snippet do HTML pra inspecao manual ──
+  // Procura por padroes de texto que sugiram onde estao os dados de cards
+  // (ex: "Envios de hoje", numero, etc) no HTML cru.
+  let htmlSnippet = null;
+  let htmlMatches = null;
+  try {
+    const html = await page.content();
+    htmlSnippet = `[HTML total: ${html.length} bytes]\n\n` + html.slice(0, 50000);
+
+    // Procura matches de palavras-chave dos cards (caso-insensitive)
+    const keywords = [
+      "Envios de hoje",
+      "Próximos dias",
+      "Em trânsito",
+      "Finalizadas",
+      "Etiquetas para imprimir",
+      "Coleta",
+      "TAB_TODAY",
+      "TAB_NEXT_DAYS",
+      "Para enviar",
+    ];
+    htmlMatches = {};
+    for (const kw of keywords) {
+      const idx = html.indexOf(kw);
+      if (idx >= 0) {
+        // Pega 200 chars de contexto
+        const start = Math.max(0, idx - 100);
+        const end = Math.min(html.length, idx + 200);
+        htmlMatches[kw] = `(pos ${idx}) ...${html.slice(start, end)}...`;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     url: targetUrl,
     xhrJsonResponses,
     domChipsText,
     ssrPayloads,
+    htmlSnippet,
+    htmlMatches,
     navError,
     capture_stats: {
       total_seen: totalSeen,
@@ -556,6 +591,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
       non_json: nonJson,
       captured: xhrJsonResponses.length,
       ssr_payloads_found: ssrPayloads.length,
+      html_keywords_found: htmlMatches ? Object.keys(htmlMatches).length : 0,
     },
   };
 }

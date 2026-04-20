@@ -63,6 +63,29 @@ function renderHtml(report, options) {
                  `).join("")}
                </div>`
             : "";
+
+          // ── HTML keywords found (palavras-chave de cards no HTML) ──
+          const htmlMatches = capture.htmlMatches || {};
+          const matchKeys = Object.keys(htmlMatches);
+          const htmlMatchesHtml = matchKeys.length > 0
+            ? `<div style="background:#dcfce7;border:1px solid #86efac;padding:10px;border-radius:6px;margin:10px 0">
+                 <strong>🔎 HTML Matches (palavras-chave dos cards encontradas no HTML):</strong>
+                 ${matchKeys.map((kw) => `
+                   <details>
+                     <summary>"${escapeHtml(kw)}" encontrado</summary>
+                     <pre>${escapeHtml(htmlMatches[kw])}</pre>
+                   </details>
+                 `).join("")}
+               </div>`
+            : "";
+
+          // HTML snippet (pra debug visual)
+          const htmlSnippetHtml = capture.htmlSnippet
+            ? `<details>
+                 <summary>📄 HTML snippet (primeiros 50KB)</summary>
+                 <pre>${escapeHtml(capture.htmlSnippet.slice(0, 30000))}</pre>
+               </details>`
+            : "";
           const chipsText = capture.dom_chips_text
             ? `<p class="meta">DOM chips: ${escapeHtml(JSON.stringify(capture.dom_chips_text))}</p>`
             : "";
@@ -79,12 +102,15 @@ function renderHtml(report, options) {
               <code class="url">${escapeHtml((capture.url || "").slice(0, 100))}</code>
               <span class="badge">${capture.xhr_count} XHR</span>
               ${ssrPayloads.length > 0 ? `<span class="badge" style="background:#fbbf24">${ssrPayloads.length} SSR</span>` : ""}
+              ${matchKeys.length > 0 ? `<span class="badge" style="background:#22c55e">${matchKeys.length} matches</span>` : ""}
             </summary>
             ${statsHtml}
             ${chipsText}
             ${navErrHtml}
+            ${htmlMatchesHtml}
             ${ssrHtml}
             ${xhrs || `<p class="empty">Nenhum XHR JSON capturado nesta navegação.</p>`}
+            ${htmlSnippetHtml}
           </details>`;
         })
         .join("");
