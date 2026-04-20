@@ -13,6 +13,10 @@ const STOCK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // valores corretos combinando atributos + titulo do anuncio.
 
 const KNOWN_BRANDS = [
+  // Mottu fica PRIMEIRO porque vende peca pra moto Mottu (que usa chassis
+  // Honda Pop 110/CG 160 etc). Quando o titulo menciona "Honda Pop Mottu",
+  // queremos agrupar como Mottu (especifico do nicho), nao Honda generico.
+  "Mottu",
   "Honda", "Yamaha", "Suzuki", "Kawasaki", "BMW", "Ducati", "Triumph",
   "Harley-Davidson", "KTM", "Husqvarna", "Royal Enfield", "Kasinski",
   "Benelli", "MV Agusta", "Aprilia", "Dafra", "Shineray",
@@ -24,6 +28,9 @@ const BRAND_ALIASES = {
   "harley davidson": "Harley-Davidson",
   ecofero: "Ecoferro",
   fanton: "Fantom",
+  // Aliases comuns pro nome Mottu (typos que aparecem nos anuncios)
+  motu: "Mottu",
+  motoo: "Mottu",
 };
 const OWN_BRANDS = ["Ecoferro", "Fantom"];
 
