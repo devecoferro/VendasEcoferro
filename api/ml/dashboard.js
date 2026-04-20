@@ -2336,6 +2336,80 @@ export async function buildDashboardPayload(options = {}) {
     mlLiveChipOrderIds = null;
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // ML AUTHORITATIVE OVERRIDE
+  // Se temos a classificação LIVE do ML (ml_live_chip_order_ids_by_bucket),
+  // SOBRESCREVEMOS os counts e order_ids de cada depósito pra usar
+  // exatamente o que o ML diz — eliminando TODO drift de classificação
+  // interna. O app fica 1:1 com ML Seller Center.
+  //
+  // Pedidos que o ML NÃO retorna em nenhum bucket são excluídos dos
+  // contadores (provavelmente são históricos que ML removeu da visão
+  // operacional). Pedidos do ML que não estão no DB ainda ficam de fora
+  // do grid mas contam no chip (via ml_live_chip_counts global).
+  // ═══════════════════════════════════════════════════════════════════
+  if (mlLiveChipOrderIds) {
+    const OVERRIDE_BUCKETS = ["today", "upcoming", "in_transit", "finalized", "cancelled"];
+    const makeEmptyCounts = () => ({
+      today: 0,
+      upcoming: 0,
+      in_transit: 0,
+      finalized: 0,
+      cancelled: 0,
+    });
+    const makeEmptyLists = () => ({
+      today: [],
+      upcoming: [],
+      in_transit: [],
+      finalized: [],
+      cancelled: [],
+    });
+
+    // Invert: db_id → ml_bucket
+    const mlBucketByDbId = new Map();
+    for (const bucket of OVERRIDE_BUCKETS) {
+      const ids = mlLiveChipOrderIds[bucket] || [];
+      for (const dbId of ids) {
+        mlBucketByDbId.set(String(dbId), bucket);
+      }
+    }
+
+    for (const deposit of deposits) {
+      const newCounts = makeEmptyCounts();
+      const newOrderIds = makeEmptyLists();
+      const dedupeInBucket = new Set();
+
+      for (const order of (deposit._orders || [])) {
+        const mlBucket = mlBucketByDbId.get(String(order.id));
+        if (!mlBucket || !OPERATIONAL_BUCKETS.includes(mlBucket)) continue;
+
+        // Dedup por pack/shipping/order (mesma regra de antes)
+        const packId = order.raw_data?.pack_id
+          ? String(order.raw_data.pack_id)
+          : null;
+        const shippingId = order.shipping_id ? String(order.shipping_id) : null;
+        const mlOrderId = order.order_id ? String(order.order_id) : null;
+        const dedupeId = packId || shippingId || mlOrderId;
+        const dedupeKey = dedupeId ? `${mlBucket}:${dedupeId}` : null;
+
+        newOrderIds[mlBucket].push(order.id);
+        if (!dedupeKey || !dedupeInBucket.has(dedupeKey)) {
+          newCounts[mlBucket] += 1;
+          if (dedupeKey) dedupeInBucket.add(dedupeKey);
+        }
+      }
+
+      deposit.counts = newCounts;
+      deposit.internal_operational_counts = newCounts;
+      deposit.order_ids_by_bucket = newOrderIds;
+      deposit.internal_operational_order_ids_by_bucket = newOrderIds;
+      // Total = soma dos buckets operacionais (hoje + upcoming + trânsito +
+      // finalizados + cancelados do dia) — consistente com os chips
+      deposit.total_count = Object.values(newCounts).reduce((s, n) => s + n, 0);
+      deposit.internal_operational_total_count = deposit.total_count;
+    }
+  }
+
   const payload = {
     backend_secure: true,
     generated_at: new Date().toISOString(),
