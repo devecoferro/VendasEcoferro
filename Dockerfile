@@ -23,8 +23,10 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
 ENV DATA_DIR=/app/data
-# Playwright: cache do Chromium headless (instalado abaixo)
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# Playwright: cache do Chromium em VOLUME PERSISTENTE — sobrevive
+# rebuilds e restarts do Coolify. Antes era /ms-playwright (efemero).
+# Esse caminho fica dentro de DATA_DIR que ja e mapeado em volume.
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/data/playwright-browsers
 
 # Dependências runtime do Chromium headless (pra scraper ML Seller Center)
 RUN apt-get update \
@@ -44,9 +46,14 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/api ./api
 COPY --from=build /app/scripts ./scripts
 
-# Instala Chromium headless usado pelo scraper ML (best-effort: se falhar,
-# o scraper fica inativo mas o resto do sistema continua funcionando).
-RUN npx playwright install chromium --with-deps 2>&1 || echo "[warn] Playwright chromium install failed — scraper indisponível"
+# NAO instalamos Chromium no build porque PLAYWRIGHT_BROWSERS_PATH agora
+# aponta pra volume persistente (/app/data/playwright-browsers). Se
+# instalassemos no build, o container teria Chromium num path diferente
+# do esperado em runtime. Em vez disso, usuario instala via endpoint
+# admin (/api/ml/admin/install-chromium) que persiste no volume.
+#
+# As deps do sistema (libs do Chromium) ja vem instaladas via apt-get
+# acima. Entao quando o Chromium for baixado em runtime, ja vai rodar.
 
 EXPOSE 3000
 
