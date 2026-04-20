@@ -526,8 +526,7 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // ML Seller Center: "Envios de hoje" = pedidos prontos para envio HOJE.
-    // Substatuses que SEMPRE vão pra "Envios de hoje":
+    // Substatuses que SEMPRE vão pra "Envios de hoje" (prontos):
     if (
       substatus === "ready_for_pickup" ||
       substatus === "packed" ||
@@ -536,23 +535,34 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Substatuses que SEMPRE vão pra "Próximos dias" (aguardando ação):
+    // Substatuses "aguardando ação" do vendedor: classificam por SLA.
+    // Se coleta é HOJE (SLA ≤ hoje), ML UI mostra em "Envios de hoje"
+    // mesmo sem etiqueta impressa — precisa ação hoje. Senão, "Próximos dias".
+    // Observado em comparação real: 66 "ready_to_print" com coleta hoje
+    // apareciam em "Envios de hoje" no ML, app classificava upcoming (−66 drift).
+    if (
+      substatus === "ready_to_print" ||
+      substatus === "in_packing_list"
+    ) {
+      if (
+        dates.operationalDueDateKey &&
+        isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+      ) {
+        return "today";
+      }
+      return "upcoming";
+    }
+
+    // Substatuses que SEMPRE vão pra "Próximos dias" (esperando algo externo):
     if (
       substatus === "in_hub" ||
-      substatus === "in_warehouse" ||
-      substatus === "in_packing_list" ||
-      substatus === "ready_to_print"
+      substatus === "in_warehouse"
     ) {
       return "upcoming";
     }
 
-    // invoice_pending: vendedor ainda precisa emitir NF-e.
-    // ALINHAMENTO COM ML: ML sempre classifica invoice_pending em
-    // "Próximos dias" até o substatus mudar pra ready_for_pickup/packed.
-    // Mesmo que a NF-e já tenha sido emitida pelo nosso sistema, o chip
-    // só deve refletir "Envios de hoje" quando o ML propagar o novo
-    // substatus. Manter consistência com fetchMLLiveChipBucketsDetailed
-    // (linha 1676-1685) que retorna sempre upcoming.
+    // invoice_pending: vendedor precisa emitir NF-e. Sempre upcoming
+    // até ML propagar novo substatus.
     if (substatus === "invoice_pending") {
       return "upcoming";
     }
@@ -647,20 +657,8 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   }
 
   // Fulfillment: ready_to_ship e handling são os status operacionais principais.
-  // ALINHAMENTO COM ML SELLER CENTER (fetchMLLiveChipBucketsDetailed
-  // linha 1676-1695): mesmas regras, sem exceções por SLA.
+  // Alinhado com ML UI — ready_to_print/in_packing_list com SLA hoje → today.
   if (status === "ready_to_ship" || status === "handling") {
-    // Sempre "Próximos dias" (aguardando ação do vendedor ou do ML)
-    if (
-      substatus === "in_hub" ||
-      substatus === "invoice_pending" ||
-      substatus === "ready_to_print" ||
-      substatus === "in_warehouse" ||
-      substatus === "in_packing_list"
-    ) {
-      return "upcoming";
-    }
-
     // Sempre "Envios de hoje" (pronto para envio/coleta)
     if (
       substatus === "ready_for_pickup" ||
@@ -668,6 +666,29 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       substatus === "ready_to_pack"
     ) {
       return "today";
+    }
+
+    // Substatuses "aguardando ação": classifica por SLA (coleta hoje → today)
+    if (
+      substatus === "ready_to_print" ||
+      substatus === "in_packing_list"
+    ) {
+      if (
+        dates.operationalDueDateKey &&
+        isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
+      ) {
+        return "today";
+      }
+      return "upcoming";
+    }
+
+    // Sempre "Próximos dias" (esperando algo externo/NF-e)
+    if (
+      substatus === "in_hub" ||
+      substatus === "invoice_pending" ||
+      substatus === "in_warehouse"
+    ) {
+      return "upcoming";
     }
 
     // Substatuses desconhecidos: usa SLA (fallback conservador)
@@ -1672,13 +1693,11 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
     const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
 
-    // Cancelados dos últimos 7 dias → Finalizadas (alinhado com ML UI).
-    // Deduplica por pack (não contar 2x o mesmo pedido que aparece em
-    // pending E ready_to_ship).
+    // Cancelados/entregues/not_delivered de HOJE → Finalizadas.
+    // Alinhado com ML Seller Center UI chip (que mostra só finalizações do dia).
     const cancelledOrdersSeen = new Set();
     const allRawOrders = [...pendingRaw, ...rtsRaw, ...shippedRaw, ...notDeliveredRaw];
     const cancelledRecent = [];
-    const todayMs = new Date(todayKey + "T12:00:00-03:00").getTime();
     for (const order of allRawOrders) {
       if (!isCancelled(order)) continue;
       const key = order.pack_id
@@ -1690,10 +1709,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       cancelledOrdersSeen.add(key);
       const cancelDate = order.date_closed || order.last_updated || order.date_created;
       const cancelKey = cancelDate ? getDateKey(cancelDate) : null;
-      if (!cancelKey) continue;
-      const cancelMs = new Date(cancelKey + "T12:00:00-03:00").getTime();
-      const ageDays = (todayMs - cancelMs) / 86400000;
-      if (ageDays >= 0 && ageDays <= 7) {
+      if (cancelKey === todayKey) {
         cancelledRecent.push(order);
       }
     }
@@ -1701,15 +1717,13 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       addMlOrderIds("finalized", [String(order.id)]);
     }
 
-    // Busca adicional: shipping.status=cancelled dos últimos 7 dias.
-    // ML remove cancelled dos buckets pending/rts/shipped/nd após algumas
-    // horas — esses não entram no loop acima. Alinha com ML Seller Center
-    // UI que conta cancelados recentes em "Finalizadas".
+    // Busca adicional: cancelled de HOJE via order.status=cancelled
+    // (ML remove do shipping.status ativo depois de algumas horas).
     try {
-      const sevenDaysAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const todayStartIso = todayKey + "T00:00:00.000-03:00";
       const cancelledR = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&order.status=cancelled&order.date_closed.from=${encodeURIComponent(sevenDaysAgoIso)}&limit=50&sort=date_desc`,
+          `&order.status=cancelled&order.date_closed.from=${encodeURIComponent(todayStartIso)}&limit=50&sort=date_desc`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
       const cancelledOrders = (cancelledR.results || []).filter((o) => o?.id);
@@ -1723,14 +1737,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       // best-effort
     }
 
-    // Busca adicional: delivered dos últimos 1-2 dias.
-    // ML Seller Center conta entregas recentes em "Finalizadas".
-    // Janela curta (48h) pra não inflar — alinha com comportamento da UI.
+    // Busca adicional: delivered de HOJE (último dia).
     try {
-      const twoDaysAgoIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      const todayStartIso = todayKey + "T00:00:00.000-03:00";
       const deliveredR = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=delivered&order.date_last_updated.from=${encodeURIComponent(twoDaysAgoIso)}&limit=50&sort=date_desc`,
+          `&shipping.status=delivered&order.date_last_updated.from=${encodeURIComponent(todayStartIso)}&limit=50&sort=date_desc`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
       const deliveredOrders = (deliveredR.results || []).filter(
@@ -1815,18 +1827,6 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // Sempre "Próximos dias" (aguardando ação do vendedor)
-      if (
-        sub === "in_hub" ||
-        sub === "invoice_pending" ||
-        sub === "ready_to_print" ||
-        sub === "in_warehouse" ||
-        sub === "in_packing_list"
-      ) {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
-        continue;
-      }
-
       // Sempre "Envios de hoje" (pronto para envio/coleta)
       if (
         sub === "ready_for_pickup" ||
@@ -1834,6 +1834,25 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         sub === "ready_to_pack"
       ) {
         addMlOrderIds("today", pack.ml_order_ids);
+        continue;
+      }
+
+      // Substatuses "aguardando ação" do vendedor: classifica por SLA.
+      // Se coleta hoje → today (precisa imprimir/separar antes da coleta).
+      // Se coleta futura → upcoming.
+      if (sub === "ready_to_print" || sub === "in_packing_list") {
+        const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        if (slaKey && slaKey <= todayKey) {
+          addMlOrderIds("today", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
+        continue;
+      }
+
+      // Sempre "Próximos dias" (esperando algo externo)
+      if (sub === "in_hub" || sub === "invoice_pending" || sub === "in_warehouse") {
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
 
@@ -1905,22 +1924,17 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
     }
 
-    // Finalizadas: not_delivered dos últimos 7 dias (janela ampla alinhada
-    // com bucket "finalized" da classificação interna).
-    // NOTA: NÃO incluir "delivered" aqui — ML "Finalizadas" conta apenas
-    // problemas de entrega (not_delivered), não entregas normais.
+    // Finalizadas: not_delivered de HOJE (alinhado com janela do bucket).
     try {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .split("T")[0] + "T00:00:00.000-03:00";
+      const todayStartIso = todayKey + "T00:00:00.000-03:00";
       const ndR = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=not_delivered&order.date_last_updated.from=${sevenDaysAgo}&limit=50`,
+          `&shipping.status=not_delivered&order.date_last_updated.from=${todayStartIso}&limit=50`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.json()).catch(() => ({ results: [] }));
-      const ndRecent = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
-      const ndRecentPacks = deduplicateOrdersToPacks(ndRecent);
-      for (const [, pack] of ndRecentPacks) {
+      const ndToday = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
+      const ndTodayPacks = deduplicateOrdersToPacks(ndToday);
+      for (const [, pack] of ndTodayPacks) {
         addMlOrderIds("finalized", pack.ml_order_ids);
       }
     } catch {
@@ -2093,10 +2107,10 @@ export async function buildDashboardPayload(options = {}) {
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
-      // Finalizadas: mostra pedidos cancelados/devolvidos dos últimos 7 dias.
-      // ML Seller Center inclui finalizações recentes (não só de hoje) pra
-      // rastreabilidade de pós-venda. Antes estava limitado a só hoje —
-      // causava subcontagem massiva (0 vs 8 pedidos do ML).
+      // Finalizadas: mostra APENAS finalizações de HOJE (alinhado com ML UI).
+      // Observação real: ML chip "Finalizadas" mostra 10 enquanto tabela
+      // do último mês tem 1200+. O chip é restrito ao dia atual.
+      // Antes usávamos 7 dias → app inflava pra 73 vs ML 10.
       if (bucket === "finalized") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
@@ -2104,35 +2118,20 @@ export async function buildDashboardPayload(options = {}) {
           getDateKey(statusHistory.date_cancelled) ||
           getDateKey(statusHistory.date_not_delivered) ||
           getDateKey(statusHistory.date_returned) ||
+          getDateKey(statusHistory.date_delivered) ||
           getDateKey(order.sale_date);
-        if (!exceptionDateKey) {
-          continue;
-        }
-        // Janela de 7 dias em calendário BRT
-        const ageDays =
-          (new Date(todayKey + "T12:00:00-03:00").getTime() -
-            new Date(exceptionDateKey + "T12:00:00-03:00").getTime()) /
-          86400000;
-        if (ageDays < 0 || ageDays > 7) {
-          continue; // Futuro ou mais velho que 7 dias: não conta
+        if (!exceptionDateKey || exceptionDateKey !== todayKey) {
+          continue; // Só conta finalizações do dia atual
         }
       }
 
-      // Canceladas: janela de 7 dias (mesma do finalized). Bucket separado
-      // pra operacional (rastrear reembolsos em andamento).
+      // Canceladas: mesma janela (só hoje) alinhada com ML UI.
       if (bucket === "cancelled") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
         const cancelDateKey =
           getDateKey(statusHistory.date_cancelled) || getDateKey(order.sale_date);
-        if (!cancelDateKey) {
-          continue;
-        }
-        const ageDays =
-          (new Date(todayKey + "T12:00:00-03:00").getTime() -
-            new Date(cancelDateKey + "T12:00:00-03:00").getTime()) /
-          86400000;
-        if (ageDays < 0 || ageDays > 7) {
+        if (!cancelDateKey || cancelDateKey !== todayKey) {
           continue;
         }
       }
