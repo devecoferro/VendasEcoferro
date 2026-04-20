@@ -368,7 +368,7 @@ function shouldCaptureUrl(url) {
  *
  * Esta funcao NAO renova browser — recebe page e ja navega.
  */
-async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
+async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs = 8000) {
   const params = new URLSearchParams();
   if (tabFilter) params.set("filters", tabFilter);
   if (storeUrlParam) params.set("store", storeUrlParam);
@@ -425,9 +425,12 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
     // domcontentloaded — networkidle nao funciona porque ML mantem SSE
     // (event-request) aberto o tempo todo, rede nunca fica idle.
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    // Wait generoso (8s) pra dar tempo de a SPA hidratar e os XHRs
+    // Wait generoso pra dar tempo de a SPA hidratar e os XHRs
     // de dados serem chamados apos as configs dos microfrontends.
-    await page.waitForTimeout(8000);
+    // Em modo diagnostico (waitMs maior), esperamos mais pra garantir
+    // que o /operations-dashboard e /packs/marketshops/list sejam
+    // chamados.
+    await page.waitForTimeout(waitMs);
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
   } finally {
@@ -611,6 +614,7 @@ export async function scrapeMlSellerCenterFull({
   timeoutMs = 30_000,
   singleTab = null,
   singleStore = null,
+  waitMs = 8000,
 } = {}) {
   if (!isScraperConfigured()) {
     return { ok: false, error: "no_state", message: "Storage state nao configurado" };
@@ -703,7 +707,8 @@ export async function scrapeMlSellerCenterFull({
             page,
             tab.filter,
             storeParam,
-            timeoutMs
+            timeoutMs,
+            waitMs
           );
           captures[tab.key][store] = {
             url: capture.url,
@@ -711,6 +716,12 @@ export async function scrapeMlSellerCenterFull({
             xhr_count: capture.xhrJsonResponses.length,
             xhr_responses: capture.xhrJsonResponses,
             dom_chips_text: capture.domChipsText,
+            // FIX BUG: antes ssrPayloads/htmlMatches/htmlSnippet nao
+            // chegavam no retorno — renderer HTML procurava mas achava
+            // undefined. Agora passa tudo adiante.
+            ssrPayloads: capture.ssrPayloads,
+            htmlMatches: capture.htmlMatches,
+            htmlSnippet: capture.htmlSnippet,
             nav_error: capture.navError,
             capture_stats: capture.capture_stats,
           };

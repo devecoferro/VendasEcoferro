@@ -158,7 +158,9 @@ function renderHtml(report, options) {
   ${options.stale ? '<div class="stale">⚠ Cache expirado. Clique em "Scrape novo" pra atualizar.</div>' : ""}
 
   <div class="filters">
-    <a href="?format=html&run=1" class="run-btn">↻ Scrape novo (demora ~30-60s)</a>
+    <a href="?format=html&run=1" class="run-btn">↻ Scrape rápido (8s)</a>
+    &nbsp;&nbsp;
+    <a href="?format=html&run=1&wait=20000&tab=today&store=outros" class="run-btn" style="background:#dc2626">🔬 Diagnóstico TAB_TODAY (20s wait)</a>
     &nbsp;&nbsp;
     <strong>Tab:</strong>
     <a href="?format=html" class="${!options.tab ? "active" : ""}">Todas</a>
@@ -224,10 +226,15 @@ export default async function handler(request, response) {
     // (rapido, ~10-15s vs 60-90s do scrape completo)
     const singleTab = request.query?.tab ? String(request.query.tab) : null;
     const singleStore = request.query?.store ? String(request.query.store) : null;
+    // ?wait=20000 pra modo diagnostico (aguarda 20s depois do DOM load,
+    // garante que operations-dashboard + marketshops/list sejam chamados).
+    // Default 8000 pra scrape rapido.
+    const waitMs = request.query?.wait ? Math.max(1000, Math.min(60000, parseInt(String(request.query.wait), 10))) : 8000;
     const result = await scrapeMlSellerCenterFull({
       timeoutMs: 60_000, // 60s — networkidle pode demorar mais que domcontentloaded
       singleTab,
       singleStore,
+      waitMs,
     });
     if (!result.ok) {
       if (format === "html") {
