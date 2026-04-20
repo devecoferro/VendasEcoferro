@@ -380,22 +380,46 @@ function shouldCaptureUrl(url) {
  */
 async function fetchDirectEndpoints(page, tabFilter, storeUrlParam) {
   const storeForQuery = storeUrlParam || "all";
+
+  // Extrai CSRF token do meta tag (ML usa pra validar requests XHR)
+  let csrfToken = null;
+  try {
+    csrfToken = await page.evaluate(() => {
+      const meta = document.querySelector('meta[name="csrf-token"]');
+      return meta ? meta.getAttribute("content") : null;
+    });
+  } catch {
+    // ignore
+  }
+
+  // Headers comuns que ML espera em requests XHR reais
+  const commonHeaders = {
+    Accept: "application/json, text/plain, */*",
+    "X-Requested-With": "XMLHttpRequest",
+    ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+  };
+
   const endpoints = {
     operations_dashboard_tabs: {
       path: `/sales-omni/packs/marketshops/operations-dashboard/tabs?sellerSegmentType=professional&filters=${encodeURIComponent(tabFilter || "TAB_TODAY")}&subFilters=&store=${encodeURIComponent(storeForQuery)}&gmt=-03:00`,
-      headers: { "x-scope": "tabs-mlb" },
+      headers: { ...commonHeaders, "x-scope": "tabs-mlb" },
     },
     operations_dashboard_actions: {
       path: `/sales-omni/packs/marketshops/operations-dashboard/actions?store=${encodeURIComponent(storeForQuery)}&sellerCBTParent=false&callers=`,
-      headers: { "x-scope": "tabs-mlb" },
+      headers: { ...commonHeaders, "x-scope": "tabs-mlb" },
     },
     marketshops_list: {
       path: `/sales-omni/packs/marketshops/list?referrer=web-wrapper&filters=${encodeURIComponent(tabFilter || "TAB_TODAY")}&subFilters=&search=&limit=50&offset=0&startPeriod=&store=${encodeURIComponent(storeForQuery)}`,
-      headers: {},
+      headers: commonHeaders,
+    },
+    // Variante: path com /api/ no meio (pode ser reescrito no nginx)
+    operations_dashboard_tabs_api: {
+      path: `/sales-omni/api/packs/marketshops/operations-dashboard/tabs?sellerSegmentType=professional&filters=${encodeURIComponent(tabFilter || "TAB_TODAY")}&subFilters=&store=${encodeURIComponent(storeForQuery)}&gmt=-03:00`,
+      headers: { ...commonHeaders, "x-scope": "tabs-mlb" },
     },
   };
 
-  const results = {};
+  const results = { _csrf_token_found: csrfToken ? csrfToken.slice(0, 20) + "..." : null };
   for (const [key, cfg] of Object.entries(endpoints)) {
     try {
       const result = await page.evaluate(
@@ -403,7 +427,7 @@ async function fetchDirectEndpoints(page, tabFilter, storeUrlParam) {
           try {
             const res = await fetch(path, {
               method: "GET",
-              headers: { Accept: "application/json", ...headers },
+              headers,
               credentials: "include",
             });
             const text = await res.text();
@@ -411,12 +435,19 @@ async function fetchDirectEndpoints(page, tabFilter, storeUrlParam) {
             try {
               body = JSON.parse(text);
             } catch {
-              body = text.slice(0, 2000);
+              // Slice maior (5000) pra pegar mensagem de erro
+              body = text.slice(0, 5000);
             }
+            // Retorna alguns response headers pra debug
+            const respHeaders = {};
+            res.headers.forEach((v, k) => {
+              respHeaders[k] = v;
+            });
             return {
               ok: res.ok,
               status: res.status,
               size: text.length,
+              headers: respHeaders,
               body,
             };
           } catch (err) {
