@@ -51,6 +51,34 @@ const SCRAPER_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 let cachedResult = null; // { data, expiresAt, capturedAt }
 let lastError = null; // { error, timestamp }
 
+// Cache em memória do scrape FULL (engenharia reversa via XHR interception)
+// Estrutura: { tabs: { [tabKey]: { [storeKey]: { url, xhrJsonResponses: [], domSnapshot } } }, capturedAt, expiresAt }
+let cachedFullResult = null;
+
+// ─── Configuracao das combinacoes (tab × store) que serao scraped ───
+// Tabs do ML Seller Center (filters URL param)
+const ML_TABS = [
+  { key: "today", filter: "TAB_TODAY", label: "Envios de hoje" },
+  { key: "upcoming", filter: "TAB_NEXT_DAYS", label: "Próximos dias" },
+  { key: "in_transit", filter: "TAB_IN_THE_WAY", label: "Em trânsito" },
+  { key: "finalized", filter: "TAB_FINISHED", label: "Finalizadas" },
+];
+
+// Stores conhecidas (configuravel via env ML_SCRAPER_STORES)
+// Default: pega "outros" (sem store param) e "full" (logistic_type fulfillment)
+const ML_STORES = (process.env.ML_SCRAPER_STORES || "all,outros,full")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// Mapeia store key → URL store param que o ML usa
+function storeToUrlParam(store) {
+  if (store === "all") return ""; // Todas as vendas
+  if (store === "outros") return ""; // Vendas sem deposito (usa mesma URL)
+  if (store === "full") return "full";
+  return store; // Pode ser ID numerico (ex: 79856028 = Ourinhos)
+}
+
 /**
  * Verifica se o storage state está disponível no disco.
  */
@@ -285,6 +313,260 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
       }
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ENGENHARIA REVERSA — Captura estrutura completa do ML Seller Center
+// ═══════════════════════════════════════════════════════════════════
+// Em vez de DOM scraping superficial (so chips), navega em cada
+// combinacao tab × store e INTERCEPTA as XHRs internas do ML que
+// retornam JSON com a estrutura completa de cards + sub-status +
+// order_ids. Resultado: classificacao 1:1 com o ML sem chute.
+//
+// Salvamos TODOS os JSON responses interceptados em
+// `xhrJsonResponses` por (tab, store), pra que o operador valide
+// no endpoint debug e a gente identifique qual contem os dados certos.
+
+/**
+ * Padrao das URLs internas do ML que retornam dados de cards/listas.
+ * Capturamos todos JSONs que batem com esse pattern pra inspecao.
+ */
+const ML_INTERNAL_API_PATTERNS = [
+  /\/vendas\/omni\/api\//,
+  /\/vendas\/api\//,
+  /\/orders-frontend\//,
+  /\/sells-listing\//,
+  /\/seller-cohorts\//,
+  /\/myml\/orders\//,
+];
+
+function urlMatchesInternalApi(url) {
+  return ML_INTERNAL_API_PATTERNS.some((re) => re.test(url));
+}
+
+/**
+ * Navega numa URL especifica e captura responses XHR + DOM snapshot.
+ * Retorna { url, xhrJsonResponses: [{url, body}], domHtml, domChipsText }.
+ *
+ * Esta funcao NAO renova browser — recebe page e ja navega.
+ */
+async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
+  const params = new URLSearchParams();
+  if (tabFilter) params.set("filters", tabFilter);
+  if (storeUrlParam) params.set("store", storeUrlParam);
+  params.set("limit", "50");
+  params.set("offset", "0");
+  const targetUrl = `${ML_VENDAS_URL}?${params.toString()}`;
+
+  // Buffer de XHRs interceptados nesta navegacao
+  const xhrJsonResponses = [];
+  const responseHandler = async (response) => {
+    try {
+      const url = response.url();
+      if (!urlMatchesInternalApi(url)) return;
+      const contentType = response.headers()["content-type"] || "";
+      if (!contentType.toLowerCase().includes("application/json")) return;
+      // Limita tamanho pra nao explodir memoria
+      const body = await response.text();
+      if (!body || body.length > 2 * 1024 * 1024) return; // skip > 2MB
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return;
+      }
+      xhrJsonResponses.push({
+        url,
+        status: response.status(),
+        size: body.length,
+        body: parsed,
+      });
+    } catch {
+      // best-effort — algumas responses sao streamed e nao da pra ler
+    }
+  };
+
+  page.on("response", responseHandler);
+
+  let navError = null;
+  try {
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    // Aguarda app render + XHRs internas carregarem
+    await page.waitForTimeout(3500);
+  } catch (err) {
+    navError = err instanceof Error ? err.message : String(err);
+  } finally {
+    page.off("response", responseHandler);
+  }
+
+  // Snapshot leve do DOM pra fallback (texto dos chips)
+  let domChipsText = null;
+  try {
+    domChipsText = await page.evaluate(() => {
+      const labels = ["Envios de hoje", "Próximos dias", "Em trânsito", "Finalizadas"];
+      const result = {};
+      const allElements = document.querySelectorAll("button, div, a, span, li");
+      for (const label of labels) {
+        for (const el of allElements) {
+          const text = (el.textContent || "").trim();
+          if (text.startsWith(label) && text.length < label.length + 15) {
+            const m = text.match(new RegExp(`${label}[\\s\\n]*(\\d+)`));
+            if (m) {
+              result[label] = parseInt(m[1], 10);
+              break;
+            }
+          }
+        }
+      }
+      return result;
+    });
+  } catch {
+    // ignore
+  }
+
+  return {
+    url: targetUrl,
+    xhrJsonResponses,
+    domChipsText,
+    navError,
+  };
+}
+
+/**
+ * Scrape FULL — navega em cada tab × store e captura tudo.
+ * Demora ~30-60s pra cobrir 4 tabs × 3 stores = 12 navegacoes.
+ *
+ * Retorna:
+ *   { ok: true, tabs: { [tabKey]: { [storeKey]: <captura> } }, capturedAt }
+ *   { ok: false, error, message }
+ */
+export async function scrapeMlSellerCenterFull({ timeoutMs = 30_000 } = {}) {
+  if (!isScraperConfigured()) {
+    return { ok: false, error: "no_state", message: "Storage state nao configurado" };
+  }
+
+  const chromium = await loadPlaywright();
+  if (!chromium) {
+    return { ok: false, error: "playwright_missing", message: "Playwright nao instalado" };
+  }
+
+  const storageState = loadStorageState();
+  if (!storageState) {
+    return { ok: false, error: "no_state", message: "Storage state invalido" };
+  }
+
+  let browser;
+  const captures = {};
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+      ],
+    });
+    const context = await browser.newContext({
+      storageState,
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      viewport: { width: 1920, height: 1080 },
+      locale: "pt-BR",
+      timezoneId: "America/Sao_Paulo",
+    });
+    const page = await context.newPage();
+
+    // Verifica sessao com 1a navegacao
+    const probeUrl = ML_VENDAS_URL;
+    await page.goto(probeUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    const currentUrl = page.url();
+    if (
+      currentUrl.includes("/login") ||
+      currentUrl.includes("/auth") ||
+      currentUrl.includes("/authorization")
+    ) {
+      lastError = {
+        error: "session_expired",
+        message: "Session expirada — admin precisa re-login",
+        timestamp: new Date().toISOString(),
+      };
+      log.warn("[full-scrape] Session expirada — abortando");
+      return { ok: false, error: "session_expired", message: "Session expirada" };
+    }
+
+    // Itera tab × store
+    for (const tab of ML_TABS) {
+      captures[tab.key] = {};
+      for (const store of ML_STORES) {
+        const storeParam = storeToUrlParam(store);
+        log.info(`[full-scrape] capturando ${tab.key} × ${store}`);
+        try {
+          const capture = await captureTabStore(
+            page,
+            tab.filter,
+            storeParam,
+            timeoutMs
+          );
+          captures[tab.key][store] = {
+            url: capture.url,
+            store_url_param: storeParam,
+            xhr_count: capture.xhrJsonResponses.length,
+            xhr_responses: capture.xhrJsonResponses,
+            dom_chips_text: capture.domChipsText,
+            nav_error: capture.navError,
+          };
+        } catch (err) {
+          captures[tab.key][store] = {
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+    }
+
+    const result = {
+      ok: true,
+      tabs: captures,
+      stores_scraped: ML_STORES,
+      capturedAt: new Date().toISOString(),
+    };
+
+    cachedFullResult = {
+      data: result,
+      capturedAt: result.capturedAt,
+      expiresAt: Date.now() + SCRAPER_CACHE_TTL_MS,
+    };
+    lastError = null;
+
+    return result;
+  } catch (err) {
+    const errorInfo = {
+      error: "network",
+      message: err instanceof Error ? err.message : String(err),
+    };
+    lastError = { ...errorInfo, timestamp: new Date().toISOString() };
+    log.error("[full-scrape] falhou", err instanceof Error ? err : new Error(String(err)));
+    return { ok: false, ...errorInfo };
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // best-effort
+      }
+    }
+  }
+}
+
+/**
+ * Retorna o ultimo scrape FULL bem-sucedido (do cache).
+ * Stale = true se passou do TTL.
+ */
+export function getCachedFullResult() {
+  if (!cachedFullResult) return null;
+  if (cachedFullResult.expiresAt <= Date.now()) {
+    return { ...cachedFullResult, stale: true };
+  }
+  return cachedFullResult;
 }
 
 /**

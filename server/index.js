@@ -62,6 +62,7 @@ import mlConferenciaHandler from "../api/ml/conferencia.js";
 import mlLabelsHandler from "../api/ml/labels.js";
 import mlAdminAuditBrandsHandler from "../api/ml/admin/audit-brands.js";
 import mlAdminClassifyDebugHandler from "../api/ml/admin/classify-debug.js";
+import mlAdminLiveCardsDebugHandler from "../api/ml/admin/live-cards-debug.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
@@ -249,6 +250,10 @@ app.get("/api/ml/admin/audit-brands", apiLimiter, (req, res) => mlAdminAuditBran
 // Debug da classificacao de sub-status (validar 1:1 com ML).
 // Retorna agregado por bucket × sub_status com samples de raw_data.
 app.get("/api/ml/admin/classify-debug", apiLimiter, (req, res) => mlAdminClassifyDebugHandler(req, res));
+// Engenharia reversa do ML — captura XHR + DOM via Playwright e expoe
+// pra inspecao manual. Usado pra mapear quais endpoints internos do ML
+// retornam a estrutura de cards/sub-status que queremos consumir live.
+app.get("/api/ml/admin/live-cards-debug", apiLimiter, (req, res) => mlAdminLiveCardsDebugHandler(req, res));
 // Proxy de imagens do ML — usado pelo PDF do estoque (jspdf precisa do
 // byte da imagem, e fetch direto bate em CORS). Whitelist de hosts no handler.
 app.get("/api/ml/image-proxy", apiLimiter, (req, res) => mlImageProxyHandler(req, res));
