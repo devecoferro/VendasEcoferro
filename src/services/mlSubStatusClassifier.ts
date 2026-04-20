@@ -109,18 +109,77 @@ function hasTag(order: MLOrder, tag: string): boolean {
   return tags.some((t) => lower(t) === lower(tag));
 }
 
+// ─── Bucket primario (determina em qual aba o order aparece) ────────────
+
+/**
+ * Determina A QUAL BUCKET PRIMARIO o order pertence (today / upcoming /
+ * in_transit / finalized / cancelled).
+ *
+ * E equivalente a "em qual aba do ML Seller Center este order aparece".
+ * Sem isso, o classifier tentava encaixar TODO order em qualquer bucket
+ * pedido e o fallback "standard_shipping" inflava artificialmente os
+ * cards de "Proximos dias" com pedidos que ja foram entregues, em
+ * transito ou cancelados.
+ */
+export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
+  const rawStatus = lower(getRaw(order).status || order.order_status);
+  const ship = getShipment(order);
+  const shipStatus = lower(ship.status);
+  const isCancelled = rawStatus === "cancelled" || shipStatus === "cancelled";
+
+  // FINALIZADAS: ja entregue, devolvido, ou cancelado final
+  if (
+    shipStatus === "delivered" ||
+    shipStatus === "not_delivered" ||
+    shipStatus === "returned"
+  ) {
+    return "finalized";
+  }
+  if (isCancelled) {
+    return "finalized"; // Encerradas > Canceladas
+  }
+
+  // EM TRANSITO: ja foi expedido ou aguardando retirada
+  if (
+    shipStatus === "shipped" ||
+    shipStatus === "in_transit" ||
+    shipStatus === "ready_for_pickup"
+  ) {
+    return "in_transit";
+  }
+
+  // ENVIOS DE HOJE vs PROXIMOS DIAS: distingue pela data de coleta
+  const date = parsePickupDate(order);
+  if (date) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const target = new Date(date);
+    target.setHours(0, 0, 0, 0);
+    if (target.getTime() <= today.getTime()) return "today";
+    return "upcoming";
+  }
+
+  // Sem pickup_date conhecido — assume upcoming (fallback conservador)
+  return "upcoming";
+}
+
 // ─── Sub-status (stand-alone classification) ────────────────────────────
 
 /**
  * Retorna o sub-status PRIMARIO do order conforme o bucket informado.
- * null = order nao se encaixa em nenhum sub-status conhecido (raro).
- *
- * Mesma logica que o ML Seller Center usa pra classificar nos cards.
+ * Retorna null se o order NAO pertence ao bucket pedido — isso evita
+ * que pedidos entregues/cancelados/em-transito vazem pra "Proximos dias"
+ * e inflem cards artificialmente.
  */
 export function getOrderSubstatus(
   order: MLOrder,
   bucket: ShipmentBucket
 ): MLSubStatus | null {
+  // Filtro de bucket primario — order so se classifica no bucket onde
+  // realmente pertence. Sem isso, todos os 1070 orders apareciam em
+  // upcoming (caindo no fallback "standard_shipping").
+  if (getOrderPrimaryBucket(order) !== bucket) return null;
+
   const rawStatus = lower(getRaw(order).status || order.order_status);
   const ship = getShipment(order);
   const shipStatus = lower(ship.status);

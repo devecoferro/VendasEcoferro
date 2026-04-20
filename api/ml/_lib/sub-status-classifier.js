@@ -53,11 +53,75 @@ function isForCollection(order) {
   );
 }
 
+function parsePickupDate(order) {
+  const ship = getShipment(order);
+  const candidates = [
+    ship.pickup_date,
+    typeof ship.estimated_delivery_limit === "object"
+      ? (ship.estimated_delivery_limit || {}).date
+      : ship.estimated_delivery_limit,
+    getRaw(order).pickup_date,
+    (getRaw(order).shipping || {}).pickup_date,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "string") continue;
+    const date = new Date(candidate);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return null;
+}
+
+/**
+ * Determina o BUCKET PRIMARIO do order. Equivale a "em qual aba do ML
+ * Seller Center este order aparece". Sem isso, todos os orders cairiam
+ * em qualquer bucket pedido (ja que classifier sempre tinha fallback).
+ */
+export function getOrderPrimaryBucket(order) {
+  const rawStatus = lower(getRaw(order).status || order.order_status);
+  const ship = getShipment(order);
+  const shipStatus = lower(ship.status);
+  const isCancelled = rawStatus === "cancelled" || shipStatus === "cancelled";
+
+  if (
+    shipStatus === "delivered" ||
+    shipStatus === "not_delivered" ||
+    shipStatus === "returned"
+  ) {
+    return "finalized";
+  }
+  if (isCancelled) return "finalized";
+
+  if (
+    shipStatus === "shipped" ||
+    shipStatus === "in_transit" ||
+    shipStatus === "ready_for_pickup"
+  ) {
+    return "in_transit";
+  }
+
+  const date = parsePickupDate(order);
+  if (date) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const target = new Date(date);
+    target.setHours(0, 0, 0, 0);
+    if (target.getTime() <= today.getTime()) return "today";
+    return "upcoming";
+  }
+
+  return "upcoming";
+}
+
 /**
  * Retorna o sub-status PRIMARIO do order conforme o bucket.
- * null = nao se encaixa.
+ * null = nao se encaixa OU order nao pertence ao bucket pedido.
  */
 export function getOrderSubstatus(order, bucket) {
+  // Filtro de bucket primario — order so se classifica no bucket onde
+  // realmente pertence. Sem isso, todos os pedidos vazavam pra "upcoming"
+  // via fallback "standard_shipping".
+  if (getOrderPrimaryBucket(order) !== bucket) return null;
+
   const rawStatus = lower(getRaw(order).status || order.order_status);
   const ship = getShipment(order);
   const shipStatus = lower(ship.status);
