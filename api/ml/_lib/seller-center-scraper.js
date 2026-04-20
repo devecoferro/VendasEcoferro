@@ -521,16 +521,54 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
   page.on("response", responseHandler);
 
   let navError = null;
+  let clicksAttempted = [];
   try {
     // domcontentloaded — networkidle nao funciona porque ML mantem SSE
     // (event-request) aberto o tempo todo, rede nunca fica idle.
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     // Wait generoso pra dar tempo de a SPA hidratar e os XHRs
     // de dados serem chamados apos as configs dos microfrontends.
-    // Em modo diagnostico (waitMs maior), esperamos mais pra garantir
-    // que o /operations-dashboard e /packs/marketshops/list sejam
-    // chamados.
     await page.waitForTimeout(waitMs);
+
+    // ── PLANO C: simular interacao pra forcar disparo dos XHRs ──
+    // O JS do ML configura onRenderEvents em /operations-dashboard/tabs
+    // mas NAO dispara em browser headless (hidratacao incompleta ou
+    // anti-bot). Solucao: clicar explicitamente nos tabs pra acionar
+    // os events manualmente. O browser entao dispara os fetches reais
+    // com TODOS os headers/tokens corretos — e nosso interceptor
+    // captura.
+    clicksAttempted = await page.evaluate(async () => {
+      const attempts = [];
+      const labels = ["Envios de hoje", "Próximos dias", "Em trânsito", "Finalizadas"];
+      // Procura elementos clicaveis com esses textos
+      const candidates = document.querySelectorAll(
+        'button, a, [role="tab"], [role="button"], div[onclick], li'
+      );
+      for (const label of labels) {
+        for (const el of candidates) {
+          const text = (el.textContent || "").trim();
+          // Match exato ou label seguido de numero
+          if (text === label || text.startsWith(label + " ") || text.match(new RegExp(`^${label}\\s*\\d+$`))) {
+            try {
+              el.scrollIntoView({ block: "center" });
+              el.click();
+              attempts.push({ label, clicked: true, tagName: el.tagName });
+              // Espera 300ms entre clicks pra nao sobrepor
+              await new Promise((r) => setTimeout(r, 300));
+            } catch (err) {
+              attempts.push({ label, clicked: false, error: String(err) });
+            }
+            break;
+          }
+        }
+      }
+      return attempts;
+    });
+
+    // Espera mais 8s pra os clicks dispararem os XHRs
+    if (clicksAttempted.some((a) => a.clicked)) {
+      await page.waitForTimeout(8000);
+    }
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
   } finally {
@@ -704,6 +742,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     htmlSnippet,
     htmlMatches,
     directFetches,
+    clicksAttempted,
     navError,
     capture_stats: {
       total_seen: totalSeen,
@@ -713,6 +752,8 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
       ssr_payloads_found: ssrPayloads.length,
       html_keywords_found: htmlMatches ? Object.keys(htmlMatches).length : 0,
       direct_fetches: directFetches ? Object.keys(directFetches).length : 0,
+      clicks_attempted: clicksAttempted ? clicksAttempted.length : 0,
+      clicks_successful: clicksAttempted ? clicksAttempted.filter((a) => a.clicked).length : 0,
     },
   };
 }
@@ -843,6 +884,7 @@ export async function scrapeMlSellerCenterFull({
             htmlMatches: capture.htmlMatches,
             htmlSnippet: capture.htmlSnippet,
             directFetches: capture.directFetches,
+            clicksAttempted: capture.clicksAttempted,
             nav_error: capture.navError,
             capture_stats: capture.capture_stats,
           };

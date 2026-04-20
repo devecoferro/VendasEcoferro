@@ -64,6 +64,22 @@ function renderHtml(report, options) {
                </div>`
             : "";
 
+          // ── CLICKS ATTEMPTED (Plano C — simulacao de interacao) ──
+          const clicksAttempted = capture.clicksAttempted || [];
+          const clicksHtml = clicksAttempted.length > 0
+            ? `<div style="background:#fef3c7;border:2px solid #f59e0b;padding:10px;border-radius:6px;margin:10px 0">
+                 <strong>🖱️ CLICKS SIMULADOS (Plano C — forcar disparo de XHRs):</strong>
+                 <ul style="margin:8px 0 0 20px;padding:0">
+                   ${clicksAttempted.map((a) => {
+                     const icon = a.clicked ? "✅" : "❌";
+                     const err = a.error ? ` — <span style="color:#b91c1c">${escapeHtml(a.error)}</span>` : "";
+                     const tag = a.tagName ? ` <code>${escapeHtml(a.tagName.toLowerCase())}</code>` : "";
+                     return `<li>${icon} <strong>${escapeHtml(a.label)}</strong>${tag}${err}</li>`;
+                   }).join("")}
+                 </ul>
+               </div>`
+            : "";
+
           // ── DIRECT FETCHES (Opcao D — fetches autenticados) ──
           const directFetches = capture.directFetches || null;
           const directFetchesHtml = directFetches
@@ -131,6 +147,7 @@ function renderHtml(report, options) {
             ${statsHtml}
             ${chipsText}
             ${navErrHtml}
+            ${clicksHtml}
             ${directFetchesHtml}
             ${htmlMatchesHtml}
             ${ssrHtml}
