@@ -276,16 +276,51 @@ async function fetchBinary(url, accessToken, accept = "*/*") {
   };
 }
 
+// S2 do audit: allowlist de hosts pra prevenir SSRF. ML pode retornar
+// URL arbitrária em xml_location/danfe_location — sem filtro, um payload
+// malicioso faria o servidor VPS buscar http://127.0.0.1:... ou
+// http://169.254.169.254/... (metadata cloud).
+const ML_URL_ALLOWLIST = new Set([
+  "api.mercadolibre.com",
+  "api.mercadolibre.com.br",
+  "api.mercadolibre.com.ar",
+  "api.mercadolibre.com.mx",
+  "internal.mercadolibre.com",
+  "http2.mlstatic.com",
+  "http2.mlstatic.com.br",
+  "resources.mlstatic.com",
+]);
+
+function isAllowedMlHost(hostname) {
+  if (!hostname) return false;
+  const lower = hostname.toLowerCase();
+  if (ML_URL_ALLOWLIST.has(lower)) return true;
+  // Allow subdomains of mlstatic.com
+  if (lower.endsWith(".mlstatic.com")) return true;
+  return false;
+}
+
 function buildAbsoluteApiUrl(pathOrUrl) {
   const normalized = normalizeNullable(pathOrUrl);
   if (!normalized) return null;
   if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
-    if (normalized.includes("internal.mercadolibre.com")) {
-      return normalized
-        .replace("http://internal.mercadolibre.com", "https://api.mercadolibre.com")
-        .replace("https://internal.mercadolibre.com", "https://api.mercadolibre.com");
+    let parsed;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      return null;
     }
-    return normalized;
+    if (!isAllowedMlHost(parsed.hostname)) {
+      return null; // SSRF guard — host não é do ecossistema ML
+    }
+    if (parsed.hostname === "internal.mercadolibre.com") {
+      parsed.protocol = "https:";
+      parsed.hostname = "api.mercadolibre.com";
+      return parsed.toString();
+    }
+    // Força HTTPS (defesa contra downgrade)
+    parsed.protocol = "https:";
+    return parsed.toString();
   }
   if (normalized.startsWith("/")) {
     return `https://api.mercadolibre.com${normalized}`;
@@ -1051,17 +1086,29 @@ export async function generateNfe(orderId) {
     };
   }
 
-  const connection = await ensureValidAccessToken(context.connection);
-  const generateResponse = await fetchMercadoLivreJson(
-    `https://api.mercadolibre.com/users/${encodeURIComponent(context.seller_id)}/invoices/orders`,
-    connection.access_token,
-    {
-      method: "POST",
-      body: {
-        orders: context.pack_order_ids,
-      },
-    }
-  );
+  // R2 do audit: try/catch global pra garantir release do lock em exceções
+  // inesperadas (ensureValidAccessToken, fetch timeout, etc.). Sem isso,
+  // o registro com status='emitting' source='lock' ficaria preso pra sempre
+  // e o auto-emit (via filtro NOT EXISTS em 'emitting') nunca mais tentaria.
+  let connection;
+  let generateResponse;
+  try {
+    connection = await ensureValidAccessToken(context.connection);
+    generateResponse = await fetchMercadoLivreJson(
+      `https://api.mercadolibre.com/users/${encodeURIComponent(context.seller_id)}/invoices/orders`,
+      connection.access_token,
+      {
+        method: "POST",
+        body: {
+          orders: context.pack_order_ids,
+        },
+      }
+    );
+  } catch (lockedError) {
+    // Libera lock pra próxima tentativa poder rodar
+    releaseNfeEmissionLock(context.seller_id, context.order_id);
+    throw lockedError;
+  }
 
   if (!generateResponse.response.ok) {
     const errorCode =

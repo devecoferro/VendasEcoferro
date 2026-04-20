@@ -20,6 +20,8 @@ export function isTokenExpiringSoon(tokenExpiresAt) {
 // aguardam a mesma promise e recebem o novo token.
 const refreshInflight = new Map();
 
+const REFRESH_TIMEOUT_MS = 30_000;
+
 async function doRefreshToken(connectionId) {
   ensureMercadoLivreCredentials();
 
@@ -28,19 +30,30 @@ async function doRefreshToken(connectionId) {
     throw new Error("Conexao sem refresh token valido.");
   }
 
-  const response = await fetch("https://api.mercadolibre.com/oauth/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: ML_CLIENT_ID,
-      client_secret: ML_CLIENT_SECRET,
-      refresh_token: connection.refresh_token,
-    }).toString(),
-  });
+  // R3 do audit: timeout via AbortController. Sem isso, fetch travado
+  // (DNS/gateway) bloqueava o mutex inflight indefinidamente, travando
+  // TODAS as operações ML pra essa conexão até restart do container.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch("https://api.mercadolibre.com/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: ML_CLIENT_ID,
+        client_secret: ML_CLIENT_SECRET,
+        refresh_token: connection.refresh_token,
+      }).toString(),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const details = await response.text();

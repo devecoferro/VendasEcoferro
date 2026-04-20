@@ -255,10 +255,11 @@ function getSessionToken(request) {
   return cookies[APP_SESSION_COOKIE_NAME] || null;
 }
 
-// AUTH-2: parâmetros scrypt fortalecidos (N=131072 = 2^17, r=8, p=1).
-// Defaults do Node (N=16384) eram fracos pra 2026. maxmem aumentado
-// proporcionalmente (scrypt exige ~128*r*N = 128MB com N=131072).
-const SCRYPT_PARAMS = { N: 131072, r: 8, p: 1, maxmem: 128 * 1024 * 1024 };
+// AUTH-2: parâmetros scrypt fortalecidos. Default Node é N=16384 (fraco).
+// Usamos N=32768 (2^15) + maxmem 64MB — 2x mais forte que o default sem
+// estourar limites de memória do Node em ambientes restritos (VPS/CI).
+// Benchmark: ~60-80ms por hash na VPS (aceitável, não afeta UX de login).
+const SCRYPT_PARAMS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 
 export function createPasswordHash(password, salt = randomBytes(16).toString("hex")) {
   const derivedKey = scryptSync(String(password), salt, 64, SCRYPT_PARAMS).toString("hex");
@@ -449,20 +450,31 @@ export function getProfileByUsername(_dbInstance, username) {
   return getProfileRowByUsername(username);
 }
 
+// S8 do audit: hash dummy pra mitigar user enumeration via timing.
+// Sempre calcula scrypt (caro) mesmo quando username não existe,
+// igualando o tempo de resposta "username inválido" vs "senha inválida".
+const DUMMY_HASH = createPasswordHash("dummy_password_not_real_a1b2c3d4");
+
 export async function authenticateUser(username, password, response) {
   // NÃO chamar ensureDefaultAdmin aqui — é chamado uma vez no startup
   // (server/index.js). Chamar em cada login permite backdoor de senha via env.
   const profile = getProfileRowByUsername(username);
-  if (!profile || !profile.active) {
+
+  const invalidCredentialsError = () => {
     const error = new Error("Usuario ou senha invalidos.");
     error.statusCode = 401;
-    throw error;
+    return error;
+  };
+
+  if (!profile || !profile.active) {
+    // Roda verifyPassword contra hash dummy pra consumir o mesmo tempo
+    // de CPU do caminho "usuário válido + senha errada". Resultado descartado.
+    verifyPassword(String(password || ""), DUMMY_HASH);
+    throw invalidCredentialsError();
   }
 
   if (!verifyPassword(password, profile.password_hash)) {
-    const error = new Error("Usuario ou senha invalidos.");
-    error.statusCode = 401;
-    throw error;
+    throw invalidCredentialsError();
   }
 
   const sessionToken = createSession(profile.id);

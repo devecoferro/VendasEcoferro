@@ -231,7 +231,41 @@ async function fetchMercadoLivreJson(url, accessToken) {
   return { response, payload };
 }
 
+// S2 do audit: allowlist de hosts pra prevenir SSRF. Antes, qualquer URL
+// que viesse em payload do ML (ex: documents[].file.url) era fetched sem
+// validação — atacante podia redirecionar pra http://127.0.0.1:27123
+// (Obsidian), metadata da VPS, ou intranet.
+const DOC_URL_ALLOWLIST = new Set([
+  "api.mercadolibre.com",
+  "api.mercadolibre.com.br",
+  "api.mercadolibre.com.ar",
+  "api.mercadolibre.com.mx",
+  "http2.mlstatic.com",
+  "resources.mlstatic.com",
+]);
+
+function isAllowedDocHost(hostname) {
+  if (!hostname) return false;
+  const lower = hostname.toLowerCase();
+  if (DOC_URL_ALLOWLIST.has(lower)) return true;
+  if (lower.endsWith(".mlstatic.com")) return true;
+  return false;
+}
+
 async function fetchBinaryUrl(url, options = {}) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("URL de documento inválida.");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Protocolo não permitido para documento.");
+  }
+  if (!isAllowedDocHost(parsed.hostname)) {
+    throw new Error(`Host não permitido: ${parsed.hostname}`);
+  }
+
   const headers = {
     Accept: options.accept || "*/*",
   };

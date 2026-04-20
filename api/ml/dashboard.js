@@ -1697,16 +1697,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
-    // Pending: ML UI conta em "Envios de hoje" se SLA já é hoje ou passado,
-    // caso contrário em "Próximos dias". SLA armazenado no pack durante
-    // deduplicateOrdersToPacks.
+    // Pending: ML Seller Center mantém TODOS em "Próximos dias" (observado
+    // em múltiplas comparações). Alinhado com classifyCrossDockingOrder e
+    // classifyFulfillmentOrder após commit e8f7787. Fix R1 do audit: antes
+    // promovia pra today por SLA, inflando "Envios de hoje" em ~9 pedidos.
     for (const [, pack] of pendingPacks) {
-      const slaKey = pack.sla_iso ? getSlaDateKey(pack.sla_iso) : null;
-      if (slaKey && slaKey <= todayKey) {
-        addMlOrderIds("today", pack.ml_order_ids);
-      } else {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
-      }
+      addMlOrderIds("upcoming", pack.ml_order_ids);
     }
 
     // Ready to ship → classificação por substatus + data SLA.

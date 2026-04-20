@@ -129,6 +129,9 @@ function safeDependencyHealth() {
 
 const app = express();
 
+// S5 do audit: remove header X-Powered-By: Express (evita fingerprinting)
+app.disable("x-powered-by");
+
 // Traefik reverse proxy — necessário para express-rate-limit identificar IPs corretamente
 app.set("trust proxy", 1);
 

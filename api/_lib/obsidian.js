@@ -76,12 +76,38 @@ async function obsidianFetch(path, options = {}) {
 // ─── CRUD Operations ───────────────────────────────────────────────
 
 /**
+ * S3 do audit: sanitiza path do vault pra prevenir path traversal.
+ * Rejeita `..`, paths absolutos (começando com `/`), null bytes e
+ * caracteres perigosos. O plugin REST do Obsidian pode seguir `..`
+ * e escrever fora do vault.
+ */
+function sanitizeVaultPath(path) {
+  if (typeof path !== "string") {
+    throw new Error("Path do vault deve ser string.");
+  }
+  const trimmed = path.trim();
+  if (!trimmed || trimmed === "/") return "/";
+  // Remove leading "/"
+  const cleaned = trimmed.replace(/^\/+/, "");
+  // Rejeita traversal
+  if (cleaned.includes("..") || cleaned.includes("\0") || cleaned.includes("\r") || cleaned.includes("\n")) {
+    throw new Error("Path inválido (traversal ou caracteres perigosos).");
+  }
+  // Apenas caracteres seguros: letras, números, espaços, _, -, ., /
+  if (!/^[A-Za-z0-9 _\-./]+$/.test(cleaned)) {
+    throw new Error("Path contém caracteres não permitidos.");
+  }
+  return cleaned;
+}
+
+/**
  * Lista arquivos/pastas em um caminho do vault.
  * @param {string} [vaultPath="/"] - Caminho relativo no vault (ex: "Vendas/2026")
  * @returns {Promise<string[]>} Lista de nomes de arquivos e pastas
  */
 export async function listNotes(vaultPath = "/") {
-  const encodedPath = encodeURIComponent(vaultPath).replace(/%2F/g, "/");
+  const safe = sanitizeVaultPath(vaultPath);
+  const encodedPath = encodeURIComponent(safe).replace(/%2F/g, "/");
   const res = await obsidianFetch(`/vault/${encodedPath}`);
   const data = await res.json();
   return data.files || data;
@@ -93,7 +119,7 @@ export async function listNotes(vaultPath = "/") {
  * @returns {Promise<string>} Conteúdo da nota em Markdown
  */
 export async function readNote(notePath) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   const res = await obsidianFetch(`/vault/${encodedPath}`, {
     headers: { Accept: "text/markdown" },
   });
@@ -107,7 +133,7 @@ export async function readNote(notePath) {
  * @returns {Promise<boolean>} true se criou com sucesso
  */
 export async function createNote(notePath, content) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   await obsidianFetch(`/vault/${encodedPath}`, {
     method: "PUT",
     headers: { "Content-Type": "text/markdown" },
@@ -124,7 +150,7 @@ export async function createNote(notePath, content) {
  * @returns {Promise<boolean>} true se atualizou com sucesso
  */
 export async function appendToNote(notePath, content) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   await obsidianFetch(`/vault/${encodedPath}`, {
     method: "POST",
     headers: {
@@ -144,7 +170,7 @@ export async function appendToNote(notePath, content) {
  * @returns {Promise<boolean>}
  */
 export async function prependToNote(notePath, content) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   await obsidianFetch(`/vault/${encodedPath}`, {
     method: "POST",
     headers: {
@@ -163,7 +189,7 @@ export async function prependToNote(notePath, content) {
  * @returns {Promise<boolean>}
  */
 export async function deleteNote(notePath) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   await obsidianFetch(`/vault/${encodedPath}`, {
     method: "DELETE",
   });
@@ -212,7 +238,7 @@ export async function checkConnection() {
  * @returns {Promise<boolean>}
  */
 export async function openNote(notePath) {
-  const encodedPath = encodeURIComponent(notePath).replace(/%2F/g, "/");
+  const encodedPath = encodeURIComponent(sanitizeVaultPath(notePath)).replace(/%2F/g, "/");
   await obsidianFetch(`/open/${encodedPath}`, {
     method: "POST",
   });

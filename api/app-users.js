@@ -57,6 +57,20 @@ function listProfiles() {
     .filter(Boolean);
 }
 
+// S7 do audit: política mínima de senha. Antes aceitava qualquer string
+// truthy (inclusive "a").
+const MIN_PASSWORD_LENGTH = 8;
+
+function validatePasswordPolicy(password) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`Senha deve ter no minimo ${MIN_PASSWORD_LENGTH} caracteres.`);
+  }
+  // Pelo menos uma letra e um número — regra simples mas efetiva
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    throw new Error("Senha deve conter pelo menos 1 letra e 1 numero.");
+  }
+}
+
 function createUser(input) {
   const username = normalizeUsername(input.username);
   const role = sanitizeRole(input.role);
@@ -71,6 +85,8 @@ function createUser(input) {
   if (!password) {
     throw new Error("Informe uma senha para o novo usuario.");
   }
+
+  validatePasswordPolicy(password);
 
   if (getProfileByUsername(null, username)) {
     throw new Error("Ja existe um usuario com esse nome.");
@@ -136,6 +152,11 @@ function updateUser(actingUserId, input) {
     role,
     input.allowedLocations || currentProfile.allowed_locations
   );
+
+  // S7: valida política de senha se password foi informado
+  if (input.password) {
+    validatePasswordPolicy(String(input.password));
+  }
 
   if (role !== "admin" && allowedLocations.length === 0) {
     throw new Error("Selecione ao menos um local para este usuario.");
