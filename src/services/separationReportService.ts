@@ -90,8 +90,26 @@ export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (!url) return null;
   if (url.startsWith("data:")) return url;
+
+  // URLs externas (ex: mlstatic.com) passam pelo proxy backend pra
+  // contornar CORS — sem isso, jspdf nao consegue ler os bytes.
+  let fetchUrl = url;
   try {
-    const response = await fetch(url, { mode: "cors" });
+    const parsed = new URL(url, window.location.href);
+    if (
+      parsed.host &&
+      typeof window !== "undefined" &&
+      parsed.host !== window.location.host
+    ) {
+      fetchUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
+    }
+  } catch {
+    // ignora — usa url direto
+  }
+
+  try {
+    const response = await fetch(fetchUrl, { mode: "cors" });
+    if (!response.ok) return null;
     const blob = await response.blob();
     return await new Promise((resolve) => {
       const reader = new FileReader();

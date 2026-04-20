@@ -31,11 +31,40 @@ export interface StockReportFilters {
 
 // ─── Helpers de imagem (paralelo limitado, mesmo padrao do separation) ──
 
+/**
+ * Carrega imagem como data URL pra embedar no PDF.
+ *
+ * Hosts externos (mlstatic.com etc) podem retornar CORS restrito,
+ * fazendo o fetch direto falhar e a imagem aparecer como placeholder.
+ * Pra evitar isso, qualquer URL externa passa pelo /api/ml/image-proxy
+ * (proxy backend que faz o fetch server-side, sem CORS, com whitelist
+ * de hosts permitidos).
+ *
+ * URLs do proprio dominio (data: ou same-origin) carregam direto.
+ */
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (!url) return null;
   if (url.startsWith("data:")) return url;
+
+  // Detecta se e URL externa — se for, passa pelo proxy do backend.
+  // Browser-only: `window.location.host` so existe no client.
+  let fetchUrl = url;
   try {
-    const response = await fetch(url, { mode: "cors" });
+    const parsed = new URL(url, window.location.href);
+    if (
+      parsed.host &&
+      typeof window !== "undefined" &&
+      parsed.host !== window.location.host
+    ) {
+      fetchUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
+    }
+  } catch {
+    // URL invalida/relativa — usa direto, fetch decide
+  }
+
+  try {
+    const response = await fetch(fetchUrl, { mode: "cors" });
+    if (!response.ok) return null;
     const blob = await response.blob();
     return await new Promise((resolve) => {
       const reader = new FileReader();
@@ -112,26 +141,28 @@ const PAGE_H = 210;
 const MARGIN = 8;
 const USABLE_W = PAGE_W - MARGIN * 2;
 
-// Colunas (somam 100% do USABLE_W). Cabeca dimensionada pra maximizar
-// legibilidade do produto + manter dados criticos (vendas, disp, preco)
-// visiveis sem truncar.
+// Colunas (somam 100% do USABLE_W). Imagem aumentou de 16mm pra 22mm
+// pra ficar visivel — a imagem do produto e referencia critica pra
+// quem usa o relatorio na separacao fisica.
 const COLS = {
-  index: { x: 0, w: 8, label: "#", align: "right" as const },
-  image: { x: 8, w: 16, label: "", align: "center" as const },
-  product: { x: 24, w: 95, label: "PRODUTO / SKU", align: "left" as const },
-  location: { x: 119, w: 32, label: "LOCALIZAÇÃO", align: "center" as const },
-  available: { x: 151, w: 18, label: "DISP.", align: "center" as const },
-  sales: { x: 169, w: 28, label: "VENDAS", align: "center" as const },
-  lastSale: { x: 197, w: 22, label: "ÚLTIMA", align: "center" as const },
-  price: { x: 219, w: 28, label: "PREÇO", align: "right" as const },
-  status: { x: 247, w: 34, label: "STATUS", align: "center" as const },
+  index: { x: 0, w: 6, label: "#", align: "right" as const },
+  image: { x: 6, w: 22, label: "", align: "center" as const },
+  product: { x: 28, w: 89, label: "PRODUTO / SKU", align: "left" as const },
+  location: { x: 117, w: 30, label: "LOCALIZAÇÃO", align: "center" as const },
+  available: { x: 147, w: 18, label: "DISP.", align: "center" as const },
+  sales: { x: 165, w: 28, label: "VENDAS", align: "center" as const },
+  lastSale: { x: 193, w: 22, label: "ÚLTIMA", align: "center" as const },
+  price: { x: 215, w: 28, label: "PREÇO", align: "right" as const },
+  status: { x: 243, w: 38, label: "STATUS", align: "center" as const },
 };
 
 const HEADER_H = 24;
-const ROW_H = 16;
+// Altura da linha aumentada de 16mm pra 22mm pra acomodar imagem maior
+// (18mm) com margem de 2mm em cima/baixo.
+const ROW_H = 22;
 const COL_HEADER_H = 7;
 const ROWS_PER_PAGE = Math.floor((PAGE_H - MARGIN * 2 - HEADER_H - COL_HEADER_H - 12) / ROW_H);
-const IMG_SIZE = 12;
+const IMG_SIZE = 18;
 
 // ─── Geracao do PDF ─────────────────────────────────────────────────────
 
@@ -271,18 +302,22 @@ export async function exportStockListPdf(
       doc.line(MARGIN, rowY - 1, MARGIN + USABLE_W, rowY - 1);
     }
 
-    // ── # (indice global na lista filtrada) ──
+    // Centro vertical da linha (rowY + ROW_H/2 = rowY + 11). As posicoes
+    // Y abaixo foram recalculadas pra distribuir o conteudo nesse espaco
+    // de 22mm em vez dos 16mm anteriores.
+
+    // ── # (indice global na lista filtrada) — centralizado vertical ──
     doc.setFontSize(7);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(160, 160, 165);
     doc.text(
       String(i + 1),
       MARGIN + COLS.index.x + COLS.index.w - 1,
-      rowY + 5,
+      rowY + 12,
       { align: "right" }
     );
 
-    // ── Imagem ──
+    // ── Imagem (18mm centralizada na linha de 22mm = 2mm margem) ──
     const imgX = MARGIN + COLS.image.x + (COLS.image.w - IMG_SIZE) / 2;
     const imgY = rowY + (ROW_H - IMG_SIZE) / 2;
     const imageData = item.thumbnail ? imageCache.get(item.thumbnail) : null;
@@ -292,7 +327,7 @@ export async function exportStockListPdf(
       drawPlaceholder(doc, imgX, imgY, IMG_SIZE, IMG_SIZE);
     }
 
-    // ── Produto + SKU ──
+    // ── Produto + SKU + item_id (3 linhas distribuidas no Y) ──
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8.5);
     doc.setTextColor(30, 30, 30);
@@ -300,22 +335,23 @@ export async function exportStockListPdf(
       item.title || "(sem título)",
       COLS.product.w - 2
     );
-    doc.text(productLines.slice(0, 1), MARGIN + COLS.product.x + 1, rowY + 5);
+    doc.text(productLines.slice(0, 1), MARGIN + COLS.product.x + 1, rowY + 7);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
-    doc.setTextColor(110, 110, 115);
-    const skuText = item.sku ? `SKU: ${item.sku}` : "⚠ SEM SKU";
-    if (!item.sku) {
+    if (item.sku) {
+      doc.setTextColor(110, 110, 115);
+      doc.text(`SKU: ${item.sku}`, MARGIN + COLS.product.x + 1, rowY + 12);
+    } else {
       doc.setTextColor(200, 60, 60);
+      doc.text("⚠ SEM SKU", MARGIN + COLS.product.x + 1, rowY + 12);
     }
-    doc.text(skuText, MARGIN + COLS.product.x + 1, rowY + 9);
 
     doc.setTextColor(140, 140, 145);
     doc.setFontSize(6.5);
-    doc.text(item.item_id, MARGIN + COLS.product.x + 1, rowY + 12.5);
+    doc.text(item.item_id, MARGIN + COLS.product.x + 1, rowY + 17);
 
-    // ── Localizacao (CORREDOR · ESTANTE · NÍVEL) ──
+    // ── Localizacao (centralizada vertical) ──
     doc.setFontSize(7);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(80, 80, 90);
@@ -332,7 +368,7 @@ export async function exportStockListPdf(
       doc.text(
         locText,
         MARGIN + COLS.location.x + COLS.location.w / 2,
-        rowY + 7,
+        rowY + 12,
         { align: "center" }
       );
     } else {
@@ -340,56 +376,56 @@ export async function exportStockListPdf(
       doc.text(
         "—",
         MARGIN + COLS.location.x + COLS.location.w / 2,
-        rowY + 7,
+        rowY + 12,
         { align: "center" }
       );
     }
 
-    // ── Disponivel (com cor: vermelho se 0, laranja se baixo) ──
+    // ── Disponivel (numero grande centralizado) ──
     const isOut = item.available_quantity === 0;
     const isLow = item.available_quantity <= 3 && item.status === "active";
     if (isOut) doc.setTextColor(200, 50, 50);
     else if (isLow) doc.setTextColor(220, 130, 30);
     else doc.setTextColor(40, 40, 45);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
+    doc.setFontSize(11);
     doc.text(
       String(item.available_quantity),
       MARGIN + COLS.available.x + COLS.available.w / 2,
-      rowY + 8,
+      rowY + 13,
       { align: "center" }
     );
 
-    // ── Vendas no periodo (qty + qtd pedidos) ──
+    // ── Vendas no periodo (qty grande + qtd pedidos pequena) ──
     const salesQty = item.recent_sales_qty || 0;
     const salesOrders = item.recent_sales_orders || 0;
     if (salesQty > 0) {
       doc.setTextColor(220, 90, 30);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
+      doc.setFontSize(11);
       doc.text(
         `${salesQty}`,
         MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 6.5,
+        rowY + 11,
         { align: "center" }
       );
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(6.5);
+      doc.setFontSize(7);
       doc.setTextColor(140, 140, 145);
       doc.text(
         `${salesOrders} ped${salesOrders !== 1 ? "s" : ""}`,
         MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 11,
+        rowY + 16,
         { align: "center" }
       );
     } else {
       doc.setTextColor(180, 180, 185);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
+      doc.setFontSize(9);
       doc.text(
         "—",
         MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 7,
+        rowY + 12,
         { align: "center" }
       );
       if (item.sold_quantity > 0) {
@@ -398,7 +434,7 @@ export async function exportStockListPdf(
         doc.text(
           `tot:${item.sold_quantity}`,
           MARGIN + COLS.sales.x + COLS.sales.w / 2,
-          rowY + 11,
+          rowY + 17,
           { align: "center" }
         );
       }
@@ -406,23 +442,23 @@ export async function exportStockListPdf(
 
     // ── Ultima venda ──
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7.5);
+    doc.setFontSize(8);
     doc.setTextColor(item.last_sale_date ? 80 : 180, item.last_sale_date ? 80 : 180, item.last_sale_date ? 90 : 185);
     doc.text(
       item.last_sale_date ? formatDaysAgo(item.last_sale_date) : "—",
       MARGIN + COLS.lastSale.x + COLS.lastSale.w / 2,
-      rowY + 8,
+      rowY + 13,
       { align: "center" }
     );
 
     // ── Preco ──
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
+    doc.setFontSize(8.5);
     doc.setTextColor(40, 40, 45);
     doc.text(
       formatPrice(item.price),
       MARGIN + COLS.price.x + COLS.price.w - 1,
-      rowY + 8,
+      rowY + 13,
       { align: "right" }
     );
 
