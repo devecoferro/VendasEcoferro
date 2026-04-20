@@ -122,12 +122,14 @@ function hasTag(order: MLOrder, tag: string): boolean {
  * transito ou cancelados.
  */
 export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
-  const rawStatus = lower(getRaw(order).status || order.order_status);
+  const raw = getRaw(order);
+  const rawStatus = lower(raw.status || order.order_status);
   const ship = getShipment(order);
   const shipStatus = lower(ship.status);
   const isCancelled = rawStatus === "cancelled" || shipStatus === "cancelled";
+  const wasShipped = ["shipped", "delivered", "not_delivered"].includes(shipStatus);
 
-  // FINALIZADAS: ja entregue, devolvido, ou cancelado final
+  // FINALIZADAS — ja entregue, devolvido (status terminal de envio)
   if (
     shipStatus === "delivered" ||
     shipStatus === "not_delivered" ||
@@ -135,8 +137,24 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
   ) {
     return "finalized";
   }
+
+  // CANCELADOS — comportamento espelhado ao ML:
+  //   - Recentes (sem date_closed OU pickup_date == hoje) e SEM ter sido
+  //     expedido → Envios de hoje > Coleta > "Canceladas. Não enviar"
+  //   - Antigos OU ja expedidos → Finalizadas > Encerradas > "Canceladas"
+  // Ja vimos no ML que essa distincao existe — pedidos cancelados que
+  // ainda NAO sairam fisicamente aparecem em "Não enviar" pra alertar
+  // o operador a NAO embalar/enviar. Os com date_closed sao terminais.
   if (isCancelled) {
-    return "finalized"; // Encerradas > Canceladas
+    if (wasShipped) return "finalized";
+    const dateClosed = (raw as { date_closed?: string }).date_closed;
+    if (dateClosed) {
+      // Cancelado > 2 dias → Encerradas. Recente → today (alerta operador)
+      const closedAt = new Date(dateClosed);
+      const ageDays = (Date.now() - closedAt.getTime()) / (24 * 60 * 60 * 1000);
+      if (Number.isFinite(ageDays) && ageDays > 2) return "finalized";
+    }
+    return "today";
   }
 
   // EM TRANSITO: ja foi expedido ou aguardando retirada
@@ -477,6 +495,28 @@ export const SECTION_LABELS: Record<MLSection, string> = {
  * (consistente com o resto do MercadoLivrePage).
  */
 export type SubStatusTone = "warning" | "danger" | "info" | "success" | "neutral";
+
+/**
+ * Sub-status que tem icone de help (ⓘ) ao lado no ML Seller Center.
+ * Espelha exatamente o que aparece nos screenshots de referencia.
+ */
+export const SUBSTATUS_HAS_HELP: Partial<Record<MLSubStatus, boolean>> = {
+  invoice_pending: true,
+  in_processing: true,
+  standard_shipping: true,
+};
+
+/**
+ * Tooltip texto pros sub-status com ⓘ (igual ML Seller Center).
+ */
+export const SUBSTATUS_HELP_TEXT: Partial<Record<MLSubStatus, string>> = {
+  invoice_pending:
+    "Pedidos com NF-e pendente. Emita pra liberar a etiqueta de envio.",
+  in_processing:
+    "Pedidos sendo processados internamente (em packing, hub, depósito).",
+  standard_shipping:
+    "Pedidos por envio padrão (cross-docking, coleta agendada).",
+};
 
 export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   cancelled_no_send: "danger",

@@ -25,7 +25,18 @@ import {
   getOrderPickupDateLabel,
   SUBSTATUS_LABELS,
   SUBSTATUS_TONES,
+  SUBSTATUS_HAS_HELP,
+  SUBSTATUS_HELP_TEXT,
 } from "@/services/mlSubStatusClassifier";
+
+/**
+ * Formata contagens grandes igual ML Seller Center.
+ * Ex: 1234 → "+999", 99 → "99", 0 → "0"
+ */
+function formatCount(n: number): string {
+  if (n > 999) return "+999";
+  return String(n);
+}
 
 interface SubClassificationsBarProps {
   orders: MLOrder[];
@@ -230,7 +241,7 @@ export function SubClassificationsBar({
               </h3>
             </div>
             <span className="inline-flex h-6 min-w-[26px] shrink-0 items-center justify-center rounded-full bg-[#f1f1f4] px-2 text-[11px] font-semibold text-[#666]">
-              {card.total}
+              {formatCount(card.total)}
             </span>
           </div>
 
@@ -245,6 +256,8 @@ export function SubClassificationsBar({
                   : selectedPickupGroup === null);
               const isDanger = tone === "danger";
               const isMessages = s.substatus === ("with_unread_messages" as MLSubStatus);
+              const hasHelp = SUBSTATUS_HAS_HELP[s.substatus] === true;
+              const helpText = SUBSTATUS_HELP_TEXT[s.substatus];
 
               return (
                 <button
@@ -270,17 +283,26 @@ export function SubClassificationsBar({
                     <span className="truncate">
                       {SUBSTATUS_LABELS[s.substatus]}
                     </span>
+                    {/* ⓘ helpcircle pros sub-status que tem tooltip no ML
+                        (NF-e pra gerenciar, Em processamento, Por envio padrao) */}
+                    {hasHelp && (
+                      <HelpCircle
+                        className="h-3.5 w-3.5 text-[#3483fa]"
+                        aria-label={helpText}
+                      />
+                    )}
+                    {/* Icone mensagem azul (igual ML) pros sub-status with messages */}
                     {isMessages && (
                       <MessageSquare className="h-3.5 w-3.5 text-[#3483fa]" />
                     )}
                   </span>
                   {isDanger ? (
                     <span className="inline-flex h-5 min-w-[22px] shrink-0 items-center justify-center rounded-full bg-[#fde7eb] px-1.5 text-[11px] font-semibold text-[#d63030]">
-                      {s.count}
+                      {formatCount(s.count)}
                     </span>
                   ) : (
                     <span className="shrink-0 text-[12px] font-medium text-[#666]">
-                      {s.count}
+                      {formatCount(s.count)}
                     </span>
                   )}
                 </button>

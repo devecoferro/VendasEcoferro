@@ -77,10 +77,12 @@ function parsePickupDate(order) {
  * em qualquer bucket pedido (ja que classifier sempre tinha fallback).
  */
 export function getOrderPrimaryBucket(order) {
-  const rawStatus = lower(getRaw(order).status || order.order_status);
+  const raw = getRaw(order);
+  const rawStatus = lower(raw.status || order.order_status);
   const ship = getShipment(order);
   const shipStatus = lower(ship.status);
   const isCancelled = rawStatus === "cancelled" || shipStatus === "cancelled";
+  const wasShipped = ["shipped", "delivered", "not_delivered"].includes(shipStatus);
 
   if (
     shipStatus === "delivered" ||
@@ -89,7 +91,20 @@ export function getOrderPrimaryBucket(order) {
   ) {
     return "finalized";
   }
-  if (isCancelled) return "finalized";
+
+  // Cancelados: recentes (nao expedidos) → today | antigos → finalized
+  // Espelha comportamento do ML que mostra "Canceladas. Não enviar"
+  // em Envios de hoje pra alertar o operador antes do envio fisico.
+  if (isCancelled) {
+    if (wasShipped) return "finalized";
+    const dateClosed = raw.date_closed;
+    if (dateClosed) {
+      const closedAt = new Date(dateClosed);
+      const ageDays = (Date.now() - closedAt.getTime()) / (24 * 60 * 60 * 1000);
+      if (Number.isFinite(ageDays) && ageDays > 2) return "finalized";
+    }
+    return "today";
+  }
 
   if (
     shipStatus === "shipped" ||
