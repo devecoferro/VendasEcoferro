@@ -9,6 +9,14 @@ export interface ProcessingResult {
   rawText: string;
   confidence: Record<string, "high" | "medium" | "low" | "empty">;
   method: "pdf-text" | "ocr" | "mercado-livre";
+  /**
+   * ml_order_id(s) originais deste ProcessingResult. Preenchido quando a
+   * origem e Mercado Livre (banner -> review). Permite a ReviewPage marcar
+   * as etiquetas como impressas via POST /api/ml/labels/mark-printed apos
+   * o download do PDF. Para pedidos em pack, contem todos os order_ids
+   * unificados na mesma linha de review.
+   */
+  mlOrderIds?: string[];
 }
 
 /**

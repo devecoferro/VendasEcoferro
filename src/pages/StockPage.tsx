@@ -10,13 +10,49 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getMLConnectionStatus, getMLStock, syncMLStock, syncStockToWebsite, updateMLStockItem, deleteMLStockItem, type MLStockItem } from "@/services/mercadoLivreService";
-import { AlertCircle, ExternalLink, Filter, Globe, Loader2, Package, Pencil, RefreshCw, Search, Trash2, TrendingDown, X, MapPin, AlertTriangle } from "lucide-react";
+import {
+  getMLConnectionStatus,
+  getMLStock,
+  syncMLStock,
+  syncStockToWebsite,
+  updateMLStockItem,
+  deleteMLStockItem,
+  type MLStockItem,
+  type StockSalesPeriod,
+} from "@/services/mercadoLivreService";
+import {
+  AlertCircle,
+  ExternalLink,
+  Filter,
+  Flame,
+  Globe,
+  Loader2,
+  Package,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  X,
+  MapPin,
+  AlertTriangle,
+} from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
-type SortKey = "available_quantity" | "sold_quantity" | "title" | "price";
+type SortKey =
+  | "available_quantity"
+  | "sold_quantity"
+  | "title"
+  | "price"
+  // Novo: ordena pelos produtos que mais venderam na janela selecionada.
+  // Permite o operador priorizar reposicao de estoque dos itens "quentes".
+  | "recent_sales_qty"
+  // Novo: ordena pela data da venda mais recente, util para identificar
+  // produtos que ainda estao vendendo vs produtos parados.
+  | "last_sale_date";
 type SortDir = "asc" | "desc";
 type StatusFilter = "all" | "active" | "paused" | "closed";
 
@@ -38,6 +74,13 @@ export default function StockPage() {
   const [sortKey, setSortKey] = useState<SortKey>("available_quantity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [onlyMissingSku, setOnlyMissingSku] = useState(false);
+  // Janela de "vendas recentes" para o cruzamento ml_stock x ml_orders.
+  // Default 30d = visao de demanda do mes (evita janela muito curta com
+  // ruido e muito longa que nao reflete demanda atual).
+  const [salesPeriod, setSalesPeriod] = useState<StockSalesPeriod>("30d");
+  // Filtro "so itens com venda no periodo": ajuda a identificar rapido
+  // o que realmente esta saindo, escondendo anuncios parados.
+  const [onlyWithRecentSales, setOnlyWithRecentSales] = useState(false);
   const [editing, setEditing] = useState<MLStockItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<MLStockItem | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -52,11 +95,11 @@ export default function StockPage() {
   }, []);
 
   const loadStock = useCallback(
-    async (id: string) => {
+    async (id: string, period: StockSalesPeriod) => {
       setLoading(true);
       setError(null);
       try {
-        const result = await getMLStock(id);
+        const result = await getMLStock(id, { salesPeriod: period });
         setItems(result.items);
         setStale(result.stale);
       } catch (e) {
@@ -68,9 +111,12 @@ export default function StockPage() {
     []
   );
 
+  // Recarrega estoque sempre que conexao ou periodo de vendas mudar.
+  // O periodo e processado no backend (cruzamento com ml_orders), entao
+  // cada troca precisa de novo request.
   useEffect(() => {
-    if (connectionId) loadStock(connectionId);
-  }, [connectionId, loadStock]);
+    if (connectionId) loadStock(connectionId, salesPeriod);
+  }, [connectionId, loadStock, salesPeriod]);
 
   const handleSync = useCallback(async () => {
     if (!connectionId) return;
@@ -78,13 +124,13 @@ export default function StockPage() {
     setError(null);
     try {
       await syncMLStock(connectionId);
-      await loadStock(connectionId);
+      await loadStock(connectionId, salesPeriod);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao sincronizar estoque.");
     } finally {
       setSyncing(false);
     }
-  }, [connectionId, loadStock]);
+  }, [connectionId, loadStock, salesPeriod]);
 
   const handlePublishToSite = useCallback(async () => {
     setPublishingToSite(true);
@@ -148,14 +194,22 @@ export default function StockPage() {
     }
   }, [filterOptions.years, yearFilter]);
 
-  const hasActiveFilters = brandFilter !== "all" || modelFilter !== "all" || yearFilter !== "all" || statusFilter !== "all";
-  const activeFilterCount = [brandFilter, modelFilter, yearFilter, statusFilter].filter(f => f !== "all").length;
+  const hasActiveFilters =
+    brandFilter !== "all" ||
+    modelFilter !== "all" ||
+    yearFilter !== "all" ||
+    statusFilter !== "all" ||
+    onlyWithRecentSales;
+  const activeFilterCount =
+    [brandFilter, modelFilter, yearFilter, statusFilter].filter((f) => f !== "all").length +
+    (onlyWithRecentSales ? 1 : 0);
 
   const clearFilters = () => {
     setBrandFilter("all");
     setModelFilter("all");
     setYearFilter("all");
     setStatusFilter("all");
+    setOnlyWithRecentSales(false);
   };
 
   const filtered = useMemo(() => {
@@ -193,9 +247,35 @@ export default function StockPage() {
       result = result.filter((item) => !item.sku || item.sku.trim() === "");
     }
 
+    // Filtro: apenas produtos com venda no periodo selecionado. Util pra
+    // focar no que esta efetivamente girando — esconde anuncios parados.
+    if (onlyWithRecentSales) {
+      result = result.filter((item) => (item.recent_sales_qty || 0) > 0);
+    }
+
     return [...result].sort((a, b) => {
-      let va: string | number | null = a[sortKey] ?? null;
-      let vb: string | number | null = b[sortKey] ?? null;
+      // Sort por vendas recentes — numero, maior desc por padrao.
+      // Items sem venda (0) vao pro fundo quando desc (comportamento
+      // esperado: "mais vendidos no topo").
+      if (sortKey === "recent_sales_qty") {
+        const va = a.recent_sales_qty ?? 0;
+        const vb = b.recent_sales_qty ?? 0;
+        return sortDir === "asc" ? va - vb : vb - va;
+      }
+      // Sort por data da ultima venda — items sem venda vao sempre pro
+      // fim (null e "pior" que qualquer data), independente da direcao
+      // ser asc/desc no que tem venda.
+      if (sortKey === "last_sale_date") {
+        const va = a.last_sale_date || "";
+        const vb = b.last_sale_date || "";
+        if (!va && !vb) return 0;
+        if (!va) return 1;
+        if (!vb) return -1;
+        return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      }
+
+      const va: string | number | null = a[sortKey] ?? null;
+      const vb: string | number | null = b[sortKey] ?? null;
       if (va === null) return 1;
       if (vb === null) return -1;
       if (typeof va === "string" && typeof vb === "string") {
@@ -205,7 +285,7 @@ export default function StockPage() {
         ? (va as number) - (vb as number)
         : (vb as number) - (va as number);
     });
-  }, [items, search, brandFilter, modelFilter, yearFilter, statusFilter, onlyMissingSku, sortKey, sortDir]);
+  }, [items, search, brandFilter, modelFilter, yearFilter, statusFilter, onlyMissingSku, onlyWithRecentSales, sortKey, sortDir]);
 
   const missingSkuCount = useMemo(
     () => items.filter((i) => !i.sku || i.sku.trim() === "").length,
@@ -258,6 +338,84 @@ export default function StockPage() {
   }, [items]);
 
   const lowStockCount = stockStats.lowStock;
+
+  // Label humano do periodo, usado em tooltips e no cabecalho da coluna.
+  // Mantem uma fonte unica — trocar o enum e o label aqui e basta.
+  const salesPeriodLabel = useMemo(() => {
+    switch (salesPeriod) {
+      case "7d":
+        return "nos últimos 7 dias";
+      case "30d":
+        return "nos últimos 30 dias";
+      case "90d":
+        return "nos últimos 90 dias";
+      case "all":
+        return "em todo o período";
+    }
+  }, [salesPeriod]);
+
+  const salesPeriodShortLabel = useMemo(() => {
+    switch (salesPeriod) {
+      case "7d":
+        return "7d";
+      case "30d":
+        return "30d";
+      case "90d":
+        return "90d";
+      case "all":
+        return "Total";
+    }
+  }, [salesPeriod]);
+
+  // Formata "ha 3 dias" / "ontem" / "hoje" para exibir em vez de data crua.
+  // Usa dia inteiro em America/Sao_Paulo porque e como o operador pensa.
+  function formatDaysAgo(isoDate: string | null | undefined): string {
+    if (!isoDate) return "—";
+    const date = new Date(isoDate);
+    if (Number.isNaN(date.getTime())) return "—";
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+    if (diffDays < 0) return "hoje";
+    if (diffDays === 0) return "hoje";
+    if (diffDays === 1) return "ontem";
+    if (diffDays < 30) return `${diffDays} dias`;
+    if (diffDays < 365) {
+      const months = Math.floor(diffDays / 30);
+      return `${months} ${months === 1 ? "mês" : "meses"}`;
+    }
+    const years = Math.floor(diffDays / 365);
+    return `${years} ${years === 1 ? "ano" : "anos"}`;
+  }
+
+  // Estatisticas do periodo selecionado — alimenta um stat card dedicado
+  // que mostra quantos produtos realmente vendem vs quantos estao parados.
+  const salesStats = useMemo(() => {
+    let withSales = 0;
+    let totalQty = 0;
+    let totalOrders = 0;
+    let topSeller: MLStockItem | null = null;
+    let topSellerQty = 0;
+    for (const item of items) {
+      const qty = item.recent_sales_qty || 0;
+      const orders = item.recent_sales_orders || 0;
+      if (qty > 0) withSales++;
+      totalQty += qty;
+      totalOrders += orders;
+      if (qty > topSellerQty) {
+        topSellerQty = qty;
+        topSeller = item;
+      }
+    }
+    return {
+      withSales,
+      withoutSales: items.length - withSales,
+      totalQty,
+      totalOrders,
+      topSeller,
+      topSellerQty,
+    };
+  }, [items]);
 
   const SortBtn = ({ label, col }: { label: string; col: SortKey }) => (
     <button
@@ -343,7 +501,7 @@ export default function StockPage() {
 
         {/* Cards de resumo */}
         {items.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
             <button
               type="button"
               onClick={() => { setStatusFilter(statusFilter === "active" ? "all" : "active"); setShowFilters(true); }}
@@ -385,6 +543,55 @@ export default function StockPage() {
                 {missingSkuCount}
               </p>
             </button>
+            {/* Card clicavel: mostra quantos produtos tiveram venda no
+                periodo e ao clicar ordena por mais vendidos + ativa
+                "Só vendidos". Atalho do dia a dia pra ver "o que esta
+                saindo mais agora". */}
+            <button
+              type="button"
+              onClick={() => {
+                setOnlyWithRecentSales(true);
+                setSortKey("recent_sales_qty");
+                setSortDir("desc");
+              }}
+              className={`rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 ${
+                onlyWithRecentSales ? "border-orange-500 bg-orange-500/5" : ""
+              }`}
+              title={`Ordenar por produtos mais vendidos ${salesPeriodLabel}`}
+            >
+              <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                <Flame className="h-3 w-3 text-orange-500" />
+                Vendidos {salesPeriodShortLabel}
+              </p>
+              <p className="text-2xl font-bold text-orange-500">{salesStats.withSales}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {salesStats.totalQty} un em {salesStats.totalOrders} pedido
+                {salesStats.totalOrders !== 1 ? "s" : ""}
+              </p>
+            </button>
+          </div>
+        )}
+
+        {/* Top seller destacado — quando ha vendas no periodo, mostra o
+            produto mais quente pra o operador saber rapidinho o que
+            repor em primeiro. */}
+        {salesStats.topSeller && salesStats.topSellerQty > 0 && (
+          <div className="rounded-lg border border-orange-200 bg-gradient-to-r from-orange-50 to-yellow-50 px-4 py-2.5 flex items-center gap-3">
+            <div className="flex-shrink-0 rounded-full bg-orange-500/10 p-2">
+              <Flame className="h-4 w-4 text-orange-500" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold text-orange-700 uppercase tracking-wide">
+                Mais vendido {salesPeriodLabel}
+              </p>
+              <p className="text-sm font-semibold truncate">
+                {salesStats.topSeller.title || salesStats.topSeller.sku || salesStats.topSeller.item_id}
+              </p>
+            </div>
+            <div className="text-right flex-shrink-0">
+              <p className="text-lg font-bold text-orange-600">{salesStats.topSellerQty}</p>
+              <p className="text-[10px] text-muted-foreground">unidades</p>
+            </div>
           </div>
         )}
 
@@ -408,6 +615,25 @@ export default function StockPage() {
               />
             </div>
 
+            {/* Janela de vendas recentes — cruza ml_stock com ml_orders no
+                backend pra preencher recent_sales_qty/last_sale_date de
+                cada item. Trocar o period recarrega a lista porque os
+                agregados sao calculados no SQL. */}
+            <div className="hidden sm:flex items-center gap-1.5">
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <Select value={salesPeriod} onValueChange={(v) => setSalesPeriod(v as StockSalesPeriod)}>
+                <SelectTrigger className="h-10 w-[170px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7d">Vendas últimos 7 dias</SelectItem>
+                  <SelectItem value="30d">Vendas últimos 30 dias</SelectItem>
+                  <SelectItem value="90d">Vendas últimos 90 dias</SelectItem>
+                  <SelectItem value="all">Vendas totais</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             <Button
               variant={showFilters ? "default" : "outline"}
               size="sm"
@@ -421,6 +647,21 @@ export default function StockPage() {
                   {activeFilterCount}
                 </Badge>
               )}
+            </Button>
+
+            {/* Atalho: so com venda no periodo. Muito pedido pelo operador
+                que quer ver rapidamente o que esta girando sem precisar
+                scrollar por anuncios parados. */}
+            <Button
+              type="button"
+              variant={onlyWithRecentSales ? "default" : "outline"}
+              size="sm"
+              onClick={() => setOnlyWithRecentSales((prev) => !prev)}
+              className={`h-10 px-3 gap-1.5 ${onlyWithRecentSales ? "bg-orange-500 hover:bg-orange-600 text-white" : ""}`}
+              title={`Mostrar somente produtos que tiveram venda ${salesPeriodLabel}`}
+            >
+              <Flame className="h-4 w-4" />
+              <span className="hidden sm:inline">Só vendidos</span>
             </Button>
 
             {hasActiveFilters && (
@@ -548,6 +789,19 @@ export default function StockPage() {
                       </button>
                     </Badge>
                   )}
+                  {onlyWithRecentSales && (
+                    <Badge className="gap-1 pr-1 bg-orange-500 hover:bg-orange-600">
+                      <Flame className="h-3 w-3" />
+                      Vendidos {salesPeriodShortLabel}
+                      <button
+                        type="button"
+                        onClick={() => setOnlyWithRecentSales(false)}
+                        className="ml-0.5 rounded-full hover:bg-orange-700 p-0.5"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  )}
                 </div>
               )}
             </div>
@@ -572,14 +826,14 @@ export default function StockPage() {
           <div className="rounded-lg border">
             <table className="w-full text-sm table-fixed">
               <colgroup>
-                <col className="w-[36%]" />
-                <col className="w-[12%]" />
-                <col className="w-[14%]" />
-                <col className="w-[9%]" />
-                <col className="w-[8%] hidden md:table-column" />
-                <col className="w-[10%] hidden lg:table-column" />
-                <col className="w-[8%] hidden md:table-column" />
+                <col className="w-[32%]" />
                 <col className="w-[11%]" />
+                <col className="w-[12%]" />
+                <col className="w-[8%]" />
+                <col className="w-[14%]" />
+                <col className="w-[9%] hidden lg:table-column" />
+                <col className="w-[7%] hidden md:table-column" />
+                <col className="w-[10%]" />
               </colgroup>
               <thead className="border-b bg-muted/40">
                 <tr>
@@ -593,8 +847,26 @@ export default function StockPage() {
                   <th className="px-2 py-3 text-right text-xs">
                     <SortBtn label="Disp." col="available_quantity" />
                   </th>
-                  <th className="px-2 py-3 text-right text-xs hidden md:table-cell">
-                    <SortBtn label="Vend." col="sold_quantity" />
+                  {/* Coluna unificada de vendas: numero de unidades no
+                      periodo + "ha X dias" da ultima venda. Substitui a
+                      coluna antiga "Vend." (sold_quantity cumulativo)
+                      que era pouco util no dia a dia. Clique nos dois
+                      sorts disponiveis separadamente. */}
+                  <th
+                    className="px-2 py-3 text-right text-xs"
+                    title={`Vendas ${salesPeriodLabel}`}
+                  >
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="inline-flex items-center gap-1">
+                        <Flame className="h-3 w-3 text-orange-500" />
+                        <SortBtn
+                          label={`Vendas ${salesPeriodShortLabel}`}
+                          col="recent_sales_qty"
+                        />
+                      </div>
+                      <span className="text-muted-foreground/50">·</span>
+                      <SortBtn label="Última" col="last_sale_date" />
+                    </div>
                   </th>
                   <th className="px-2 py-3 text-right text-xs hidden lg:table-cell">
                     <SortBtn label="Preço" col="price" />
@@ -673,8 +945,43 @@ export default function StockPage() {
                           )}
                         </span>
                       </td>
-                      <td className="px-2 py-2 text-right text-muted-foreground text-xs hidden md:table-cell">
-                        {item.sold_quantity}
+                      {/* Vendas recentes: unidades em destaque + "ha X dias".
+                          Quando nao vendeu no periodo, mostra "—" discreto e
+                          o total cumulativo em cinza (pra dar contexto). */}
+                      <td className="px-2 py-2 text-right text-xs">
+                        {(item.recent_sales_qty || 0) > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <div className="inline-flex items-center gap-1 font-bold text-orange-600">
+                              <Flame className="h-3 w-3" />
+                              {item.recent_sales_qty}
+                              <span className="text-[10px] font-normal text-muted-foreground">
+                                un
+                              </span>
+                            </div>
+                            <span
+                              className="text-[10px] text-muted-foreground"
+                              title={
+                                item.last_sale_date
+                                  ? new Date(item.last_sale_date).toLocaleString("pt-BR")
+                                  : undefined
+                              }
+                            >
+                              há {formatDaysAgo(item.last_sale_date)}
+                              {(item.recent_sales_orders || 0) > 0
+                                ? ` · ${item.recent_sales_orders} ped.`
+                                : ""}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className="text-muted-foreground">—</span>
+                            <span className="text-[10px] text-muted-foreground/60">
+                              {item.sold_quantity > 0
+                                ? `total: ${item.sold_quantity}`
+                                : "sem venda"}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-2 py-2 text-right text-xs hidden lg:table-cell">
                         {item.price != null

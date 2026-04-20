@@ -20,7 +20,11 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
-import { getStockLocations, getMLConnectionStatus } from "@/services/mercadoLivreService";
+import {
+  getStockLocations,
+  getMLConnectionStatus,
+  markLabelsAsPrinted,
+} from "@/services/mercadoLivreService";
 import {
   Dialog,
   DialogContent,
@@ -120,6 +124,29 @@ export default function ReviewPage() {
     }
   }
 
+  /**
+   * Marca os ProcessingResults dados como "etiqueta impressa" no backend.
+   * Silencioso se nao for venda ML (mlOrderIds ausente). Erros sao logados
+   * mas nao atrapalham o fluxo de download do PDF — a marcacao e um
+   * side-effect: se falhar, o usuario ainda pode marcar manualmente depois.
+   */
+  async function markResultsAsPrinted(resultIndexes: number[]): Promise<void> {
+    const allOrderIds: string[] = [];
+    for (const idx of resultIndexes) {
+      const result = results[idx];
+      if (Array.isArray(result?.mlOrderIds)) {
+        allOrderIds.push(...result.mlOrderIds);
+      }
+    }
+    const unique = Array.from(new Set(allOrderIds.filter(Boolean)));
+    if (unique.length === 0) return;
+    try {
+      await markLabelsAsPrinted(unique);
+    } catch (error) {
+      console.warn("[review] Falha ao marcar etiquetas como impressas:", error);
+    }
+  }
+
   const handleExport = async () => {
     if (!currentSale) return;
 
@@ -127,6 +154,8 @@ export default function ReviewPage() {
     try {
       const [enriched] = await enrichSalesWithLocations([currentSale]);
       await exportSalePdf(enriched);
+      // Marca apenas o pedido da tela atual como impresso
+      await markResultsAsPrinted([currentIndex]);
       toast.success("PDF gerado com sucesso!", {
         description: `Etiqueta da venda ${currentSale.saleNumber || "(sem numero)"} baixada.`,
       });
@@ -142,6 +171,8 @@ export default function ReviewPage() {
     try {
       const enriched = await enrichSalesWithLocations(sales);
       await exportBatchPdf(enriched);
+      // Marca TODOS os pedidos do lote como impressos
+      await markResultsAsPrinted(sales.map((_, i) => i));
       toast.success(`${sales.length} etiquetas exportadas em lote!`);
     } catch {
       toast.error("Erro ao gerar PDF em lote");

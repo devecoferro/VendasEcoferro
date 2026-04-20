@@ -127,6 +127,10 @@ function mapOrder(row) {
     order_status: row.order_status,
     shipping_id: row.shipping_id,
     raw_data: parseJsonSafely(row.raw_data, {}),
+    // Timestamp ISO-8601 UTC da ultima vez que a etiqueta deste pedido
+    // foi impressa (null = nunca impressa). Usado pelos filtros
+    // "Com etiqueta" / "Sem etiqueta" da MercadoLivrePage.
+    label_printed_at: row.label_printed_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -748,4 +752,49 @@ export function upsertOrders(records) {
 
   transaction(records);
   return records.length;
+}
+
+/**
+ * Marca (ou desmarca) um conjunto de pedidos como "etiqueta impressa".
+ *
+ * Usa `order_id` (ID externo do ML, nao o PK composto) porque a UI trabalha
+ * com order_id — um pedido multi-item tem varias linhas na ml_orders com
+ * o mesmo order_id, e todas devem ficar marcadas em bloco para o filtro
+ * da MercadoLivrePage funcionar corretamente.
+ *
+ * @param {string[]} orderIds lista de order_ids a marcar
+ * @param {string|null} printedAt ISO-8601 ou null (para desmarcar)
+ * @returns {number} quantidade de linhas afetadas
+ */
+export function setOrdersLabelPrinted(orderIds, printedAt) {
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    return 0;
+  }
+
+  const uniqueOrderIds = [
+    ...new Set(
+      orderIds
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+    ),
+  ];
+
+  if (uniqueOrderIds.length === 0) {
+    return 0;
+  }
+
+  const placeholders = uniqueOrderIds.map(() => "?").join(", ");
+  const stmt = db.prepare(
+    `UPDATE ml_orders
+     SET label_printed_at = ?,
+         updated_at = ?
+     WHERE order_id IN (${placeholders})`
+  );
+
+  const result = stmt.run(
+    printedAt || null,
+    nowIso(),
+    ...uniqueOrderIds
+  );
+  return Number(result.changes || 0);
 }

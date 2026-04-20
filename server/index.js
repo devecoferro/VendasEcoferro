@@ -59,6 +59,7 @@ import nfeSyncMercadoLivreHandler from "../api/nfe/sync-mercadolivre.js";
 import mlStockHandler from "../api/ml/stock.js";
 import mlPickingListHandler from "../api/ml/picking-list.js";
 import mlConferenciaHandler from "../api/ml/conferencia.js";
+import mlLabelsHandler from "../api/ml/labels.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
@@ -236,6 +237,9 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(req, res));
+// Marcacao de etiquetas impressas (ReviewPage chama apos baixar PDF)
+app.post("/api/ml/labels/mark-printed", apiLimiter, (req, res) => mlLabelsHandler(req, res));
+app.post("/api/ml/labels/mark-unprinted", apiLimiter, (req, res) => mlLabelsHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
@@ -811,6 +815,54 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     setTimeout(async () => {
       try { await runAutoEmitNfe(); } catch { /* logged */ }
     }, 2 * 60 * 1000);
+
+    // ─── ML UI Scraper (Seller Center headless) ─────────────────────
+    // A cada 5min, captura os chips diretamente da UI do ML Seller Center
+    // via Playwright headless. Requer storage state configurado em
+    // $DATA_DIR/playwright/ml-seller-center-state.json (setup manual 1x).
+    // Se state não existe ou expirou, loga warning e não bloqueia nada.
+    let mlScraperRunning = false;
+    const ML_SCRAPER_INTERVAL_MS = 5 * 60 * 1000;
+    log.info(`ML UI scraper iniciado (intervalo: ${ML_SCRAPER_INTERVAL_MS / 60000}min)`);
+    const runScraperOnce = async () => {
+      if (mlScraperRunning) return;
+      mlScraperRunning = true;
+      try {
+        const { scrapeMlSellerCenter, isScraperConfigured } = await import(
+          "../api/ml/_lib/seller-center-scraper.js"
+        );
+        if (!isScraperConfigured()) {
+          return; // setup inicial não feito; skip silencioso
+        }
+        const result = await scrapeMlSellerCenter();
+        if (result.ok) {
+          log.info(
+            `ML UI chips capturados: hoje=${result.counts.today} próximos=${result.counts.upcoming} trânsito=${result.counts.in_transit} finalizadas=${result.counts.finalized}`
+          );
+          // Invalida cache do dashboard pra refletir novos chips na próxima leitura
+          try {
+            const { invalidateDashboardCache } = await import("../api/ml/dashboard.js");
+            invalidateDashboardCache();
+          } catch {
+            // ignore
+          }
+        } else if (result.error === "session_expired") {
+          log.warn("ML UI scraper: session expirada — admin precisa re-login");
+        } else if (result.error !== "no_state" && result.error !== "playwright_missing") {
+          log.warn(`ML UI scraper falhou: ${result.error} - ${result.message}`);
+        }
+      } catch (err) {
+        log.error(
+          "ML UI scraper crashou",
+          err instanceof Error ? err : new Error(String(err))
+        );
+      } finally {
+        mlScraperRunning = false;
+      }
+    };
+    setInterval(runScraperOnce, ML_SCRAPER_INTERVAL_MS);
+    // Primeira execução 90s após boot
+    setTimeout(runScraperOnce, 90_000);
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)

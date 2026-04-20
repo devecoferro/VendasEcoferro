@@ -18,7 +18,10 @@
     "healthcheck:ping": "node scripts/healthcheck-ping.mjs",
     "migrate:supabase": "node scripts/migrate-supabase-to-local.mjs",
     "print-agent": "node scripts/print-agent.mjs",
+    "reset-admin-password": "node scripts/reset-admin-password.mjs",
+    "list-users": "node scripts/reset-admin-password.mjs --list",
     "security:audit": "node scripts/security-audit.mjs",
+    "setup:ml-scraper": "node scripts/setup-ml-scraper.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -70,6 +73,7 @@
     "next-themes": "^0.3.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "4.4.168",
+    "playwright": "^1.59.1",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",

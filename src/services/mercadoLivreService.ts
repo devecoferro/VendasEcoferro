@@ -30,6 +30,12 @@ export interface MLOrder {
   order_status: string | null;
   raw_data: Record<string, unknown> | null;
   items: MLOrderItem[];
+  /**
+   * ISO-8601 UTC da ultima vez que a etiqueta deste pedido foi impressa.
+   * null = nunca impressa (pendente). Usado pelos filtros Com/Sem etiqueta
+   * na MercadoLivrePage.
+   */
+  label_printed_at?: string | null;
 }
 
 export interface MLOrderItem {
@@ -657,6 +663,7 @@ export function mapMLOrderToProcessingResult(order: MLOrder): ProcessingResult {
       : order.item_title || order.items?.[0]?.item_title || "";
   return {
     sale: mapMLOrderToSaleData(order),
+    mlOrderIds: [order.order_id],
     rawText: JSON.stringify(
       {
         order_id: order.order_id,
@@ -738,6 +745,8 @@ export function mapMLOrdersToProcessingResults(orders: MLOrder[]): ProcessingRes
           quantity: 1,
         },
         method: "mercado-livre",
+        // Todos os orders do pack para marcacao em bloco apos impressao
+        mlOrderIds: packOrders.map((o) => o.order_id),
       });
     }
   }
@@ -1100,7 +1109,19 @@ export interface MLStockItem {
   location_shelf?: string | null;
   location_level?: string | null;
   location_notes?: string | null;
+  /**
+   * Agregados de vendas recentes vindos do cruzamento de ml_stock com
+   * ml_orders no backend. Period controlado via parametro sales_period
+   * na query do GET /api/ml/stock.
+   * recent_sales_qty conta UNIDADES (pedido com 3 un soma 3).
+   * recent_sales_orders conta PEDIDOS unicos.
+   */
+  recent_sales_qty?: number;
+  recent_sales_orders?: number;
+  last_sale_date?: string | null;
 }
+
+export type StockSalesPeriod = "7d" | "30d" | "90d" | "all";
 
 export async function updateMLStockItem(
   connectionId: string,
@@ -1159,13 +1180,23 @@ export async function getStockLocations(
   return data?.locations || {};
 }
 
-export async function getMLStock(connectionId: string): Promise<{ items: MLStockItem[]; stale: boolean }> {
+export async function getMLStock(
+  connectionId: string,
+  options: { salesPeriod?: StockSalesPeriod } = {}
+): Promise<{ items: MLStockItem[]; stale: boolean; salesPeriod: StockSalesPeriod }> {
+  const salesPeriod = options.salesPeriod || "30d";
+  const params = new URLSearchParams({
+    connection_id: connectionId,
+    sales_period: salesPeriod,
+  });
+
   const { response, data } = await fetchJsonWithTimeout<{
     items?: MLStockItem[];
     stale?: boolean;
+    sales_period?: string;
     error?: string;
   }>(
-    `/api/ml/stock?connection_id=${encodeURIComponent(connectionId)}`,
+    `/api/ml/stock?${params.toString()}`,
     {},
     "Timeout ao carregar o estoque do Mercado Livre.",
     30000
@@ -1178,6 +1209,7 @@ export async function getMLStock(connectionId: string): Promise<{ items: MLStock
   return {
     items: Array.isArray(data?.items) ? data.items : [],
     stale: Boolean(data?.stale),
+    salesPeriod: (data?.sales_period as StockSalesPeriod) || salesPeriod,
   };
 }
 
@@ -1230,6 +1262,83 @@ export async function syncStockToWebsite(): Promise<{
     errors: data.errors || 0,
     total: data.total || 0,
   };
+}
+
+/**
+ * Marca uma lista de pedidos como "etiqueta impressa" (timestamp = agora).
+ * A UI chama isso automaticamente apos baixar o PDF de etiquetas em lote
+ * (ReviewPage.handleBatchExport) ou individual (handleExport).
+ * Retorna a quantidade de linhas afetadas no banco.
+ */
+export async function markLabelsAsPrinted(orderIds: string[]): Promise<number> {
+  const cleanIds = Array.from(
+    new Set(
+      (orderIds || [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (cleanIds.length === 0) return 0;
+
+  const { response, data } = await fetchJsonWithTimeout<{
+    success?: boolean;
+    affected?: number;
+    error?: string;
+  }>(
+    "/api/ml/labels/mark-printed",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order_ids: cleanIds }),
+    },
+    "Timeout ao marcar etiquetas como impressas.",
+    15000
+  );
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "Falha ao marcar etiquetas como impressas.");
+  }
+
+  return Number(data?.affected || 0);
+}
+
+/**
+ * Desmarca uma lista de pedidos (seta label_printed_at = null), devolvendo-os
+ * para a fila de "sem etiqueta impressa". Util quando o operador precisa
+ * reimprimir ou marcou errado.
+ */
+export async function markLabelsAsUnprinted(orderIds: string[]): Promise<number> {
+  const cleanIds = Array.from(
+    new Set(
+      (orderIds || [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (cleanIds.length === 0) return 0;
+
+  const { response, data } = await fetchJsonWithTimeout<{
+    success?: boolean;
+    affected?: number;
+    error?: string;
+  }>(
+    "/api/ml/labels/mark-unprinted",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order_ids: cleanIds }),
+    },
+    "Timeout ao desmarcar etiquetas.",
+    15000
+  );
+
+  if (!response.ok || !data?.success) {
+    throw new Error(data?.error || "Falha ao desmarcar etiquetas.");
+  }
+
+  return Number(data?.affected || 0);
 }
 
 export async function getMLOrderDocuments(

@@ -31,6 +31,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useMercadoLivreData } from "@/hooks/useMercadoLivreData";
 import {
   Check,
+  CheckCircle2,
   ChevronDown,
   CircleAlert,
   FileText,
@@ -38,6 +39,7 @@ import {
   Link2,
   Loader2,
   Receipt,
+  RotateCcw,
   Search,
   Send,
   ShoppingCart,
@@ -62,6 +64,8 @@ import {
   findOrdersInSamePack,
   getStockLocations,
   getMLConnectionStatus,
+  markLabelsAsPrinted,
+  markLabelsAsUnprinted,
   type MLDashboardDeposit,
   type MLNFeResponse,
   type MLOrderDocumentsResponse,
@@ -660,6 +664,25 @@ function VirtualizedOrderList({
                         {isOrderForCollection(order) && (
                           <Badge variant="outline">Para coleta</Badge>
                         )}
+                        {order.label_printed_at ? (
+                          <Badge
+                            variant="outline"
+                            className="border-[#22c55e] bg-[#f0fdf4] text-[#15803d]"
+                            title={`Etiqueta impressa em ${new Date(order.label_printed_at).toLocaleString("pt-BR")}`}
+                          >
+                            <CheckCircle2 className="mr-1 h-3 w-3" />
+                            Etiqueta impressa
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="border-[#ffa07a] bg-[#fff4ec] text-[#c2410c]"
+                            title="Etiqueta ainda nao foi impressa"
+                          >
+                            <Printer className="mr-1 h-3 w-3" />
+                            Sem etiqueta
+                          </Badge>
+                        )}
                       </div>
                     </div>
                     {(() => {
@@ -789,6 +812,14 @@ export default function MercadoLivrePage() {
   const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("today");
   const [selectedDepositFilters, setSelectedDepositFilters] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  // Filtro de etiqueta impressa: "all" mostra todos, "not_printed" so pendentes
+  // (o que falta imprimir hoje), "printed" so os que ja imprimiu (auditoria).
+  // Nao interfere nos chips de shipment bucket nem nas contagens do dashboard —
+  // so afeta a lista exibida e o contador "(X/Y selecionadas)".
+  const [labelPrintFilter, setLabelPrintFilter] = useState<
+    "all" | "not_printed" | "printed"
+  >("all");
+  const [markingLabelsPrinted, setMarkingLabelsPrinted] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [appliedFilters, setAppliedFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
   const [draftFilters, setDraftFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
@@ -1233,6 +1264,47 @@ export default function MercadoLivrePage() {
     []
   );
 
+  // Marca manualmente as etiquetas dos pedidos selecionados como impressas
+  // ou pendentes. A marcacao automatica acontece ao baixar o PDF via
+  // /review; esses botoes cobrem os casos de:
+  //   - O operador imprimiu em outro lugar (fora do sistema) e so quer
+  //     atualizar o status para sair da lista "Sem etiqueta impressa".
+  //   - O operador marcou errado ou precisa reimprimir — desmarcar
+  //     devolve o pedido para a fila.
+  const handleMarkSelectedLabels = useCallback(
+    async (orders: MLOrder[], mode: "printed" | "unprinted") => {
+      if (orders.length === 0) {
+        toast.info("Selecione ao menos um pedido.");
+        return;
+      }
+      setMarkingLabelsPrinted(true);
+      try {
+        const orderIds = Array.from(
+          new Set(orders.map((o) => o.order_id).filter(Boolean))
+        );
+        const affected =
+          mode === "printed"
+            ? await markLabelsAsPrinted(orderIds)
+            : await markLabelsAsUnprinted(orderIds);
+        toast.success(
+          mode === "printed"
+            ? `${affected} etiqueta(s) marcada(s) como impressa(s).`
+            : `${affected} etiqueta(s) devolvida(s) para a fila.`
+        );
+        void refresh();
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Falha ao atualizar o status das etiquetas."
+        );
+      } finally {
+        setMarkingLabelsPrinted(false);
+      }
+    },
+    [refresh]
+  );
+
   // Gera a NF-e de um unico pedido direto do card, sem abrir o dialog
   // de documentos. Reusa a mesma rota que o dialog chama, porem atualiza
   // a listagem operacional no final para refletir a mudanca de status.
@@ -1468,8 +1540,26 @@ export default function MercadoLivrePage() {
       { today: 0, upcoming: 0, in_transit: 0, finalized: 0 }
     ) as Record<ShipmentBucket, number>;
 
-    // Se temos contagens LIVE do ML (pack-deduplicated), usar DIRETO.
-    // Todos os chips vêm do ML — zero cálculo local.
+    // Hierarquia de fontes pros chips (maior prioridade primeiro):
+    // 1. ml_ui_chip_counts — scraper headless do Seller Center UI (100% igual)
+    // 2. ml_live_chip_counts — nossa API ML (~95% alinhado)
+    // 3. localCounts — classificação interna do app (fallback final)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uiCounts = (dashboard as any)?.ml_ui_chip_counts as
+      | { today: number; upcoming: number; in_transit: number; finalized: number }
+      | null
+      | undefined;
+    if (uiCounts && typeof uiCounts.today === "number") {
+      return {
+        today: uiCounts.today,
+        upcoming: uiCounts.upcoming,
+        in_transit: uiCounts.in_transit,
+        finalized: uiCounts.finalized,
+        cancelled: 0,
+      };
+    }
+
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
       return {
@@ -1477,7 +1567,7 @@ export default function MercadoLivrePage() {
         upcoming: liveCounts.upcoming,
         in_transit: liveCounts.in_transit,
         finalized: liveCounts.finalized,
-        cancelled: 0, // não exibido na UI mas mantém compatibilidade de tipo
+        cancelled: 0,
       };
     }
 
@@ -1568,6 +1658,38 @@ export default function MercadoLivrePage() {
     () => filterAndSortOrders(quickFilteredOperationalOrders, searchQuery, appliedFilters),
     [appliedFilters, quickFilteredOperationalOrders, searchQuery]
   );
+
+  // Aplica o filtro de etiqueta impressa sobre o conjunto ja filtrado. Fica
+  // separado dos outros filtros porque e puramente uma "view" — nao interfere
+  // em readyOrders/invoicePendingOrders (usados para contadores e logica de
+  // selecao), so na lista exibida e nos contadores visuais "x de y".
+  const displayedOperationalOrders = useMemo(() => {
+    if (labelPrintFilter === "all") return filteredOperationalOrders;
+    if (labelPrintFilter === "printed") {
+      return filteredOperationalOrders.filter((order) =>
+        Boolean(order.label_printed_at)
+      );
+    }
+    // not_printed
+    return filteredOperationalOrders.filter((order) => !order.label_printed_at);
+  }, [filteredOperationalOrders, labelPrintFilter]);
+
+  // Contagens pros badges dos botoes de filtro — usam o conjunto ja filtrado
+  // (quickFilters + appliedFilters + search) mas SEM o filtro de etiqueta,
+  // para mostrar quantos cairiam em cada aba.
+  const labelPrintCounts = useMemo(() => {
+    let printed = 0;
+    let notPrinted = 0;
+    for (const order of filteredOperationalOrders) {
+      if (order.label_printed_at) printed++;
+      else notPrinted++;
+    }
+    return {
+      all: filteredOperationalOrders.length,
+      printed,
+      not_printed: notPrinted,
+    };
+  }, [filteredOperationalOrders]);
 
   const readyOrders = useMemo(
     () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
@@ -2200,6 +2322,111 @@ export default function MercadoLivrePage() {
           )}
         </div>
 
+        {/* ─── Filtro de etiqueta impressa ──────────────────────────────
+            Tabs rapidas pra isolar pedidos pendentes de impressao vs.
+            auditoria dos ja impressos. Marcacao automatica acontece ao
+            baixar o PDF na tela de conferencia; esses tabs sao so VIEW.
+            Botoes ao lado permitem marcar/desmarcar manualmente quando
+            o operador imprime fora do sistema. */}
+        <div className="flex flex-col gap-2 rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-2.5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="inline-flex items-center rounded-full border border-[#e6e6e6] bg-[#fafafa] p-0.5">
+            {(
+              [
+                { value: "all", label: "Todas", count: labelPrintCounts.all },
+                {
+                  value: "not_printed",
+                  label: "Sem etiqueta",
+                  count: labelPrintCounts.not_printed,
+                },
+                {
+                  value: "printed",
+                  label: "Impressas",
+                  count: labelPrintCounts.printed,
+                },
+              ] as const
+            ).map((option) => {
+              const active = labelPrintFilter === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setLabelPrintFilter(option.value)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition ${
+                    active
+                      ? option.value === "not_printed"
+                        ? "bg-[#ff6d1b] text-white shadow-[0_1px_3px_rgba(255,109,27,0.35)]"
+                        : option.value === "printed"
+                          ? "bg-[#22c55e] text-white shadow-[0_1px_3px_rgba(34,197,94,0.35)]"
+                          : "bg-[#3483fa] text-white shadow-[0_1px_3px_rgba(52,131,250,0.35)]"
+                      : "text-[#555555] hover:bg-[#f0f0f0]"
+                  }`}
+                  title={
+                    option.value === "not_printed"
+                      ? "Pedidos sem etiqueta — fila de impressao"
+                      : option.value === "printed"
+                        ? "Pedidos com etiqueta ja impressa — auditoria"
+                        : "Mostrar todos os pedidos do bucket"
+                  }
+                >
+                  {option.value === "printed" && (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  )}
+                  {option.value === "not_printed" && (
+                    <Printer className="h-3.5 w-3.5" />
+                  )}
+                  <span>{option.label}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                      active ? "bg-white/25 text-white" : "bg-[#ececec] text-[#555]"
+                    }`}
+                  >
+                    {option.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Marcar como impressa — usa selectedReadyOrders (mesmo conjunto
+                dos botoes de etiqueta) por coerencia: se o operador tem os
+                "prontos para enviar" selecionados, esse botao marca os
+                mesmos como impressos ja. */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 rounded-full border-[#d9e7ff] px-3 text-[12px] text-[#2968c8] hover:bg-[#eef4ff] disabled:opacity-60"
+              disabled={selectedReadyCount === 0 || markingLabelsPrinted}
+              onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "printed")}
+              title="Marcar etiquetas dos pedidos selecionados como impressas (para sair da fila sem precisar baixar o PDF)"
+            >
+              {markingLabelsPrinted ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Marcar impressa{selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 rounded-full border-[#ffe0c7] px-3 text-[12px] text-[#ff6d1b] hover:bg-[#fff4ec] disabled:opacity-60"
+              disabled={selectedReadyCount === 0 || markingLabelsPrinted}
+              onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "unprinted")}
+              title="Devolver pedidos selecionados para a fila 'Sem etiqueta impressa' (para reimprimir)"
+            >
+              {markingLabelsPrinted ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Desmarcar
+            </Button>
+          </div>
+        </div>
+
         <div className="rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-3">
           <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
             <div className="flex items-center gap-2.5">
@@ -2207,7 +2434,9 @@ export default function MercadoLivrePage() {
                 // Selecionar TODOS os pedidos visíveis (readyOrders + invoicePending).
                 // Assim o "Gerar NF-e" fica ativo quando há pedidos que precisam de NF-e,
                 // e o "Imprimir etiqueta" fica ativo com os que já estão prontos.
-                const allVisible = filteredOperationalOrders;
+                // Usa displayedOperationalOrders para respeitar o filtro de etiqueta impressa:
+                // ao filtrar "Sem etiqueta", o checkbox seleciona apenas os pendentes.
+                const allVisible = displayedOperationalOrders;
                 const hasOrders = allVisible.length > 0;
                 const allSelected =
                   hasOrders &&
@@ -2254,9 +2483,9 @@ export default function MercadoLivrePage() {
                 <span className="font-semibold">
                   Etiquetas disponíveis para impressão
                 </span>
-                {filteredOperationalOrders.length > 0 ? (
+                {displayedOperationalOrders.length > 0 ? (
                   <span className="ml-1.5 text-[13px] text-[#666666]">
-                    ({filteredOperationalOrders.filter((o) => selectedOrderIds.has(o.id)).length}/{filteredOperationalOrders.length} selecionadas)
+                    ({displayedOperationalOrders.filter((o) => selectedOrderIds.has(o.id)).length}/{displayedOperationalOrders.length} selecionadas)
                     {selectedInvoicePendingCount > 0 && (
                       <span className="ml-1 text-[#ff6d1b] font-semibold">
                         · {selectedInvoicePendingCount} NF-e pendente{selectedInvoicePendingCount > 1 ? "s" : ""}
@@ -2265,7 +2494,11 @@ export default function MercadoLivrePage() {
                   </span>
                 ) : (
                   <span className="ml-1.5 text-[13px] text-[#999999]">
-                    (0 neste bucket)
+                    {labelPrintFilter === "not_printed"
+                      ? "(nenhum pedido sem etiqueta neste bucket)"
+                      : labelPrintFilter === "printed"
+                        ? "(nenhum pedido com etiqueta impressa neste bucket)"
+                        : "(0 neste bucket)"}
                   </span>
                 )}
               </div>
@@ -2392,16 +2625,22 @@ export default function MercadoLivrePage() {
               O grid já abriu rápido e continua recebendo as próximas páginas em segundo plano.
             </p>
           </div>
-        ) : filteredOperationalOrders.length === 0 ? (
+        ) : displayedOperationalOrders.length === 0 ? (
           <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
             <Search className="mx-auto mb-3 h-8 w-8 text-[#bdbdbd]" />
             <p className="text-[16px] font-semibold text-[#333333]">
-              Nenhum pedido encontrado para os filtros aplicados.
+              {labelPrintFilter === "not_printed"
+                ? "Nenhum pedido sem etiqueta impressa."
+                : labelPrintFilter === "printed"
+                  ? "Nenhum pedido com etiqueta impressa."
+                  : "Nenhum pedido encontrado para os filtros aplicados."}
             </p>
             <p className="mt-1 text-[15px] text-[#666666]">
-              {isOperationalListIncomplete
-                ? `A base ainda está carregando (${ordersPagination.loaded} de ${ordersPagination.total}). Se for um pedido recente, aguarde a próxima página ou clique em "Carregar mais agora".`
-                : "Ajuste a busca, remova filtros ativos ou troque o bucket operacional."}
+              {labelPrintFilter !== "all"
+                ? "Troque o filtro de etiqueta para 'Todas' ou ajuste os outros filtros."
+                : isOperationalListIncomplete
+                  ? `A base ainda está carregando (${ordersPagination.loaded} de ${ordersPagination.total}). Se for um pedido recente, aguarde a próxima página ou clique em "Carregar mais agora".`
+                  : "Ajuste a busca, remova filtros ativos ou troque o bucket operacional."}
             </p>
             {isOperationalListIncomplete && ordersPagination.has_more && (
               <Button
@@ -2424,7 +2663,7 @@ export default function MercadoLivrePage() {
                 poluia a tela. O contador de pedidos selecionados tambem
                 aparece no proprio banner como sufixo dos botoes. */}
             <VirtualizedOrderList
-              orders={filteredOperationalOrders}
+              orders={displayedOperationalOrders}
               onOpenDocuments={handleOpenDocumentsDialog}
               selectedOrderIds={selectedOrderIds}
               onToggleSelect={handleToggleSelectOrder}

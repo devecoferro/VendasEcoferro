@@ -365,6 +365,124 @@ function getStockFromDb(connectionId) {
     .all(connectionId);
 }
 
+/**
+ * Agrega as vendas de ml_orders por SKU (ou item_id como fallback) dentro
+ * de uma janela de dias. Retorna um Map para lookup rapido durante o
+ * enriquecimento de MLStockItem.
+ *
+ * Usa ambos os caminhos de match porque o operador nem sempre tem SKU
+ * preenchido em anuncios antigos — o item_id e o identificador canonico
+ * que sempre bate entre ml_stock e ml_orders.
+ *
+ * Pedidos cancelados/invalidos sao excluidos — "vendas recentes" significa
+ * vendas que efetivamente sairam (contam pra demanda real do produto).
+ *
+ * @param {string} connectionId
+ * @param {number|null} periodDays null = todos os tempos, senao filtra por janela
+ * @returns {{ bySku: Map<string, {orders: number, qty: number, lastSale: string|null}>,
+ *             byItemId: Map<string, {orders: number, qty: number, lastSale: string|null}> }}
+ */
+function getSalesAggregatesByKey(connectionId, periodDays) {
+  const params = [String(connectionId)];
+  let dateFilter = "";
+  if (Number.isFinite(periodDays) && periodDays > 0) {
+    const cutoff = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
+    dateFilter = "AND sale_date >= ?";
+    params.push(cutoff);
+  }
+
+  // Group by SKU e item_id em queries separadas — mais simples que fazer
+  // COALESCE no GROUP BY, e permite fallback no frontend.
+  const skuRows = db
+    .prepare(
+      `SELECT sku,
+              COUNT(DISTINCT order_id) AS orders,
+              SUM(COALESCE(quantity, 0)) AS qty,
+              MAX(sale_date) AS last_sale
+       FROM ml_orders
+       WHERE connection_id = ?
+         ${dateFilter}
+         AND sku IS NOT NULL
+         AND TRIM(sku) <> ''
+         AND lower(COALESCE(order_status, '')) NOT IN ('cancelled', 'invalid')
+       GROUP BY sku`
+    )
+    .all(...params);
+
+  const itemRows = db
+    .prepare(
+      `SELECT item_id,
+              COUNT(DISTINCT order_id) AS orders,
+              SUM(COALESCE(quantity, 0)) AS qty,
+              MAX(sale_date) AS last_sale
+       FROM ml_orders
+       WHERE connection_id = ?
+         ${dateFilter}
+         AND item_id IS NOT NULL
+         AND TRIM(item_id) <> ''
+         AND lower(COALESCE(order_status, '')) NOT IN ('cancelled', 'invalid')
+       GROUP BY item_id`
+    )
+    .all(...params);
+
+  const bySku = new Map();
+  for (const row of skuRows) {
+    if (!row.sku) continue;
+    bySku.set(String(row.sku).trim().toUpperCase(), {
+      orders: Number(row.orders || 0),
+      qty: Number(row.qty || 0),
+      lastSale: row.last_sale || null,
+    });
+  }
+
+  const byItemId = new Map();
+  for (const row of itemRows) {
+    if (!row.item_id) continue;
+    byItemId.set(String(row.item_id).trim(), {
+      orders: Number(row.orders || 0),
+      qty: Number(row.qty || 0),
+      lastSale: row.last_sale || null,
+    });
+  }
+
+  return { bySku, byItemId };
+}
+
+/**
+ * Enriquece items de estoque com contadores de vendas recentes.
+ * Matching: primeiro tenta item_id (canonico), depois SKU.
+ */
+function enrichItemsWithSales(items, salesAggregates) {
+  for (const item of items) {
+    const byItem = item.item_id
+      ? salesAggregates.byItemId.get(String(item.item_id).trim())
+      : null;
+    const bySku =
+      !byItem && item.sku
+        ? salesAggregates.bySku.get(String(item.sku).trim().toUpperCase())
+        : null;
+    const match = byItem || bySku || null;
+
+    item.recent_sales_orders = match ? match.orders : 0;
+    item.recent_sales_qty = match ? match.qty : 0;
+    item.last_sale_date = match ? match.lastSale : null;
+  }
+  return items;
+}
+
+// Converte um parametro "7d" / "30d" / "90d" / "all" em dias. Default 30d.
+function parseSalesPeriodDays(input) {
+  if (input == null || input === "") return 30;
+  const normalized = String(input).trim().toLowerCase();
+  if (normalized === "all" || normalized === "0") return null;
+  const match = normalized.match(/^(\d+)\s*d?$/);
+  if (match) {
+    const days = Number(match[1]);
+    if (Number.isFinite(days) && days > 0 && days <= 365) return days;
+  }
+  return 30;
+}
+
 // Aplica a migration de location se ainda não foi aplicada (tolerante)
 function ensureLocationColumns() {
   try {
@@ -491,6 +609,13 @@ export default async function mlStockHandler(req, res) {
   const rawItems = getStockFromDb(connectionId);
   const items = rawItems.map(normalizeStockItem);
 
+  // Enriquece com contagem de vendas recentes (7d/30d/90d/all).
+  // Default 30d — janela curta o suficiente pra refletir demanda atual
+  // mas longa o suficiente pra ser significativa.
+  const salesPeriodDays = parseSalesPeriodDays(req.query.sales_period);
+  const salesAggregates = getSalesAggregatesByKey(connectionId, salesPeriodDays);
+  enrichItemsWithSales(items, salesAggregates);
+
   if (isCacheStale && rawItems.length > 0) {
     // Refresh in background without blocking response
     ensureValidAccessToken(baseConnection)
@@ -498,5 +623,10 @@ export default async function mlStockHandler(req, res) {
       .catch(() => {});
   }
 
-  return res.json({ items, stale: isCacheStale && rawItems.length > 0 });
+  return res.json({
+    items,
+    stale: isCacheStale && rawItems.length > 0,
+    sales_period: salesPeriodDays === null ? "all" : `${salesPeriodDays}d`,
+    sales_period_days: salesPeriodDays,
+  });
 }

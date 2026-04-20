@@ -2411,6 +2411,16 @@ export async function buildDashboardPayload(options = {}) {
     }
   }
 
+  // ML UI chip counts (via scraper do Seller Center — 100% alinhado com UI).
+  // Override com maior prioridade se disponível.
+  let mlUiChipCounts = null;
+  try {
+    const { getUiChipCounts } = await import("./_lib/seller-center-scraper.js");
+    mlUiChipCounts = getUiChipCounts();
+  } catch {
+    // scraper não configurado ou falhou — ignora (fallback pro ml_live_chip_counts)
+  }
+
   const payload = {
     backend_secure: true,
     generated_at: new Date().toISOString(),
@@ -2419,6 +2429,10 @@ export async function buildDashboardPayload(options = {}) {
     post_sale_overview: postSaleOverview,
     operational_queues: operationalQueues,
     deposits,
+    // Contagens da UI do ML Seller Center (scraper headless).
+    // Fonte de verdade MÁXIMA — bate 100% com o que o usuário vê no ML.
+    // Se null, o frontend usa ml_live_chip_counts (fallback API ML).
+    ml_ui_chip_counts: mlUiChipCounts,
     // Contagens LIVE dos chips — ML API como fonte de verdade.
     // Pack-deduplicated, classificado por substatus real do ML.
     // Se null, o frontend usa counts dos deposits (fallback local).
