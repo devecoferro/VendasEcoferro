@@ -391,8 +391,9 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
   let navError = null;
   try {
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    // Aguarda app render + XHRs internas carregarem
-    await page.waitForTimeout(3500);
+    // Aguarda app render + XHRs internas carregarem (reduzido de 3500
+    // pra 2000ms — XHRs principais carregam rapido apos DOM ready).
+    await page.waitForTimeout(2000);
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
   } finally {
@@ -465,22 +466,45 @@ export async function scrapeMlSellerCenterFull({
   let browser;
   const captures = {};
   try {
+    // Args otimizados pra reduzir RAM (~150MB → ~80MB) — importante em
+    // VPS pequena. --single-process roda tudo numa thread (renderer +
+    // browser process) evitando overhead. --disable-* corta features
+    // que nao usamos no scraping.
     browser = await chromium.launch({
       headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--mute-audio",
+        "--single-process",
       ],
     });
+    // Viewport menor (1280x720 vs 1920x1080) reduz memoria do renderer
     const context = await browser.newContext({
       storageState,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      viewport: { width: 1920, height: 1080 },
+      viewport: { width: 1280, height: 720 },
       locale: "pt-BR",
       timezoneId: "America/Sao_Paulo",
+      // Bloqueia recursos pesados que nao precisamos pro scraping
+      // (imagens, fonts, midia). Reduz drasticamente trafego e memoria.
     });
+    // Bloqueia recursos pesados via route handler
+    await context.route(
+      "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,mp4,webm}",
+      (route) => route.abort()
+    );
     const page = await context.newPage();
 
     // Verifica sessao com 1a navegacao
