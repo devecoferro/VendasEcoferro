@@ -461,16 +461,101 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
     // ignore
   }
 
+  // ── ESTRATEGIA NOVA: extrair dados embeded no HTML (SSR) ──
+  // ML usa Next.js que coloca state inicial em <script id="__PRELOADED_STATE__">,
+  // <script id="__NEXT_DATA__">, ou window.__APP_DATA__. Procuramos esses
+  // padroes no HTML e tambem qualquer <script type="application/json">
+  // grande (>1KB) que possa conter cards/sub-status.
+  let ssrPayloads = [];
+  try {
+    ssrPayloads = await page.evaluate(() => {
+      const out = [];
+      // 1. Scripts com IDs comuns de SSR
+      const scriptIds = [
+        "__PRELOADED_STATE__",
+        "__NEXT_DATA__",
+        "__APP_DATA__",
+        "__APOLLO_STATE__",
+        "__INITIAL_STATE__",
+        "__REDUX_STATE__",
+        "serverState",
+        "__data",
+      ];
+      for (const id of scriptIds) {
+        const el = document.getElementById(id);
+        if (el && el.textContent) {
+          out.push({
+            source: `script#${id}`,
+            size: el.textContent.length,
+            content: el.textContent.slice(0, 500_000), // cap 500KB
+          });
+        }
+      }
+      // 2. Qualquer <script type="application/json"> > 1KB
+      const jsonScripts = document.querySelectorAll('script[type="application/json"]');
+      jsonScripts.forEach((el, i) => {
+        const txt = el.textContent || "";
+        if (txt.length > 1000) {
+          out.push({
+            source: `script[type=application/json][${i}]${el.id ? `#${el.id}` : ""}`,
+            size: txt.length,
+            content: txt.slice(0, 500_000),
+          });
+        }
+      });
+      // 3. Globals window que possam ter dados
+      const globalKeys = [
+        "__PRELOADED_STATE__",
+        "__APP_DATA__",
+        "__INITIAL_STATE__",
+        "__APOLLO_STATE__",
+      ];
+      for (const k of globalKeys) {
+        try {
+          // eslint-disable-next-line no-undef
+          const v = window[k];
+          if (v && typeof v === "object") {
+            const json = JSON.stringify(v);
+            if (json.length > 100) {
+              out.push({
+                source: `window.${k}`,
+                size: json.length,
+                content: json.slice(0, 500_000),
+              });
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return out;
+    });
+  } catch {
+    // ignore
+  }
+
+  // Parsea JSON dos SSR payloads (best-effort)
+  for (const p of ssrPayloads) {
+    try {
+      p.body = JSON.parse(p.content);
+      delete p.content; // economiza memoria
+    } catch {
+      // mantem como string
+    }
+  }
+
   return {
     url: targetUrl,
     xhrJsonResponses,
     domChipsText,
+    ssrPayloads,
     navError,
     capture_stats: {
       total_seen: totalSeen,
       blacklisted,
       non_json: nonJson,
       captured: xhrJsonResponses.length,
+      ssr_payloads_found: ssrPayloads.length,
     },
   };
 }

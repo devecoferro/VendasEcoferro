@@ -49,12 +49,26 @@ function renderHtml(report, options) {
             </details>`
             )
             .join("");
+
+          // ── SSR payloads (dados embeded no HTML inicial) ──
+          const ssrPayloads = capture.ssrPayloads || [];
+          const ssrHtml = ssrPayloads.length > 0
+            ? `<div style="background:#fff8e1;border:1px solid #fde68a;padding:10px;border-radius:6px;margin:10px 0">
+                 <strong>📦 SSR Payloads (dados embeded no HTML — provavel fonte real dos cards):</strong>
+                 ${ssrPayloads.map((p, i) => `
+                   <details>
+                     <summary>SSR #${i + 1} — <code>${escapeHtml(p.source)}</code> (${p.size} bytes)</summary>
+                     <pre>${escapeHtml(JSON.stringify(p.body || p.content, null, 2).slice(0, 80000))}</pre>
+                   </details>
+                 `).join("")}
+               </div>`
+            : "";
           const chipsText = capture.dom_chips_text
             ? `<p class="meta">DOM chips: ${escapeHtml(JSON.stringify(capture.dom_chips_text))}</p>`
             : "";
           const stats = capture.capture_stats;
           const statsHtml = stats
-            ? `<p class="meta">📊 Stats: ${stats.total_seen} responses totais · ${stats.blacklisted} blacklisted · ${stats.non_json} non-JSON · <strong>${stats.captured} capturados</strong></p>`
+            ? `<p class="meta">📊 Stats: ${stats.total_seen} responses totais · ${stats.blacklisted} blacklisted · ${stats.non_json} non-JSON · <strong>${stats.captured} XHRs capturados</strong>${stats.ssr_payloads_found != null ? ` · <strong>${stats.ssr_payloads_found} SSR payloads</strong>` : ""}</p>`
             : "";
           const navErrHtml = capture.nav_error
             ? `<p class="meta" style="color:#b91c1c">⚠ Nav error: ${escapeHtml(capture.nav_error)}</p>`
@@ -64,10 +78,12 @@ function renderHtml(report, options) {
               <strong>${escapeHtml(storeKey)}</strong>
               <code class="url">${escapeHtml((capture.url || "").slice(0, 100))}</code>
               <span class="badge">${capture.xhr_count} XHR</span>
+              ${ssrPayloads.length > 0 ? `<span class="badge" style="background:#fbbf24">${ssrPayloads.length} SSR</span>` : ""}
             </summary>
             ${statsHtml}
             ${chipsText}
             ${navErrHtml}
+            ${ssrHtml}
             ${xhrs || `<p class="empty">Nenhum XHR JSON capturado nesta navegação.</p>`}
           </details>`;
         })
