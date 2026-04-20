@@ -284,10 +284,14 @@ function getHeadlineForDeposit(depositInfo) {
   return `Coleta | ${depositInfo.label}`;
 }
 
-// Status ativos para o dashboard (exclui delivered/cancelled que são 95%+ do DB).
+// Status ativos para o dashboard.
+// Inclui "delivered" pra que entregas recentes apareçam em "Finalizadas"
+// (com janela de 7 dias aplicada no loop). Sem isso, 95% dos delivered
+// (histórico) ficariam filtrados mas os recentes também seriam perdidos.
+// O filtro de 7 dias por date_closed garante que só os recentes contam.
 const DASHBOARD_ACTIVE_STATUSES = [
   "pending", "handling", "ready_to_ship", "confirmed", "paid",
-  "shipped", "in_transit", "not_delivered", "returned", "cancelled",
+  "shipped", "in_transit", "delivered", "not_delivered", "returned", "cancelled",
 ];
 
 function fetchStoredOrders(connectionId = null, limit = null) {
@@ -296,7 +300,18 @@ function fetchStoredOrders(connectionId = null, limit = null) {
   // Filtra por connection_id para não misturar pedidos de contas ML diferentes.
   const placeholders = DASHBOARD_ACTIVE_STATUSES.map(() => "?").join(", ");
   const connectionFilter = connectionId ? "AND connection_id = ?" : "";
-  const params = [...DASHBOARD_ACTIVE_STATUSES];
+
+  // Janela de 15 dias pra delivered (cobre entregas recentes com sale_date
+  // um pouco anterior — pedido vendido dia 5, entregue dia 15 ainda entra).
+  // Outros status não têm esse filtro; só o finalized/cancelled do LOOP
+  // aplica filtro fino de 7 dias pela data da exceção.
+  const deliveredCutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Ordem dos params deve bater com os "?" na query:
+  // 1. statuses (IN placeholders)
+  // 2. deliveredCutoff
+  // 3. connectionId (se tiver)
+  const params = [...DASHBOARD_ACTIVE_STATUSES, deliveredCutoff];
   if (connectionId) params.push(String(connectionId));
 
   const rows = db.prepare(`
@@ -308,7 +323,10 @@ function fetchStoredOrders(connectionId = null, limit = null) {
         SUM(COALESCE(amount, 0)) OVER (PARTITION BY order_id) AS grouped_amount_total
       FROM ml_orders
       WHERE lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
-        AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) != 'delivered'
+        AND (
+          lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) != 'delivered'
+          OR sale_date > ?
+        )
         ${connectionFilter}
     )
     SELECT * FROM filtered WHERE rn = 1
@@ -594,7 +612,13 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "finalized";
   }
 
-  // paid, pending, confirmed, delivered e outros → não operacional
+  // Delivered recente → Finalizadas (ML Seller Center conta entregas recentes
+  // em "Finalizadas"). Janela aplicada pelo filtro de 7 dias no loop principal.
+  if (status === "delivered") {
+    return "finalized";
+  }
+
+  // paid, pending, confirmed e outros → não operacional
   return null;
 }
 
@@ -690,7 +714,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "finalized";
   }
 
-  // paid, pending, confirmed, delivered e outros → não operacional
+  // Delivered recente → Finalizadas (mesma lógica do cross_docking).
+  if (status === "delivered") {
+    return "finalized";
+  }
+
+  // paid, pending, confirmed e outros → não operacional
   return null;
 }
 
@@ -1670,6 +1699,49 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
     for (const order of cancelledRecent) {
       addMlOrderIds("finalized", [String(order.id)]);
+    }
+
+    // Busca adicional: shipping.status=cancelled dos últimos 7 dias.
+    // ML remove cancelled dos buckets pending/rts/shipped/nd após algumas
+    // horas — esses não entram no loop acima. Alinha com ML Seller Center
+    // UI que conta cancelados recentes em "Finalizadas".
+    try {
+      const sevenDaysAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const cancelledR = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+          `&order.status=cancelled&order.date_closed.from=${encodeURIComponent(sevenDaysAgoIso)}&limit=50&sort=date_desc`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
+      const cancelledOrders = (cancelledR.results || []).filter((o) => o?.id);
+      const cancelledPacks = deduplicateOrdersToPacks(cancelledOrders);
+      for (const [key, pack] of cancelledPacks) {
+        if (cancelledOrdersSeen.has(key)) continue;
+        cancelledOrdersSeen.add(key);
+        addMlOrderIds("finalized", pack.ml_order_ids);
+      }
+    } catch {
+      // best-effort
+    }
+
+    // Busca adicional: delivered dos últimos 1-2 dias.
+    // ML Seller Center conta entregas recentes em "Finalizadas".
+    // Janela curta (48h) pra não inflar — alinha com comportamento da UI.
+    try {
+      const twoDaysAgoIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      const deliveredR = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
+          `&shipping.status=delivered&order.date_last_updated.from=${encodeURIComponent(twoDaysAgoIso)}&limit=50&sort=date_desc`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
+      const deliveredOrders = (deliveredR.results || []).filter(
+        (o) => o?.id && o.status !== "cancelled"
+      );
+      const deliveredPacks = deduplicateOrdersToPacks(deliveredOrders);
+      for (const [, pack] of deliveredPacks) {
+        addMlOrderIds("finalized", pack.ml_order_ids);
+      }
+    } catch {
+      // best-effort
     }
 
     const cancelledFiltered = {
