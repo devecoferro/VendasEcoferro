@@ -60,6 +60,7 @@ import mlStockHandler from "../api/ml/stock.js";
 import mlPickingListHandler from "../api/ml/picking-list.js";
 import mlConferenciaHandler from "../api/ml/conferencia.js";
 import mlLabelsHandler from "../api/ml/labels.js";
+import mlAdminAuditBrandsHandler from "../api/ml/admin/audit-brands.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
@@ -240,6 +241,9 @@ app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(re
 // Marcacao de etiquetas impressas (ReviewPage chama apos baixar PDF)
 app.post("/api/ml/labels/mark-printed", apiLimiter, (req, res) => mlLabelsHandler(req, res));
 app.post("/api/ml/labels/mark-unprinted", apiLimiter, (req, res) => mlLabelsHandler(req, res));
+// Auditoria admin de marcas/modelos do estoque (substitui o script SSH).
+// Acesso direto via browser por admin: ?format=html para HTML standalone.
+app.get("/api/ml/admin/audit-brands", apiLimiter, (req, res) => mlAdminAuditBrandsHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));

@@ -494,6 +494,25 @@ export default function StockPage() {
               )}
               Sincronizar
             </Button>
+            {/* Auditoria de marcas/modelos — abre relatorio HTML em nova aba.
+                Substitui a necessidade de SSH/terminal pra rodar o script de
+                auditoria. So admin tem acesso (validado no backend). */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                window.open(
+                  "/api/ml/admin/audit-brands?format=html",
+                  "_blank",
+                  "noopener,noreferrer"
+                )
+              }
+              title="Auditar marcas/modelos do estoque (abre em nova aba) — so admin"
+              className="gap-1.5"
+            >
+              <AlertTriangle className="h-4 w-4" />
+              Auditoria
+            </Button>
             {/* Botao "Imprimir Lista" — gera PDF da lista atual respeitando
                 TODOS os filtros e a ordenacao escolhida pelo usuario.
                 Snapshot do que esta na tela. */}
