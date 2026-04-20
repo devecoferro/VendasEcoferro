@@ -69,21 +69,15 @@ describe("classifyCrossDockingOrder", () => {
     );
   });
 
-  it("in_packing_list with future SLA stays in upcoming", () => {
+  it("in_packing_list goes to today (aligned with ML UI — coleta diária)", () => {
+    // ML Seller Center conta pedidos com substatus operacionais pendentes
+    // em "Envios de hoje" independente de SLA — a coleta do dia vai passar,
+    // vendedor precisa agir. Observado em comparação real: 58 pedidos em
+    // ready_to_print/in_packing_list ficavam em upcoming no app mas ML
+    // classificava como today. Sem SLA explícito, presumir "today".
     const order = buildOrder({
       shipmentSubstatus: "in_packing_list",
       expectedDate: "2026-04-10T00:00:00.000-03:00",
-    });
-
-    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("upcoming");
-  });
-
-  it("in_packing_list with SLA today/past goes to today (aligned with ML UI)", () => {
-    // ML Seller Center mostra coletas programadas pra hoje em "Envios de hoje"
-    // mesmo quando etiqueta não foi impressa — vendedor precisa agir antes.
-    const order = buildOrder({
-      shipmentSubstatus: "in_packing_list",
-      expectedDate: "2026-04-06T00:00:00.000-03:00",
     });
 
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("today");

@@ -535,36 +535,28 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Substatuses "aguardando ação" do vendedor: classificam por SLA.
-    // Se coleta é HOJE (SLA ≤ hoje), ML UI mostra em "Envios de hoje"
-    // mesmo sem etiqueta impressa — precisa ação hoje. Senão, "Próximos dias".
-    // Observado em comparação real: 66 "ready_to_print" com coleta hoje
-    // apareciam em "Envios de hoje" no ML, app classificava upcoming (−66 drift).
+    // Substatuses que SEMPRE vão pra "Próximos dias" (esperando algo externo):
+    // - in_hub: pedido já saiu, está no hub do transportador
+    // - in_warehouse: pedido no armazém ML (Full)
+    // - invoice_pending: aguardando NF-e do vendedor
+    if (
+      substatus === "in_hub" ||
+      substatus === "in_warehouse" ||
+      substatus === "invoice_pending"
+    ) {
+      return "upcoming";
+    }
+
+    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
+    // (coleta do dia passa, precisa imprimir/separar antes).
+    // Observado em comparação real: 58 pedidos com ready_to_print sem SLA
+    // ficavam em upcoming no app mas today no ML. Sem SLA explícito,
+    // presumir "today" (coleta diária).
     if (
       substatus === "ready_to_print" ||
       substatus === "in_packing_list"
     ) {
-      if (
-        dates.operationalDueDateKey &&
-        isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-      ) {
-        return "today";
-      }
-      return "upcoming";
-    }
-
-    // Substatuses que SEMPRE vão pra "Próximos dias" (esperando algo externo):
-    if (
-      substatus === "in_hub" ||
-      substatus === "in_warehouse"
-    ) {
-      return "upcoming";
-    }
-
-    // invoice_pending: vendedor precisa emitir NF-e. Sempre upcoming
-    // até ML propagar novo substatus.
-    if (substatus === "invoice_pending") {
-      return "upcoming";
+      return "today";
     }
 
     // Outros substatuses raros: usar SLA para classificar.
@@ -668,20 +660,6 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // Substatuses "aguardando ação": classifica por SLA (coleta hoje → today)
-    if (
-      substatus === "ready_to_print" ||
-      substatus === "in_packing_list"
-    ) {
-      if (
-        dates.operationalDueDateKey &&
-        isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)
-      ) {
-        return "today";
-      }
-      return "upcoming";
-    }
-
     // Sempre "Próximos dias" (esperando algo externo/NF-e)
     if (
       substatus === "in_hub" ||
@@ -689,6 +667,15 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       substatus === "in_warehouse"
     ) {
       return "upcoming";
+    }
+
+    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
+    // (precisa imprimir/separar antes da coleta do dia).
+    if (
+      substatus === "ready_to_print" ||
+      substatus === "in_packing_list"
+    ) {
+      return "today";
     }
 
     // Substatuses desconhecidos: usa SLA (fallback conservador)
@@ -1837,22 +1824,15 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // Substatuses "aguardando ação" do vendedor: classifica por SLA.
-      // Se coleta hoje → today (precisa imprimir/separar antes da coleta).
-      // Se coleta futura → upcoming.
-      if (sub === "ready_to_print" || sub === "in_packing_list") {
-        const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-        if (slaKey && slaKey <= todayKey) {
-          addMlOrderIds("today", pack.ml_order_ids);
-        } else {
-          addMlOrderIds("upcoming", pack.ml_order_ids);
-        }
-        continue;
-      }
-
       // Sempre "Próximos dias" (esperando algo externo)
       if (sub === "in_hub" || sub === "invoice_pending" || sub === "in_warehouse") {
         addMlOrderIds("upcoming", pack.ml_order_ids);
+        continue;
+      }
+
+      // ready_to_print / in_packing_list: "Envios de hoje" (coleta do dia).
+      if (sub === "ready_to_print" || sub === "in_packing_list") {
+        addMlOrderIds("today", pack.ml_order_ids);
         continue;
       }
 
