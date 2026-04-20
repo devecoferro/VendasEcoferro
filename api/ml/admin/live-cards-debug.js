@@ -183,7 +183,7 @@ export default async function handler(request, response) {
     const singleTab = request.query?.tab ? String(request.query.tab) : null;
     const singleStore = request.query?.store ? String(request.query.store) : null;
     const result = await scrapeMlSellerCenterFull({
-      timeoutMs: 30_000,
+      timeoutMs: 60_000, // 60s — networkidle pode demorar mais que domcontentloaded
       singleTab,
       singleStore,
     });

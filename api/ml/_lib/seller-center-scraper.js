@@ -398,15 +398,15 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
       const body = await response.text();
       if (!body || body.length > 2 * 1024 * 1024) return; // skip > 2MB
       // Pula JSONs muito pequenos (provavel telemetria/ack)
-      if (body.length < 200) return;
+      if (body.length < 100) return;
       let parsed;
       try {
         parsed = JSON.parse(body);
       } catch {
         return;
       }
-      // Limita a 30 XHRs por navegacao (evita explosao de memoria)
-      if (xhrJsonResponses.length >= 30) return;
+      // Limita a 60 XHRs por navegacao (mais espaco pra ver tudo)
+      if (xhrJsonResponses.length >= 60) return;
       xhrJsonResponses.push({
         url,
         status: response.status(),
@@ -422,10 +422,14 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
 
   let navError = null;
   try {
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    // Aguarda app render + XHRs internas carregarem (reduzido de 3500
-    // pra 2000ms — XHRs principais carregam rapido apos DOM ready).
-    await page.waitForTimeout(2000);
+    // waitUntil "networkidle" espera 500ms sem requests — garante que
+    // os XHRs internos do ML (que sao chamados APOS o DOM ready,
+    // depois de carregar config dos microfrontends) tenham tempo de
+    // serem capturados.
+    await page.goto(targetUrl, { waitUntil: "networkidle", timeout: timeoutMs });
+    // Wait extra pra capturar XHRs lazy-loaded por interacao
+    // (a tela carrega config primeiro, depois os dados das listagens)
+    await page.waitForTimeout(5000);
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
   } finally {
