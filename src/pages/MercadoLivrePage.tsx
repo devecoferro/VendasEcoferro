@@ -48,6 +48,7 @@ import {
   Link2,
   Loader2,
   Receipt,
+  RefreshCw,
   RotateCcw,
   Search,
   Send,
@@ -2772,14 +2773,41 @@ export default function MercadoLivrePage() {
           </div>
         ) : displayedOperationalOrders.length === 0 ? (
           <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-            <Search className="mx-auto mb-3 h-8 w-8 text-[#bdbdbd]" />
-            <p className="text-[16px] font-semibold text-[#333333]">
-              {labelPrintFilter === "not_printed"
-                ? "Nenhum pedido sem etiqueta impressa."
-                : labelPrintFilter === "printed"
-                  ? "Nenhum pedido com etiqueta impressa."
-                  : "Nenhum pedido encontrado para os filtros aplicados."}
-            </p>
+            {/* Caso especial: chip do ML mostra pedidos mas a lista local
+                esta vazia. Significa que o ML retorna IDs que ainda nao
+                foram sincronizados no banco local. Mostra um aviso claro
+                + botao "Sincronizar agora" pra forcar a sync. */}
+            {selectedBucketTotalCount > 0 && bucketOrders.length === 0 ? (
+              <>
+                <CircleAlert className="mx-auto mb-3 h-8 w-8 text-[#ff6d1b]" />
+                <p className="text-[16px] font-semibold text-[#333333]">
+                  ML mostra <strong>{selectedBucketTotalCount}</strong> pedido(s),
+                  mas o app não tem nenhum sincronizado ainda.
+                </p>
+                <p className="mt-1 text-[15px] text-[#666666]">
+                  Isso acontece quando vendas novas ainda nao foram puxadas pro banco local.
+                  Clica em "Sincronizar agora" pra resolver.
+                </p>
+                <div className="mt-5 flex justify-center">
+                  <Button
+                    onClick={handleRetryLoad}
+                    className="bg-[#ff6d1b] text-white hover:bg-[#e65c10]"
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Sincronizar agora
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <Search className="mx-auto mb-3 h-8 w-8 text-[#bdbdbd]" />
+                <p className="text-[16px] font-semibold text-[#333333]">
+                  {labelPrintFilter === "not_printed"
+                    ? "Nenhum pedido sem etiqueta impressa."
+                    : labelPrintFilter === "printed"
+                      ? "Nenhum pedido com etiqueta impressa."
+                      : "Nenhum pedido encontrado para os filtros aplicados."}
+                </p>
             <p className="mt-1 text-[15px] text-[#666666]">
               {labelPrintFilter !== "all"
                 ? "Troque o filtro de etiqueta para 'Todas' ou ajuste os outros filtros."
@@ -2797,6 +2825,8 @@ export default function MercadoLivrePage() {
               >
                 {ordersPagination.loading_more ? "Carregando..." : "Carregar mais agora"}
               </Button>
+            )}
+              </>
             )}
           </div>
         ) : (
