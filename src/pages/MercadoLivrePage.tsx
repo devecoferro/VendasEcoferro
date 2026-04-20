@@ -10,6 +10,15 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDocumentsDialog";
+import { SubClassificationsBar } from "@/components/SubClassificationsBar";
+import {
+  type MLSubStatus,
+  type MLStoreKey,
+  getOrderSubstatus,
+  getOrderPickupDateLabel,
+  getOrderStoreKey,
+  getOrderStoreLabel,
+} from "@/services/mlSubStatusClassifier";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -820,6 +829,22 @@ export default function MercadoLivrePage() {
     "all" | "not_printed" | "printed"
   >("all");
   const [markingLabelsPrinted, setMarkingLabelsPrinted] = useState(false);
+
+  // ─── Filtros novos: replica visual do ML Seller Center ──────────────
+  // Sub-status (Etiquetas pra imprimir, NF-e, Em processamento, etc) — clique
+  // num card de SubClassificationsBar ativa este filtro pra estreitar a lista.
+  const [selectedSubStatus, setSelectedSubStatus] = useState<MLSubStatus | null>(null);
+  // Pickup group (Hoje, Amanha, Quarta-feira, A partir de 23 de abril) usado
+  // junto com o sub-status quando o card e do tipo "Coleta | <dia>".
+  const [selectedPickupGroup, setSelectedPickupGroup] = useState<string | null>(null);
+  // Store (Mercado Envios Full vs outras lojas) — substitui visualmente o
+  // filtro de "loja" do ML. Default "all" mostra tudo somado igual hoje.
+  const [selectedStore, setSelectedStore] = useState<MLStoreKey | "all">("all");
+
+  // Reset dos sub-filtros quando trocar de bucket — sub-status e relativo
+  // ao bucket atual (ready_to_print so existe em "upcoming" por exemplo).
+  // Refaz a logica do effect fica em useEffect mais abaixo (depende de
+  // shipmentFilter declarado acima).
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [appliedFilters, setAppliedFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
   const [draftFilters, setDraftFilters] = useState<MercadoLivreFilters>(createDefaultFilters());
@@ -1669,20 +1694,56 @@ export default function MercadoLivrePage() {
     [appliedFilters, quickFilteredOperationalOrders, searchQuery]
   );
 
-  // Aplica o filtro de etiqueta impressa sobre o conjunto ja filtrado. Fica
-  // separado dos outros filtros porque e puramente uma "view" — nao interfere
-  // em readyOrders/invoicePendingOrders (usados para contadores e logica de
-  // selecao), so na lista exibida e nos contadores visuais "x de y".
+  // Aplica o filtro de etiqueta impressa + filtros novos do ML (sub-status,
+  // pickup group, store) sobre o conjunto ja filtrado. Fica separado dos
+  // outros filtros porque e puramente uma "view" — nao interfere em
+  // readyOrders/invoicePendingOrders.
   const displayedOperationalOrders = useMemo(() => {
-    if (labelPrintFilter === "all") return filteredOperationalOrders;
-    if (labelPrintFilter === "printed") {
-      return filteredOperationalOrders.filter((order) =>
-        Boolean(order.label_printed_at)
+    let result = filteredOperationalOrders;
+
+    // Filtro de store (Full vs outros) — replicacao do filtro de loja do ML
+    if (selectedStore !== "all") {
+      result = result.filter((order) => getOrderStoreKey(order) === selectedStore);
+    }
+
+    // Filtro de sub-status do ML (clique num card do SubClassificationsBar)
+    if (selectedSubStatus) {
+      result = result.filter(
+        (order) => getOrderSubstatus(order, shipmentFilter) === selectedSubStatus
       );
     }
-    // not_printed
-    return filteredOperationalOrders.filter((order) => !order.label_printed_at);
-  }, [filteredOperationalOrders, labelPrintFilter]);
+
+    // Filtro de pickup group (Coleta | Quarta-feira, etc) — combina com
+    // sub-status quando o card e do tipo agrupado por data
+    if (selectedPickupGroup) {
+      result = result.filter(
+        (order) => getOrderPickupDateLabel(order) === selectedPickupGroup
+      );
+    }
+
+    // Filtro de etiqueta impressa (mantido)
+    if (labelPrintFilter === "printed") {
+      result = result.filter((order) => Boolean(order.label_printed_at));
+    } else if (labelPrintFilter === "not_printed") {
+      result = result.filter((order) => !order.label_printed_at);
+    }
+
+    return result;
+  }, [
+    filteredOperationalOrders,
+    labelPrintFilter,
+    selectedStore,
+    selectedSubStatus,
+    selectedPickupGroup,
+    shipmentFilter,
+  ]);
+
+  // Reset sub-status + pickup quando trocar de bucket — eles sao especificos
+  // do bucket atual e nao fazem sentido em outro.
+  useEffect(() => {
+    setSelectedSubStatus(null);
+    setSelectedPickupGroup(null);
+  }, [shipmentFilter]);
 
   // Contagens pros badges dos botoes de filtro — usam o conjunto ja filtrado
   // (quickFilters + appliedFilters + search) mas SEM o filtro de etiqueta,
@@ -2331,6 +2392,80 @@ export default function MercadoLivrePage() {
             </div>
           )}
         </div>
+
+        {/* ─── Filtro de Loja (Mercado Envios Full vs outras) ────────────
+            Replica visual do filtro de loja do ML Seller Center. "Todas"
+            mostra tudo somado igual chip global; "Full" filtra so
+            fulfillment; outros filtra so coleta/cross_docking. */}
+        {(() => {
+          // Conta orders por store no conjunto filtrado (pra mostrar contadores)
+          const storeCounts = { all: filteredOperationalOrders.length, full: 0, outros: 0 };
+          for (const order of filteredOperationalOrders) {
+            const k = getOrderStoreKey(order);
+            if (k === "full") storeCounts.full++;
+            else storeCounts.outros++;
+          }
+          // So mostra o filtro se ha mais de uma loja com pedidos no bucket
+          const hasMultipleStores = storeCounts.full > 0 && storeCounts.outros > 0;
+          if (!hasMultipleStores && selectedStore === "all") return null;
+
+          const options: Array<{ value: typeof selectedStore; label: string; count: number }> = [
+            { value: "all", label: "Todas as lojas", count: storeCounts.all },
+            { value: "outros", label: getOrderStoreLabel("outros"), count: storeCounts.outros },
+            { value: "full", label: getOrderStoreLabel("full"), count: storeCounts.full },
+          ];
+
+          return (
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.06)] sm:px-4">
+              <span className="text-[12px] font-semibold uppercase tracking-wide text-[#666]">
+                Loja:
+              </span>
+              {options.map((opt) => {
+                const active = selectedStore === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSelectedStore(opt.value)}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition ${
+                      active
+                        ? "bg-[#fff159] text-[#333] shadow-[0_1px_3px_rgba(255,241,89,0.6)]"
+                        : "text-[#555] hover:bg-[#f0f0f0]"
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    <span
+                      className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                        active ? "bg-white/40 text-[#333]" : "bg-[#ececec] text-[#555]"
+                      }`}
+                    >
+                      {opt.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })()}
+
+        {/* ─── Sub-classificacoes (estilo cards ML Seller Center) ────────
+            Replica visual da listagem de sub-status do ML. Cada card
+            representa uma "secao" (Coleta, Devolucoes, Para retirar,
+            etc) e dentro dele as linhas sao sub-status clicaveis que
+            filtram a lista de pedidos abaixo.
+
+            Pra "Proximos dias" agrupa adicionalmente por data de coleta
+            ("Coleta | Quarta-feira", "Coleta | A partir de 23 de abril"). */}
+        <SubClassificationsBar
+          orders={filteredOperationalOrders.filter((order) =>
+            selectedStore === "all" ? true : getOrderStoreKey(order) === selectedStore
+          )}
+          bucket={shipmentFilter}
+          selectedSubStatus={selectedSubStatus}
+          onSelectSubStatus={setSelectedSubStatus}
+          selectedPickupGroup={selectedPickupGroup}
+          onSelectPickupGroup={setSelectedPickupGroup}
+        />
 
         {/* ─── Filtro de etiqueta impressa ──────────────────────────────
             Tabs rapidas pra isolar pedidos pendentes de impressao vs.
