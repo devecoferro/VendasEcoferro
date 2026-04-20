@@ -328,20 +328,38 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
 // no endpoint debug e a gente identifique qual contem os dados certos.
 
 /**
- * Padrao das URLs internas do ML que retornam dados de cards/listas.
- * Capturamos todos JSONs que batem com esse pattern pra inspecao.
+ * Padroes pra IGNORAR (assets, telemetria, third-party). Capturamos
+ * QUALQUER outro JSON > 500 bytes — assim nao perdemos nenhum endpoint
+ * interno do ML que possa ter os dados de cards/sub-status.
  */
-const ML_INTERNAL_API_PATTERNS = [
-  /\/vendas\/omni\/api\//,
-  /\/vendas\/api\//,
-  /\/orders-frontend\//,
-  /\/sells-listing\//,
-  /\/seller-cohorts\//,
-  /\/myml\/orders\//,
+const URL_BLACKLIST_PATTERNS = [
+  /google-analytics/,
+  /googletagmanager/,
+  /facebook\.com/,
+  /facebook\.net/,
+  /doubleclick/,
+  /datadog/,
+  /newrelic/,
+  /sentry\.io/,
+  /\/captcha/,
+  /melidata/,
+  /\/v3\/melidata/,
+  /\/p\.gif/,
+  /\.css(\?|$)/,
+  /\.js(\?|$)/,
 ];
 
-function urlMatchesInternalApi(url) {
-  return ML_INTERNAL_API_PATTERNS.some((re) => re.test(url));
+function shouldCaptureUrl(url) {
+  // So aceita URLs de dominios do ML (mercadolivre.com.br, mercadolibre,
+  // mlstatic). Ignora assets externos.
+  if (
+    !url.includes("mercadolivre") &&
+    !url.includes("mercadolibre") &&
+    !url.includes("mlstatic")
+  ) {
+    return false;
+  }
+  return !URL_BLACKLIST_PATTERNS.some((re) => re.test(url));
 }
 
 /**
@@ -360,21 +378,35 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
 
   // Buffer de XHRs interceptados nesta navegacao
   const xhrJsonResponses = [];
+  let totalSeen = 0;
+  let blacklisted = 0;
+  let nonJson = 0;
   const responseHandler = async (response) => {
     try {
+      totalSeen++;
       const url = response.url();
-      if (!urlMatchesInternalApi(url)) return;
+      if (!shouldCaptureUrl(url)) {
+        blacklisted++;
+        return;
+      }
       const contentType = response.headers()["content-type"] || "";
-      if (!contentType.toLowerCase().includes("application/json")) return;
+      if (!contentType.toLowerCase().includes("application/json")) {
+        nonJson++;
+        return;
+      }
       // Limita tamanho pra nao explodir memoria
       const body = await response.text();
       if (!body || body.length > 2 * 1024 * 1024) return; // skip > 2MB
+      // Pula JSONs muito pequenos (provavel telemetria/ack)
+      if (body.length < 200) return;
       let parsed;
       try {
         parsed = JSON.parse(body);
       } catch {
         return;
       }
+      // Limita a 30 XHRs por navegacao (evita explosao de memoria)
+      if (xhrJsonResponses.length >= 30) return;
       xhrJsonResponses.push({
         url,
         status: response.status(),
@@ -430,6 +462,12 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs) {
     xhrJsonResponses,
     domChipsText,
     navError,
+    capture_stats: {
+      total_seen: totalSeen,
+      blacklisted,
+      non_json: nonJson,
+      captured: xhrJsonResponses.length,
+    },
   };
 }
 
@@ -549,6 +587,7 @@ export async function scrapeMlSellerCenterFull({
             xhr_responses: capture.xhrJsonResponses,
             dom_chips_text: capture.domChipsText,
             nav_error: capture.navError,
+            capture_stats: capture.capture_stats,
           };
         } catch (err) {
           captures[tab.key][store] = {

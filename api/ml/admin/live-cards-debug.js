@@ -52,13 +52,22 @@ function renderHtml(report, options) {
           const chipsText = capture.dom_chips_text
             ? `<p class="meta">DOM chips: ${escapeHtml(JSON.stringify(capture.dom_chips_text))}</p>`
             : "";
+          const stats = capture.capture_stats;
+          const statsHtml = stats
+            ? `<p class="meta">📊 Stats: ${stats.total_seen} responses totais · ${stats.blacklisted} blacklisted · ${stats.non_json} non-JSON · <strong>${stats.captured} capturados</strong></p>`
+            : "";
+          const navErrHtml = capture.nav_error
+            ? `<p class="meta" style="color:#b91c1c">⚠ Nav error: ${escapeHtml(capture.nav_error)}</p>`
+            : "";
           return `<details open>
             <summary>
               <strong>${escapeHtml(storeKey)}</strong>
               <code class="url">${escapeHtml((capture.url || "").slice(0, 100))}</code>
               <span class="badge">${capture.xhr_count} XHR</span>
             </summary>
+            ${statsHtml}
             ${chipsText}
+            ${navErrHtml}
             ${xhrs || `<p class="empty">Nenhum XHR JSON capturado nesta navegação.</p>`}
           </details>`;
         })
