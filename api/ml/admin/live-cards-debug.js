@@ -64,6 +64,29 @@ function renderHtml(report, options) {
                </div>`
             : "";
 
+          // ── DIRECT FETCHES (Opcao D — fetches autenticados) ──
+          const directFetches = capture.directFetches || null;
+          const directFetchesHtml = directFetches
+            ? `<div style="background:#ecfeff;border:2px solid #06b6d4;padding:10px;border-radius:6px;margin:10px 0">
+                 <strong>🎯 DIRECT FETCHES (Opcao D — fetches autenticados via page.evaluate):</strong>
+                 ${Object.entries(directFetches).map(([key, r]) => {
+                   if (r.error) {
+                     return `<details>
+                       <summary>❌ <strong>${escapeHtml(key)}</strong> — erro</summary>
+                       <pre style="color:#b91c1c">${escapeHtml(r.error)}</pre>
+                       <p class="meta">URL: <code>${escapeHtml(r.url || "")}</code></p>
+                     </details>`;
+                   }
+                   const statusColor = r.ok ? "#059669" : "#b91c1c";
+                   return `<details open>
+                     <summary>${r.ok ? "✅" : "⚠️"} <strong>${escapeHtml(key)}</strong> — <span style="color:${statusColor}">status ${r.status}</span> (${r.size} bytes)</summary>
+                     <p class="meta">URL: <code>${escapeHtml(r.url || "")}</code></p>
+                     <pre>${escapeHtml(typeof r.body === "string" ? r.body : JSON.stringify(r.body, null, 2)).slice(0, 60000)}</pre>
+                   </details>`;
+                 }).join("")}
+               </div>`
+            : "";
+
           // ── HTML keywords found (palavras-chave de cards no HTML) ──
           const htmlMatches = capture.htmlMatches || {};
           const matchKeys = Object.keys(htmlMatches);
@@ -103,10 +126,12 @@ function renderHtml(report, options) {
               <span class="badge">${capture.xhr_count} XHR</span>
               ${ssrPayloads.length > 0 ? `<span class="badge" style="background:#fbbf24">${ssrPayloads.length} SSR</span>` : ""}
               ${matchKeys.length > 0 ? `<span class="badge" style="background:#22c55e">${matchKeys.length} matches</span>` : ""}
+              ${directFetches ? `<span class="badge" style="background:#06b6d4">${Object.keys(directFetches).length} direct</span>` : ""}
             </summary>
             ${statsHtml}
             ${chipsText}
             ${navErrHtml}
+            ${directFetchesHtml}
             ${htmlMatchesHtml}
             ${ssrHtml}
             ${xhrs || `<p class="empty">Nenhum XHR JSON capturado nesta navegação.</p>`}
@@ -161,6 +186,8 @@ function renderHtml(report, options) {
     <a href="?format=html&run=1" class="run-btn">↻ Scrape rápido (8s)</a>
     &nbsp;&nbsp;
     <a href="?format=html&run=1&wait=20000&tab=today&store=outros" class="run-btn" style="background:#dc2626">🔬 Diagnóstico TAB_TODAY (20s wait)</a>
+    &nbsp;&nbsp;
+    <a href="?format=html&run=1&tab=today&store=outros&fetchDirect=1" class="run-btn" style="background:#06b6d4">🎯 Fetch Direto (Opção D)</a>
     &nbsp;&nbsp;
     <strong>Tab:</strong>
     <a href="?format=html" class="${!options.tab ? "active" : ""}">Todas</a>
@@ -230,11 +257,16 @@ export default async function handler(request, response) {
     // garante que operations-dashboard + marketshops/list sejam chamados).
     // Default 8000 pra scrape rapido.
     const waitMs = request.query?.wait ? Math.max(1000, Math.min(60000, parseInt(String(request.query.wait), 10))) : 8000;
+    // ?fetchDirect=1 → faz fetch direto dos 3 endpoints internos do ML
+    // (operations-dashboard/tabs, /actions, marketshops/list) via
+    // page.evaluate(fetch()). Contorna problemas de hidratacao.
+    const fetchDirect = request.query?.fetchDirect === "1" || request.query?.fetchDirect === "true";
     const result = await scrapeMlSellerCenterFull({
       timeoutMs: 60_000, // 60s — networkidle pode demorar mais que domcontentloaded
       singleTab,
       singleStore,
       waitMs,
+      fetchDirect,
     });
     if (!result.ok) {
       if (format === "html") {

@@ -368,7 +368,76 @@ function shouldCaptureUrl(url) {
  *
  * Esta funcao NAO renova browser — recebe page e ja navega.
  */
-async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs = 8000) {
+/**
+ * Faz fetches autenticados DIRETO no contexto da page (usa cookies da sessao
+ * do Chromium ja autenticado). Util porque os endpoints de sub-cards
+ * (/operations-dashboard/tabs, /operations-dashboard/actions, /marketshops/list)
+ * sao disparados via onRenderEvents pelo JS client-side do ML, mas em browser
+ * headless isso pode nao disparar (timing ou anti-bot). Fazer fetch direto
+ * contorna essa limitacao.
+ *
+ * Retorna { [key]: { ok, status, size, body, error } }
+ */
+async function fetchDirectEndpoints(page, tabFilter, storeUrlParam) {
+  const storeForQuery = storeUrlParam || "all";
+  const endpoints = {
+    operations_dashboard_tabs: {
+      path: `/sales-omni/packs/marketshops/operations-dashboard/tabs?sellerSegmentType=professional&filters=${encodeURIComponent(tabFilter || "TAB_TODAY")}&subFilters=&store=${encodeURIComponent(storeForQuery)}&gmt=-03:00`,
+      headers: { "x-scope": "tabs-mlb" },
+    },
+    operations_dashboard_actions: {
+      path: `/sales-omni/packs/marketshops/operations-dashboard/actions?store=${encodeURIComponent(storeForQuery)}&sellerCBTParent=false&callers=`,
+      headers: { "x-scope": "tabs-mlb" },
+    },
+    marketshops_list: {
+      path: `/sales-omni/packs/marketshops/list?referrer=web-wrapper&filters=${encodeURIComponent(tabFilter || "TAB_TODAY")}&subFilters=&search=&limit=50&offset=0&startPeriod=&store=${encodeURIComponent(storeForQuery)}`,
+      headers: {},
+    },
+  };
+
+  const results = {};
+  for (const [key, cfg] of Object.entries(endpoints)) {
+    try {
+      const result = await page.evaluate(
+        async ({ path, headers }) => {
+          try {
+            const res = await fetch(path, {
+              method: "GET",
+              headers: { Accept: "application/json", ...headers },
+              credentials: "include",
+            });
+            const text = await res.text();
+            let body = null;
+            try {
+              body = JSON.parse(text);
+            } catch {
+              body = text.slice(0, 2000);
+            }
+            return {
+              ok: res.ok,
+              status: res.status,
+              size: text.length,
+              body,
+            };
+          } catch (err) {
+            return { ok: false, error: String(err && err.message ? err.message : err) };
+          }
+        },
+        { path: cfg.path, headers: cfg.headers }
+      );
+      results[key] = { url: cfg.path, ...result };
+    } catch (err) {
+      results[key] = {
+        url: cfg.path,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+  return results;
+}
+
+async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs = 8000, doFetchDirect = false) {
   const params = new URLSearchParams();
   if (tabFilter) params.set("filters", tabFilter);
   if (storeUrlParam) params.set("store", storeUrlParam);
@@ -580,6 +649,22 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     // ignore
   }
 
+  // ── OPCAO D: fetch direto dos endpoints descobertos ──
+  // Chamada dos 3 endpoints (operations-dashboard/tabs, /actions,
+  // /marketshops/list) via page.evaluate(fetch(...)). Executa dentro
+  // do contexto da page ja autenticada no ML. Contorna o problema dos
+  // onRenderEvents nao dispararem em headless.
+  let directFetches = null;
+  if (doFetchDirect) {
+    try {
+      directFetches = await fetchDirectEndpoints(page, tabFilter, storeUrlParam);
+    } catch (err) {
+      directFetches = {
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   return {
     url: targetUrl,
     xhrJsonResponses,
@@ -587,6 +672,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     ssrPayloads,
     htmlSnippet,
     htmlMatches,
+    directFetches,
     navError,
     capture_stats: {
       total_seen: totalSeen,
@@ -595,6 +681,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
       captured: xhrJsonResponses.length,
       ssr_payloads_found: ssrPayloads.length,
       html_keywords_found: htmlMatches ? Object.keys(htmlMatches).length : 0,
+      direct_fetches: directFetches ? Object.keys(directFetches).length : 0,
     },
   };
 }
@@ -615,6 +702,7 @@ export async function scrapeMlSellerCenterFull({
   singleTab = null,
   singleStore = null,
   waitMs = 8000,
+  fetchDirect = false,
 } = {}) {
   if (!isScraperConfigured()) {
     return { ok: false, error: "no_state", message: "Storage state nao configurado" };
@@ -708,7 +796,8 @@ export async function scrapeMlSellerCenterFull({
             tab.filter,
             storeParam,
             timeoutMs,
-            waitMs
+            waitMs,
+            fetchDirect
           );
           captures[tab.key][store] = {
             url: capture.url,
@@ -722,6 +811,7 @@ export async function scrapeMlSellerCenterFull({
             ssrPayloads: capture.ssrPayloads,
             htmlMatches: capture.htmlMatches,
             htmlSnippet: capture.htmlSnippet,
+            directFetches: capture.directFetches,
             nav_error: capture.navError,
             capture_stats: capture.capture_stats,
           };
