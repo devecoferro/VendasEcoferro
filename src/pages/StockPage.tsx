@@ -29,6 +29,7 @@ import {
   Loader2,
   Package,
   Pencil,
+  Printer,
   RefreshCw,
   Search,
   Trash2,
@@ -38,6 +39,7 @@ import {
   MapPin,
   AlertTriangle,
 } from "lucide-react";
+import { exportStockListPdf } from "@/services/stockReportService";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -84,6 +86,7 @@ export default function StockPage() {
   const [editing, setEditing] = useState<MLStockItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<MLStockItem | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     getMLConnectionStatus()
@@ -316,6 +319,40 @@ export default function StockPage() {
     }
   }, [editing, connectionId]);
 
+  // Handler vai ser chamado mais embaixo no componente (apos sortLabel/filtered
+  // estarem definidos). Encapsulado em useCallback dentro do return-effect.
+  const handleExportPdf = useCallback(
+    async (
+      filteredItems: MLStockItem[],
+      reportFilters: Parameters<typeof exportStockListPdf>[1]
+    ) => {
+      if (filteredItems.length === 0) {
+        toast.info("Nenhum produto pra imprimir — ajuste os filtros.");
+        return;
+      }
+      if (filteredItems.length > 500) {
+        const ok = window.confirm(
+          `${filteredItems.length} produtos vao ser impressos. Isso vai gerar muitas paginas. Continuar?`
+        );
+        if (!ok) return;
+      }
+      setExportingPdf(true);
+      try {
+        await exportStockListPdf(filteredItems, reportFilters, {
+          totalInBase: items.length,
+        });
+        toast.success(
+          `PDF gerado com ${filteredItems.length} produto${filteredItems.length === 1 ? "" : "s"}.`
+        );
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Erro ao gerar PDF.");
+      } finally {
+        setExportingPdf(false);
+      }
+    },
+    [items.length]
+  );
+
   const handleDelete = useCallback(async () => {
     if (!confirmDelete || !connectionId) return;
     try {
@@ -456,6 +493,46 @@ export default function StockPage() {
                 <RefreshCw className="h-4 w-4 mr-1" />
               )}
               Sincronizar
+            </Button>
+            {/* Botao "Imprimir Lista" — gera PDF da lista atual respeitando
+                TODOS os filtros e a ordenacao escolhida pelo usuario.
+                Snapshot do que esta na tela. */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                handleExportPdf(filtered, {
+                  search,
+                  brand: brandFilter,
+                  model: modelFilter,
+                  year: yearFilter,
+                  status: statusFilter,
+                  onlyMissingSku,
+                  onlyWithRecentSales,
+                  salesPeriodLabel,
+                  salesPeriodShort: salesPeriodShortLabel,
+                  sortLabel: `${sortKey} ${sortDir === "asc" ? "↑" : "↓"}`,
+                })
+              }
+              disabled={exportingPdf || filtered.length === 0}
+              className="gap-1.5"
+              title={
+                filtered.length === 0
+                  ? "Nenhum produto pra imprimir — ajuste os filtros"
+                  : `Imprimir lista de ${filtered.length} produto(s) com os filtros atuais`
+              }
+            >
+              {exportingPdf ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Printer className="h-4 w-4" />
+              )}
+              Imprimir Lista
+              {filtered.length > 0 && filtered.length < items.length && (
+                <span className="ml-1 text-[10px] opacity-70">
+                  ({filtered.length})
+                </span>
+              )}
             </Button>
             <Button
               size="sm"
