@@ -180,21 +180,96 @@ export default async function handler(request, response) {
     return response.status(405).json({ success: false, error: "Use GET ou POST." });
   }
 
-  // Executa instalacao com timeout maior (5min)
+  // Procura o binary do playwright em varios locais (npm prune pode ter
+  // removido do PATH global, mas o package.json o lista como dependency
+  // entao o binary deve existir em node_modules/.bin)
+  const candidateBinaries = [
+    "/app/node_modules/.bin/playwright",
+    "/app/node_modules/playwright/cli.js",
+    "/app/node_modules/playwright-core/cli.js",
+    "playwright", // fallback PATH
+  ];
+
+  const debugInfo = [];
+  let workingCmd = null;
+
+  for (const candidate of candidateBinaries) {
+    try {
+      if (candidate.startsWith("/") && !fs.existsSync(candidate)) {
+        debugInfo.push(`❌ ${candidate} — nao existe`);
+        continue;
+      }
+      // Testa rodando --version
+      const cmd = candidate.endsWith(".js") ? `node ${candidate}` : candidate;
+      const { stdout: ver } = await execAsync(`${cmd} --version 2>&1`, {
+        timeout: 5_000,
+      });
+      debugInfo.push(`✅ ${candidate} → versao ${ver.trim()}`);
+      workingCmd = cmd;
+      break;
+    } catch (err) {
+      debugInfo.push(
+        `❌ ${candidate} — falhou: ${(err.stderr || err.message || "").slice(0, 100)}`
+      );
+    }
+  }
+
+  // Se nem o package esta acessivel, instala primeiro
+  if (!workingCmd) {
+    debugInfo.push("");
+    debugInfo.push("⚠ Binary do playwright nao encontrado. Tentando npm install...");
+    try {
+      const { stdout, stderr } = await execAsync(
+        "cd /app && npm install playwright 2>&1",
+        { timeout: 3 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 }
+      );
+      debugInfo.push(stdout || "");
+      debugInfo.push(stderr || "");
+      // Tenta de novo
+      if (fs.existsSync("/app/node_modules/.bin/playwright")) {
+        workingCmd = "/app/node_modules/.bin/playwright";
+        debugInfo.push("✅ playwright instalado via npm install");
+      }
+    } catch (err) {
+      const fail = `Falha no npm install: ${err.message}\n${err.stderr || ""}\n${err.stdout || ""}`;
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      return response.status(500).send(
+        renderHtml({
+          message: "Nao foi possivel instalar o playwright via npm.",
+          isError: true,
+          output: `${debugInfo.join("\n")}\n\n${fail}`,
+        })
+      );
+    }
+  }
+
+  if (!workingCmd) {
+    response.setHeader("Content-Type", "text/html; charset=utf-8");
+    return response.status(500).send(
+      renderHtml({
+        message: "Binary do playwright nao encontrado em nenhum local.",
+        isError: true,
+        output: debugInfo.join("\n"),
+      })
+    );
+  }
+
+  // Executa instalacao do Chromium (sem --with-deps porque container
+  // pode nao ter permissao pra apt-get; deps geralmente ja vem via Dockerfile)
   try {
     const env = {
       ...process.env,
       PLAYWRIGHT_BROWSERS_PATH,
     };
     const { stdout, stderr } = await execAsync(
-      "npx playwright install chromium --with-deps 2>&1",
+      `${workingCmd} install chromium 2>&1`,
       {
         env,
         timeout: 5 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
       }
     );
-    const output = `${stdout || ""}\n${stderr || ""}`.trim();
+    const output = `${debugInfo.join("\n")}\n\n=== INSTALL OUTPUT ===\n${stdout || ""}\n${stderr || ""}`.trim();
     const status = isChromiumInstalled();
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     return response.status(200).send(
@@ -207,11 +282,11 @@ export default async function handler(request, response) {
       })
     );
   } catch (error) {
-    const output = `${error.stdout || ""}\n${error.stderr || ""}\n${error.message || ""}`.trim();
+    const output = `${debugInfo.join("\n")}\n\n=== ERROR ===\n${error.stdout || ""}\n${error.stderr || ""}\n${error.message || ""}`.trim();
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     return response.status(500).send(
       renderHtml({
-        message: `Erro ao instalar: ${error.message}`,
+        message: `Erro ao instalar Chromium: ${error.message}`,
         isError: true,
         output,
       })
