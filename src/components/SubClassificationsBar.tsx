@@ -1,17 +1,20 @@
 /**
- * SubClassificationsBar — Renderiza os cards estilo ML Seller Center
- * mostrando as sub-secoes e sub-status do bucket atual.
+ * SubClassificationsBar — Cards no estilo EXATO do ML Seller Center.
  *
- * Cada linha clicavel filtra a lista de pedidos abaixo (controlada pelo
- * estado `selectedSubStatus` no MercadoLivrePage). Click numa linha
- * ativa filtro, click de novo desativa.
+ * Layout 1:1 com o ML:
+ *   - Card branco bordado, padding generoso
+ *   - Header: titulo grande + pill cinza com contagem
+ *   - "PARA ENVIAR" tem subtitulo (PARA ENVIAR / Coleta) — outros cards
+ *     usam so titulo simples
+ *   - Lista de sub-status: texto cinza + contagem direita
+ *   - Pill vermelha rosa pros sub-status criticos (Canceladas, Reclamacao)
+ *   - Hover sutil pra indicar clicavel
  *
  * Para o bucket "upcoming" (Proximos dias), agrupa adicionalmente por
  * data de coleta — gera 1 card "Coleta | <dia>" por grupo de pickup_date.
- *
- * Estilo: amarelo ML / arredondado (B2 escolhido pelo operador).
  */
 import { useMemo } from "react";
+import { HelpCircle, MessageSquare } from "lucide-react";
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type { ShipmentBucket } from "@/services/mercadoLivreHelpers";
 import {
@@ -21,7 +24,6 @@ import {
   getOrderSection,
   getOrderPickupDateLabel,
   SUBSTATUS_LABELS,
-  SECTION_LABELS,
   SUBSTATUS_TONES,
 } from "@/services/mlSubStatusClassifier";
 
@@ -40,36 +42,46 @@ interface SubStatusEntry {
 }
 
 interface SectionCard {
-  key: string;                  // pickupGroup (pra coleta_dia) ou MLSection
+  key: string;
   section: MLSection;
-  title: string;                // label exibido
+  subtitle?: string;       // ex: "PARA ENVIAR" no card de Coleta (today)
+  title: string;           // ex: "Coleta", "Devoluções", "Coleta | Quarta-feira"
+  hasHelpIcon?: boolean;   // ⓘ (HelpCircle) no header igual o ML
   total: number;
   substatuses: SubStatusEntry[];
-  pickupGroup?: string;         // se vier de agrupamento por data
+  pickupGroup?: string;
 }
 
-const TONE_CLASSES: Record<string, { dot: string; count: string }> = {
-  warning: {
-    dot: "bg-[#ff6d1b]",
-    count: "text-[#ff6d1b]",
-  },
-  danger: {
-    dot: "bg-[#dc2626]",
-    count: "text-[#dc2626]",
-  },
-  info: {
-    dot: "bg-[#3483fa]",
-    count: "text-[#3483fa]",
-  },
-  success: {
-    dot: "bg-[#22c55e]",
-    count: "text-[#16a34a]",
-  },
-  neutral: {
-    dot: "bg-[#9ca3af]",
-    count: "text-[#6b7280]",
-  },
-};
+/**
+ * Mapping section → display config (subtitle, hasHelpIcon, etc).
+ * Replica visual do ML: PARA ENVIAR tem subtitle "PARA ENVIAR" + titulo
+ * "Coleta", outros cards usam so o nome direto.
+ */
+function getSectionDisplay(section: MLSection): {
+  subtitle?: string;
+  title: string;
+  hasHelpIcon: boolean;
+} {
+  switch (section) {
+    case "para_enviar_coleta":
+      return { subtitle: "PARA ENVIAR", title: "Coleta", hasHelpIcon: true };
+    case "envios_devolucoes":
+    case "proximos_devolucoes":
+      return { title: "Devoluções", hasHelpIcon: false };
+    case "coleta_dia":
+      return { title: "Coleta", hasHelpIcon: false }; // sufixado | <dia> depois
+    case "para_retirar":
+      return { title: "Para retirar", hasHelpIcon: false };
+    case "a_caminho":
+      return { title: "A caminho", hasHelpIcon: false };
+    case "para_atender":
+      return { title: "Para atender", hasHelpIcon: false };
+    case "encerradas":
+      return { title: "Encerradas", hasHelpIcon: false };
+    default:
+      return { title: section, hasHelpIcon: false };
+  }
+}
 
 export function SubClassificationsBar({
   orders,
@@ -82,7 +94,6 @@ export function SubClassificationsBar({
   const cards = useMemo<SectionCard[]>(() => {
     if (orders.length === 0) return [];
 
-    // Agrupa orders por (section, pickupGroup, substatus)
     type Key = string;
     const groupMap = new Map<
       Key,
@@ -99,7 +110,6 @@ export function SubClassificationsBar({
       const substatus = getOrderSubstatus(order, bucket);
       if (!substatus) continue;
 
-      // Pra "coleta_dia", agrupa adicionalmente por pickup date
       const pickupGroup =
         section === "coleta_dia" ? getOrderPickupDateLabel(order) : null;
 
@@ -119,7 +129,6 @@ export function SubClassificationsBar({
       );
     }
 
-    // Converte em array de cards
     const result: SectionCard[] = [];
     for (const [key, entry] of groupMap) {
       const substatuses: SubStatusEntry[] = [];
@@ -128,13 +137,13 @@ export function SubClassificationsBar({
         substatuses.push({ substatus, count });
         total += count;
       }
-      // Ordena sub-status: prioriza "warning"/"danger" (acoes pendentes)
+      // Ordena: warning/danger primeiro, depois alfabetico
       substatuses.sort((a, b) => {
         const ta = SUBSTATUS_TONES[a.substatus];
         const tb = SUBSTATUS_TONES[b.substatus];
         const priority: Record<string, number> = {
-          warning: 1,
-          danger: 2,
+          danger: 1,
+          warning: 2,
           info: 3,
           success: 4,
           neutral: 5,
@@ -146,28 +155,28 @@ export function SubClassificationsBar({
         );
       });
 
-      const baseTitle = SECTION_LABELS[entry.section];
+      const display = getSectionDisplay(entry.section);
       const title = entry.pickupGroup
-        ? `${baseTitle} | ${entry.pickupGroup}`
-        : baseTitle;
+        ? `${display.title} | ${entry.pickupGroup}`
+        : display.title;
 
       result.push({
         key,
         section: entry.section,
+        subtitle: display.subtitle,
         title,
+        hasHelpIcon: display.hasHelpIcon,
         total,
         substatuses,
         pickupGroup: entry.pickupGroup ?? undefined,
       });
     }
 
-    // Ordena cards: cards com "warning"/"danger" primeiro, depois alfabetico.
-    // Pra "coleta_dia", ordena por proximidade da data (Hoje > Amanha > ...)
+    // Ordena cards: nao-devolucoes primeiro, depois por proximidade da data
     const dateScore = (label: string) => {
       if (label === "Hoje") return 0;
       if (label === "Amanhã") return 1;
       if (label === "Sem data definida") return 99;
-      // Dias da semana: tenta achar
       const weekdayIdx = [
         "Segunda-feira",
         "Terça-feira",
@@ -178,17 +187,14 @@ export function SubClassificationsBar({
         "Domingo",
       ].indexOf(label);
       if (weekdayIdx >= 0) return 2 + weekdayIdx;
-      // "A partir de ..."
       return 50;
     };
 
     result.sort((a, b) => {
-      // Prioriza nao-devolucoes
       const aDev = a.section.includes("devolucoes");
       const bDev = b.section.includes("devolucoes");
       if (aDev !== bDev) return aDev ? 1 : -1;
 
-      // Pra coleta_dia, ordena por data
       if (a.pickupGroup && b.pickupGroup) {
         return dateScore(a.pickupGroup) - dateScore(b.pickupGroup);
       }
@@ -206,25 +212,39 @@ export function SubClassificationsBar({
       {cards.map((card) => (
         <div
           key={card.key}
-          className="rounded-2xl border border-[#e6e6e6] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+          className="rounded-2xl border border-[#e5e5e5] bg-white px-5 py-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)]"
         >
-          <div className="flex items-baseline justify-between gap-2">
-            <h3 className="truncate text-[14px] font-bold uppercase tracking-wide text-[#333]">
-              {card.title}
-            </h3>
-            <span className="inline-flex h-6 min-w-[26px] shrink-0 items-center justify-center rounded-full bg-[#f1f1f4] px-2 text-[11px] font-bold text-[#555]">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              {card.subtitle && (
+                <p className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-[#999]">
+                  {card.subtitle}
+                  {card.hasHelpIcon && (
+                    <HelpCircle className="h-3 w-3 text-[#3483fa]" />
+                  )}
+                </p>
+              )}
+              <h3 className="truncate text-[16px] font-bold text-[#333]">
+                {card.title}
+              </h3>
+            </div>
+            <span className="inline-flex h-6 min-w-[26px] shrink-0 items-center justify-center rounded-full bg-[#f1f1f4] px-2 text-[11px] font-semibold text-[#666]">
               {card.total}
             </span>
           </div>
-          <div className="mt-3 space-y-1.5">
+
+          {/* Lista de sub-status */}
+          <div className="mt-3 -mx-2">
             {card.substatuses.map((s) => {
               const tone = SUBSTATUS_TONES[s.substatus] || "neutral";
-              const toneCls = TONE_CLASSES[tone] || TONE_CLASSES.neutral;
               const isActive =
                 selectedSubStatus === s.substatus &&
                 (card.pickupGroup
                   ? selectedPickupGroup === card.pickupGroup
                   : selectedPickupGroup === null);
+              const isDanger = tone === "danger";
+              const isMessages = s.substatus === ("with_unread_messages" as MLSubStatus);
 
               return (
                 <button
@@ -239,26 +259,30 @@ export function SubClassificationsBar({
                       onSelectPickupGroup(card.pickupGroup ?? null);
                     }
                   }}
-                  className={`group flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition ${
+                  className={`group flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition ${
                     isActive
-                      ? "bg-[#fff9e6] text-[#333] ring-1 ring-[#fff159]"
+                      ? "bg-[#fff9e6] ring-1 ring-[#fff159]"
                       : "hover:bg-[#fafafa]"
                   }`}
-                  title={`Filtrar lista por: ${SUBSTATUS_LABELS[s.substatus]}`}
+                  title={`Filtrar por: ${SUBSTATUS_LABELS[s.substatus]}`}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${toneCls.dot}`}
-                    />
-                    <span className="truncate text-[#333]">
+                  <span className="flex min-w-0 items-center gap-1.5 text-[#666]">
+                    <span className="truncate">
                       {SUBSTATUS_LABELS[s.substatus]}
                     </span>
+                    {isMessages && (
+                      <MessageSquare className="h-3.5 w-3.5 text-[#3483fa]" />
+                    )}
                   </span>
-                  <span
-                    className={`shrink-0 text-[12px] font-semibold ${toneCls.count}`}
-                  >
-                    {s.count}
-                  </span>
+                  {isDanger ? (
+                    <span className="inline-flex h-5 min-w-[22px] shrink-0 items-center justify-center rounded-full bg-[#fde7eb] px-1.5 text-[11px] font-semibold text-[#d63030]">
+                      {s.count}
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[12px] font-medium text-[#666]">
+                      {s.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
