@@ -823,17 +823,22 @@ export default function StockPage() {
             </p>
           </div>
         ) : (
-          <div className="rounded-lg border">
+          <div className="rounded-lg border overflow-x-auto">
             <table className="w-full text-sm table-fixed">
+              {/* Larguras refeitas pra fechar 100% sem sobrar espaco e
+                  manter cada coluna proxima do tamanho do conteudo, evitando
+                  numero "solto" longe do cabecalho. As escondidas em
+                  breakpoints menores (md/lg) liberam espaco pras visiveis. */}
               <colgroup>
-                <col className="w-[32%]" />
-                <col className="w-[11%]" />
-                <col className="w-[12%]" />
-                <col className="w-[8%]" />
-                <col className="w-[14%]" />
-                <col className="w-[9%] hidden lg:table-column" />
-                <col className="w-[7%] hidden md:table-column" />
+                <col className="w-[28%]" />
                 <col className="w-[10%]" />
+                <col className="w-[11%]" />
+                <col className="w-[7%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10%] hidden lg:table-column" />
+                <col className="w-[8%] hidden lg:table-column" />
+                <col className="w-[7%] hidden md:table-column" />
+                <col className="w-[9%]" />
               </colgroup>
               <thead className="border-b bg-muted/40">
                 <tr>
@@ -844,32 +849,41 @@ export default function StockPage() {
                   <th className="px-2 py-3 text-center text-xs hidden lg:table-cell">
                     Localização
                   </th>
-                  <th className="px-2 py-3 text-right text-xs">
-                    <SortBtn label="Disp." col="available_quantity" />
-                  </th>
-                  {/* Coluna unificada de vendas: numero de unidades no
-                      periodo + "ha X dias" da ultima venda. Substitui a
-                      coluna antiga "Vend." (sold_quantity cumulativo)
-                      que era pouco util no dia a dia. Clique nos dois
-                      sorts disponiveis separadamente. */}
-                  <th
-                    className="px-2 py-3 text-right text-xs"
-                    title={`Vendas ${salesPeriodLabel}`}
-                  >
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="inline-flex items-center gap-1">
-                        <Flame className="h-3 w-3 text-orange-500" />
-                        <SortBtn
-                          label={`Vendas ${salesPeriodShortLabel}`}
-                          col="recent_sales_qty"
-                        />
-                      </div>
-                      <span className="text-muted-foreground/50">·</span>
-                      <SortBtn label="Última" col="last_sale_date" />
+                  <th className="px-2 py-3 text-center text-xs">
+                    <div className="flex items-center justify-center">
+                      <SortBtn label="Disp." col="available_quantity" />
                     </div>
                   </th>
-                  <th className="px-2 py-3 text-right text-xs hidden lg:table-cell">
-                    <SortBtn label="Preço" col="price" />
+                  {/* Coluna 1 de vendas: SO unidades no periodo. Header curto,
+                      numa linha so, com Flame visivel. Sort por qty (mais
+                      vendidos primeiro). */}
+                  <th
+                    className="px-2 py-3 text-center text-xs"
+                    title={`Unidades vendidas ${salesPeriodLabel}`}
+                  >
+                    <div className="inline-flex items-center justify-center gap-1">
+                      <Flame className="h-3 w-3 text-orange-500" />
+                      <SortBtn
+                        label={`Vendas ${salesPeriodShortLabel}`}
+                        col="recent_sales_qty"
+                      />
+                    </div>
+                  </th>
+                  {/* Coluna 2 de vendas: SO data da ultima venda (oculta em
+                      tela pequena pra economizar espaco). Sort por data —
+                      asc identifica produtos parados. */}
+                  <th
+                    className="px-2 py-3 text-center text-xs hidden lg:table-cell"
+                    title="Data da ultima venda — sort asc lista produtos parados"
+                  >
+                    <div className="flex items-center justify-center">
+                      <SortBtn label="Última venda" col="last_sale_date" />
+                    </div>
+                  </th>
+                  <th className="px-2 py-3 text-center text-xs hidden lg:table-cell">
+                    <div className="flex items-center justify-center">
+                      <SortBtn label="Preço" col="price" />
+                    </div>
                   </th>
                   <th className="px-2 py-3 text-center text-xs hidden md:table-cell">Status</th>
                   <th className="px-2 py-3 text-right text-xs">Ações</th>
@@ -929,7 +943,8 @@ export default function StockPage() {
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-2 py-2 text-right font-semibold text-xs">
+                      {/* Disp. centralizado pra acompanhar o header centralizado */}
+                      <td className="px-2 py-2 text-center font-semibold text-xs">
                         <span
                           className={
                             isOut
@@ -945,45 +960,53 @@ export default function StockPage() {
                           )}
                         </span>
                       </td>
-                      {/* Vendas recentes: unidades em destaque + "ha X dias".
-                          Quando nao vendeu no periodo, mostra "—" discreto e
-                          o total cumulativo em cinza (pra dar contexto). */}
-                      <td className="px-2 py-2 text-right text-xs">
+                      {/* Coluna 1: SO unidades vendidas (numero grande em laranja
+                          + qtd de pedidos pequena embaixo). Centralizado. */}
+                      <td className="px-2 py-2 text-center text-xs">
                         {(item.recent_sales_qty || 0) > 0 ? (
-                          <div className="flex flex-col items-end gap-0.5">
+                          <div className="flex flex-col items-center gap-0.5">
                             <div className="inline-flex items-center gap-1 font-bold text-orange-600">
                               <Flame className="h-3 w-3" />
-                              {item.recent_sales_qty}
+                              <span>{item.recent_sales_qty}</span>
                               <span className="text-[10px] font-normal text-muted-foreground">
                                 un
                               </span>
                             </div>
-                            <span
-                              className="text-[10px] text-muted-foreground"
-                              title={
-                                item.last_sale_date
-                                  ? new Date(item.last_sale_date).toLocaleString("pt-BR")
-                                  : undefined
-                              }
-                            >
-                              há {formatDaysAgo(item.last_sale_date)}
-                              {(item.recent_sales_orders || 0) > 0
-                                ? ` · ${item.recent_sales_orders} ped.`
-                                : ""}
-                            </span>
+                            {(item.recent_sales_orders || 0) > 0 && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {item.recent_sales_orders}{" "}
+                                {item.recent_sales_orders === 1 ? "ped." : "peds."}
+                              </span>
+                            )}
                           </div>
                         ) : (
-                          <div className="flex flex-col items-end gap-0.5">
-                            <span className="text-muted-foreground">—</span>
-                            <span className="text-[10px] text-muted-foreground/60">
-                              {item.sold_quantity > 0
-                                ? `total: ${item.sold_quantity}`
-                                : "sem venda"}
-                            </span>
-                          </div>
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-2 py-2 text-right text-xs hidden lg:table-cell">
+                      {/* Coluna 2: SO data da ultima venda em "ha X dias",
+                          oculta em telas pequenas. */}
+                      <td className="px-2 py-2 text-center text-xs hidden lg:table-cell">
+                        {item.last_sale_date ? (
+                          <span
+                            className="text-[11px] text-muted-foreground"
+                            title={new Date(item.last_sale_date).toLocaleString("pt-BR")}
+                          >
+                            há {formatDaysAgo(item.last_sale_date)}
+                          </span>
+                        ) : item.sold_quantity > 0 ? (
+                          <span
+                            className="text-[10px] text-muted-foreground/60"
+                            title={`Total cumulativo do anuncio: ${item.sold_quantity} unidades`}
+                          >
+                            total: {item.sold_quantity}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/60 text-[10px]">
+                            sem venda
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 text-center text-xs hidden lg:table-cell">
                         {item.price != null
                           ? item.price.toLocaleString("pt-BR", {
                               style: "currency",

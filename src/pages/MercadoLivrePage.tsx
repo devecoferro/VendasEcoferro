@@ -1594,29 +1594,39 @@ export default function MercadoLivrePage() {
   const operationalOrderIds = useMemo(() => {
     const liveIds = dashboard?.ml_live_chip_order_ids_by_bucket?.[shipmentFilter];
 
+    // Escopo local do depósito (sempre calculado para servir de fallback robusto).
+    // Vem de deposit.order_ids_by_bucket que é populado pela classificação
+    // interna do app por depósito, então sempre tem info de depósito.
+    const localScope = new Set<string>();
+    for (const deposit of selectedDashboardDeposits) {
+      for (const id of getDashboardBucketOrderIds(deposit, shipmentFilter)) {
+        localScope.add(id);
+      }
+    }
+
     if (Array.isArray(liveIds) && liveIds.length > 0) {
       const ids = new Set<string>(liveIds);
       // Se houver filtro de depósito ativo, restringimos aos pedidos que
       // também estão no escopo local desse depósito.
       if (selectedDepositFilters.length > 0) {
-        const scope = new Set<string>();
-        for (const deposit of selectedDashboardDeposits) {
-          for (const id of getDashboardBucketOrderIds(deposit, shipmentFilter)) {
-            scope.add(id);
-          }
+        const intersected = new Set<string>([...ids].filter((id) => localScope.has(id)));
+
+        // CORREÇÃO (2026-04-20): se a intersecção é 0 mas o escopo local tem
+        // pedidos, usa o escopo local. Cenário: ML live retorna IDs que ainda
+        // não foram sincronizados no banco local OU classifica diferente do
+        // depósito local (ex: ML diz "today", local diz "upcoming"). Sem isso,
+        // o operador via "0 vendas" mesmo com 106 no chip — o que aconteceu
+        // após o redeploy de 36c5770.
+        if (intersected.size === 0 && localScope.size > 0) {
+          return localScope;
         }
-        return new Set<string>([...ids].filter((id) => scope.has(id)));
+        return intersected;
       }
       return ids;
     }
 
-    // Fallback: soma dos IDs locais classificados por depósito
-    const ids = new Set<string>();
-    for (const deposit of selectedDashboardDeposits) {
-      const bucketIds = getDashboardBucketOrderIds(deposit, shipmentFilter);
-      for (const id of bucketIds) ids.add(id);
-    }
-    return ids;
+    // Fallback: nenhum live ID disponível, usa escopo local
+    return localScope;
   }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter]);
 
   const bucketOrders = useMemo(() => {
