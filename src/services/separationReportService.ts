@@ -87,39 +87,57 @@ export function buildSeparationReport(orders: MLOrder[]): SeparationItem[] {
 
 // ─── Helpers de imagem (mesma logica de pdfExportService) ───────────────
 
-async function loadImageAsDataUrl(url: string): Promise<string | null> {
-  if (!url) return null;
-  if (url.startsWith("data:")) return url;
-
-  // URLs externas (ex: mlstatic.com) passam pelo proxy backend pra
-  // contornar CORS — sem isso, jspdf nao consegue ler os bytes.
-  let fetchUrl = url;
+async function fetchAsDataUrl(url: string): Promise<string | null> {
   try {
-    const parsed = new URL(url, window.location.href);
-    if (
-      parsed.host &&
-      typeof window !== "undefined" &&
-      parsed.host !== window.location.host
-    ) {
-      fetchUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
-    }
-  } catch {
-    // ignora — usa url direto
-  }
-
-  try {
-    const response = await fetch(fetchUrl, { mode: "cors" });
+    const response = await fetch(url, { mode: "cors" });
     if (!response.ok) return null;
     const blob = await response.blob();
+    if (!blob || blob.size === 0) return null;
     return await new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        if (result && result.startsWith("data:image/")) {
+          resolve(result);
+        } else {
+          resolve(null);
+        }
+      };
       reader.onerror = () => resolve(null);
       reader.readAsDataURL(blob);
     });
   } catch {
     return null;
   }
+}
+
+async function loadImageAsDataUrl(url: string): Promise<string | null> {
+  if (!url) return null;
+  if (url.startsWith("data:")) return url;
+
+  let isExternal = false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    isExternal =
+      typeof window !== "undefined" &&
+      parsed.host !== "" &&
+      parsed.host !== window.location.host;
+  } catch {
+    // URL invalida — tenta direto mesmo assim
+  }
+
+  // Tenta fetch direto primeiro (algumas thumbnails ML tem CORS aberto)
+  const direct = await fetchAsDataUrl(url);
+  if (direct) return direct;
+
+  // Fallback: proxy backend (contorna CORS)
+  if (isExternal) {
+    const proxyUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
+    const viaProxy = await fetchAsDataUrl(proxyUrl);
+    if (viaProxy) return viaProxy;
+  }
+
+  return null;
 }
 
 function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {

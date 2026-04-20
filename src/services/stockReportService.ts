@@ -34,47 +34,73 @@ export interface StockReportFilters {
 /**
  * Carrega imagem como data URL pra embedar no PDF.
  *
- * Hosts externos (mlstatic.com etc) podem retornar CORS restrito,
- * fazendo o fetch direto falhar e a imagem aparecer como placeholder.
- * Pra evitar isso, qualquer URL externa passa pelo /api/ml/image-proxy
- * (proxy backend que faz o fetch server-side, sem CORS, com whitelist
- * de hosts permitidos).
+ * Estrategia em 2 etapas pra ser resiliente:
  *
- * URLs do proprio dominio (data: ou same-origin) carregam direto.
+ *   1. Tenta fetch DIRETO da URL original. Algumas thumbnails do ML
+ *      retornam CORS aberto e funcionam. Tambem cobre o caso do
+ *      backend nao ter o /api/ml/image-proxy disponivel ainda.
+ *
+ *   2. Se o fetch direto falhar (CORS, network, etc), tenta via
+ *      /api/ml/image-proxy?url=... que faz proxy server-side.
+ *
+ *   3. Se o proxy tambem falhar, retorna null (placeholder no PDF).
+ *
+ * URLs same-origin (data: ou caminho do proprio dominio) sao usadas
+ * diretamente sem retentar.
  */
-async function loadImageAsDataUrl(url: string): Promise<string | null> {
-  if (!url) return null;
-  if (url.startsWith("data:")) return url;
-
-  // Detecta se e URL externa — se for, passa pelo proxy do backend.
-  // Browser-only: `window.location.host` so existe no client.
-  let fetchUrl = url;
+async function fetchAsDataUrl(url: string): Promise<string | null> {
   try {
-    const parsed = new URL(url, window.location.href);
-    if (
-      parsed.host &&
-      typeof window !== "undefined" &&
-      parsed.host !== window.location.host
-    ) {
-      fetchUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
-    }
-  } catch {
-    // URL invalida/relativa — usa direto, fetch decide
-  }
-
-  try {
-    const response = await fetch(fetchUrl, { mode: "cors" });
+    const response = await fetch(url, { mode: "cors" });
     if (!response.ok) return null;
     const blob = await response.blob();
+    if (!blob || blob.size === 0) return null;
     return await new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        // Sanity: tem que ser data:image/...
+        if (result && result.startsWith("data:image/")) {
+          resolve(result);
+        } else {
+          resolve(null);
+        }
+      };
       reader.onerror = () => resolve(null);
       reader.readAsDataURL(blob);
     });
   } catch {
     return null;
   }
+}
+
+async function loadImageAsDataUrl(url: string): Promise<string | null> {
+  if (!url) return null;
+  if (url.startsWith("data:")) return url;
+
+  let isExternal = false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    isExternal =
+      typeof window !== "undefined" &&
+      parsed.host !== "" &&
+      parsed.host !== window.location.host;
+  } catch {
+    // URL invalida — tenta fetch direto mesmo assim
+  }
+
+  // 1. Tenta fetch direto primeiro (cobre o caso do proxy nao estar
+  //    disponivel e algumas URLs com CORS aberto).
+  const direct = await fetchAsDataUrl(url);
+  if (direct) return direct;
+
+  // 2. Se direto falhou e e externa, tenta via proxy do backend.
+  if (isExternal) {
+    const proxyUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
+    const viaProxy = await fetchAsDataUrl(proxyUrl);
+    if (viaProxy) return viaProxy;
+  }
+
+  return null;
 }
 
 function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {
