@@ -53,6 +53,8 @@ import mlOrderDocumentsFileHandler from "../api/ml/order-documents-file.js";
 import mlPrivateSellerCenterSnapshotsHandler from "../api/ml/private-seller-center-snapshots.js";
 import mlPrivateSellerCenterComparisonHandler from "../api/ml/private-seller-center-comparison.js";
 import mlLiveSnapshotHandler from "../api/ml/live-snapshot.js";
+import debugReportsHandler from "../api/debug-reports.js";
+import debugReportsScreenshotHandler from "../api/debug-reports-screenshot.js";
 import nfeGenerateHandler from "../api/nfe/generate.js";
 import nfeDocumentHandler from "../api/nfe/document.js";
 import nfeFileHandler from "../api/nfe/file.js";
@@ -244,6 +246,9 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 app.get("/api/ml/live-snapshot", apiLimiter, (req, res) => mlLiveSnapshotHandler(req, res));
+// Debug reports (bugs/sugestoes dos usuarios). app.all pra cobrir GET/POST/PATCH/DELETE.
+app.all("/api/debug-reports", apiLimiter, (req, res) => debugReportsHandler(req, res));
+app.get("/api/debug-reports/screenshot", apiLimiter, (req, res) => debugReportsScreenshotHandler(req, res));
 app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(req, res));
 // Marcacao de etiquetas impressas (ReviewPage chama apos baixar PDF)
 app.post("/api/ml/labels/mark-printed", apiLimiter, (req, res) => mlLabelsHandler(req, res));

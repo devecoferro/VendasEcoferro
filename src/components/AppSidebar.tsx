@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
   BookOpen,
+  Bug,
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
@@ -51,6 +52,7 @@ const baseNavItems: SidebarNavItem[] = [
     logoAlt: "Logo Fantom",
   },
   { to: "/manual", icon: BookOpen, label: "Manual" },
+  { to: "/report-debug", icon: Bug, label: "Report Debug" },
 ];
 
 function SidebarContent({
