@@ -2775,111 +2775,6 @@ export default function MercadoLivrePage() {
           onSelectPickupGroup={setSelectedPickupGroup}
         />
 
-        {/* ─── Filtro de etiqueta impressa ──────────────────────────────
-            Tabs rapidas pra isolar pedidos pendentes de impressao vs.
-            auditoria dos ja impressos. Marcacao automatica acontece ao
-            baixar o PDF na tela de conferencia; esses tabs sao so VIEW.
-            Botoes ao lado permitem marcar/desmarcar manualmente quando
-            o operador imprime fora do sistema. */}
-        <div className="flex flex-col gap-2 rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-2.5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="inline-flex items-center rounded-full border border-[#e6e6e6] bg-[#fafafa] p-0.5">
-            {(
-              [
-                { value: "all", label: "Todas", count: labelPrintCounts.all },
-                {
-                  value: "not_printed",
-                  label: "Sem etiqueta",
-                  count: labelPrintCounts.not_printed,
-                },
-                {
-                  value: "printed",
-                  label: "Impressas",
-                  count: labelPrintCounts.printed,
-                },
-              ] as const
-            ).map((option) => {
-              const active = labelPrintFilter === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setLabelPrintFilter(option.value)}
-                  className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition ${
-                    active
-                      ? option.value === "not_printed"
-                        ? "bg-[#ff6d1b] text-white shadow-[0_1px_3px_rgba(255,109,27,0.35)]"
-                        : option.value === "printed"
-                          ? "bg-[#22c55e] text-white shadow-[0_1px_3px_rgba(34,197,94,0.35)]"
-                          : "bg-[#3483fa] text-white shadow-[0_1px_3px_rgba(52,131,250,0.35)]"
-                      : "text-[#555555] hover:bg-[#f0f0f0]"
-                  }`}
-                  title={
-                    option.value === "not_printed"
-                      ? "Pedidos sem etiqueta — fila de impressao"
-                      : option.value === "printed"
-                        ? "Pedidos com etiqueta ja impressa — auditoria"
-                        : "Mostrar todos os pedidos do bucket"
-                  }
-                >
-                  {option.value === "printed" && (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  )}
-                  {option.value === "not_printed" && (
-                    <Printer className="h-3.5 w-3.5" />
-                  )}
-                  <span>{option.label}</span>
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                      active ? "bg-white/25 text-white" : "bg-[#ececec] text-[#555]"
-                    }`}
-                  >
-                    {option.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Marcar como impressa — usa selectedReadyOrders (mesmo conjunto
-                dos botoes de etiqueta) por coerencia: se o operador tem os
-                "prontos para enviar" selecionados, esse botao marca os
-                mesmos como impressos ja. */}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 rounded-full border-[#d9e7ff] px-3 text-[12px] text-[#2968c8] hover:bg-[#eef4ff] disabled:opacity-60"
-              disabled={selectedReadyCount === 0 || markingLabelsPrinted}
-              onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "printed")}
-              title="Marcar etiquetas dos pedidos selecionados como impressas (para sair da fila sem precisar baixar o PDF)"
-            >
-              {markingLabelsPrinted ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Marcar impressa{selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 rounded-full border-[#ffe0c7] px-3 text-[12px] text-[#ff6d1b] hover:bg-[#fff4ec] disabled:opacity-60"
-              disabled={selectedReadyCount === 0 || markingLabelsPrinted}
-              onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "unprinted")}
-              title="Devolver pedidos selecionados para a fila 'Sem etiqueta impressa' (para reimprimir)"
-            >
-              {markingLabelsPrinted ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Desmarcar
-            </Button>
-          </div>
-        </div>
-
         <div className="rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-3">
           <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
             <div className="flex items-center gap-2.5">
@@ -2958,6 +2853,41 @@ export default function MercadoLivrePage() {
             </div>
 
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center lg:gap-2.5">
+              {/* Marcar/Desmarcar etiqueta impressa — migrados do bloco
+                  de filtros removido pra ficarem juntos com as outras
+                  acoes em lote, conforme mockup do usuario. */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-10 w-full rounded-lg border-[#d9e7ff] px-3 text-[13px] text-[#2968c8] hover:bg-[#eef4ff] disabled:opacity-60 lg:w-auto"
+                disabled={selectedReadyCount === 0 || markingLabelsPrinted}
+                onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "printed")}
+                title="Marcar etiquetas dos pedidos selecionados como impressas"
+              >
+                {markingLabelsPrinted ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                )}
+                Marcar Impressas{selectedReadyCount > 0 ? ` (${selectedReadyCount})` : ""}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-10 w-full rounded-lg border-[#ffe0c7] px-3 text-[13px] text-[#ff6d1b] hover:bg-[#fff4ec] disabled:opacity-60 lg:w-auto"
+                disabled={selectedReadyCount === 0 || markingLabelsPrinted}
+                onClick={() => handleMarkSelectedLabels(selectedReadyOrders, "unprinted")}
+                title="Devolver pedidos selecionados para fila 'Sem etiqueta impressa'"
+              >
+                {markingLabelsPrinted ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="mr-1.5 h-4 w-4" />
+                )}
+                Desmarcar
+              </Button>
               <Button
                 className="h-10 w-full rounded-lg bg-[#ff6d1b] px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_3px_rgba(255,109,27,0.28)] transition hover:bg-[#e65c10] hover:shadow-[0_2px_6px_rgba(255,109,27,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
                 disabled={selectedInvoicePendingCount === 0 || bulkGeneratingNFe}
