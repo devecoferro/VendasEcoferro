@@ -826,27 +826,51 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     // Primeiro prune 5min apos boot
     setTimeout(autoChipDriftPrune, 5 * 60 * 1000);
 
-    // Auto-emit NF-e: a cada 30s, emite automaticamente NF-e de pedidos
+    // Auto-emit NF-e: a cada 30s, emitia automaticamente NF-e de pedidos
     // invoice_pending que já passaram 30s desde que ML sinalizou.
-    // Sem overlap: se execução anterior ainda está rodando, skip.
-    let autoEmitNfeRunning = false;
-    const AUTO_EMIT_NFE_INTERVAL_MS = 30_000;
-    log.info(`Auto-emit NF-e iniciado (intervalo: ${AUTO_EMIT_NFE_INTERVAL_MS / 1000}s, delay 30s após invoice_pending)`);
-    setInterval(async () => {
-      if (autoEmitNfeRunning) return;
-      autoEmitNfeRunning = true;
-      try {
-        await runAutoEmitNfe();
-      } catch (err) {
-        log.error("Auto-emit NF-e falhou", err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        autoEmitNfeRunning = false;
-      }
-    }, AUTO_EMIT_NFE_INTERVAL_MS);
-    // Primeira execução 2min após boot (dá tempo dos syncs pegarem dados frescos)
-    setTimeout(async () => {
-      try { await runAutoEmitNfe(); } catch { /* logged */ }
-    }, 2 * 60 * 1000);
+    //
+    // DESLIGADO POR PADRÃO (2026-04-21) a pedido do operador: emissão de
+    // NF-e agora é MANUAL via botão "Gerar NF-e" na MercadoLivrePage.
+    //
+    // Pra reativar, setar env var DISABLE_AUTO_NFE_EMIT=false no container.
+    const disableAutoNfeEmit =
+      String(process.env.DISABLE_AUTO_NFE_EMIT ?? "true").toLowerCase() !== "false";
+
+    if (disableAutoNfeEmit) {
+      log.info(
+        "Auto-emit NF-e DESLIGADO (DISABLE_AUTO_NFE_EMIT=true). " +
+        "Emissão de NF-e agora é MANUAL via botão 'Gerar NF-e'. " +
+        "Pra reativar, setar DISABLE_AUTO_NFE_EMIT=false."
+      );
+    } else {
+      let autoEmitNfeRunning = false;
+      const AUTO_EMIT_NFE_INTERVAL_MS = 30_000;
+      log.info(
+        `Auto-emit NF-e ATIVO (intervalo: ${AUTO_EMIT_NFE_INTERVAL_MS / 1000}s, delay 30s após invoice_pending)`
+      );
+      setInterval(async () => {
+        if (autoEmitNfeRunning) return;
+        autoEmitNfeRunning = true;
+        try {
+          await runAutoEmitNfe();
+        } catch (err) {
+          log.error(
+            "Auto-emit NF-e falhou",
+            err instanceof Error ? err : new Error(String(err))
+          );
+        } finally {
+          autoEmitNfeRunning = false;
+        }
+      }, AUTO_EMIT_NFE_INTERVAL_MS);
+      // Primeira execução 2min após boot (dá tempo dos syncs pegarem dados frescos)
+      setTimeout(async () => {
+        try {
+          await runAutoEmitNfe();
+        } catch {
+          /* logged */
+        }
+      }, 2 * 60 * 1000);
+    }
 
     // ─── ML UI Scraper (Seller Center headless) ─────────────────────
     // A cada 5min, captura os chips diretamente da UI do ML Seller Center
