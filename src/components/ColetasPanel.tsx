@@ -339,6 +339,26 @@ export function ColetasPanel({
     0
   );
 
+  // ─── Extrapolação proporcional ao total real do ML ─────────────────
+  // O scraper pega só os 50 primeiros orders por tab (limitação do ML
+  // Seller Center — paginação client-side não funciona via offset).
+  // Mas counters.upcoming vem do brick segmented_actions e tem o
+  // total REAL (ex: 169). Pra o painel não subestimar drasticamente,
+  // extrapolamos proporcionalmente.
+  //
+  // Exemplo: amostra=50, total_ml=169 → ratio=3.38
+  //   Se amostra tem 15 "sem_gerar_lo" → extrapolado ≈ 51
+  const mlTotalUpcoming = scopedLiveSnapshot?.counters?.upcoming ?? 0;
+  const extrapolationRatio =
+    snapshotUpcomingTotal > 0 && mlTotalUpcoming > snapshotUpcomingTotal
+      ? mlTotalUpcoming / snapshotUpcomingTotal
+      : 1;
+  const extrapolate = (sampleCount: number): number =>
+    extrapolationRatio === 1
+      ? sampleCount
+      : Math.round(sampleCount * extrapolationRatio);
+  const isExtrapolating = extrapolationRatio > 1;
+
   return (
     <Card className="overflow-hidden">
       <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
@@ -382,16 +402,24 @@ export function ColetasPanel({
             </div>
           ) : (
             <>
-              <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center justify-between gap-2 text-xs flex-wrap">
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Calendar className="h-3.5 w-3.5" />
                   Coletas: {pickupDates.map(formatShort).join("  |  ")}
                 </div>
-                {withoutPickupDate > 0 && (
-                  <span className="text-muted-foreground">
-                    (+{withoutPickupDate} sem data identificável)
-                  </span>
-                )}
+                <div className="flex items-center gap-3 text-muted-foreground">
+                  {isExtrapolating && (
+                    <span
+                      title={`O scraper captura os primeiros ${snapshotUpcomingTotal} pedidos por tab. Os contadores acima são extrapolados proporcionalmente pro total real do ML (${mlTotalUpcoming}). Distribuição baseada na amostra.`}
+                      className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 px-2 py-0.5 font-medium"
+                    >
+                      amostra {snapshotUpcomingTotal}/{mlTotalUpcoming} · extrapolado ×{extrapolationRatio.toFixed(2)}
+                    </span>
+                  )}
+                  {withoutPickupDate > 0 && (
+                    <span>(+{withoutPickupDate} sem data identificável)</span>
+                  )}
+                </div>
               </div>
 
               <div
@@ -407,7 +435,8 @@ export function ColetasPanel({
                       </div>
                       <div className="p-2 space-y-2">
                         {PIPELINE_STATES.map((state) => {
-                          const count = cells[state.value].length;
+                          const sampleCount = cells[state.value].length;
+                          const displayCount = extrapolate(sampleCount);
                           const Icon = state.icon;
                           const isSelected =
                             effectiveSelection?.pickupDate === date &&
@@ -428,12 +457,22 @@ export function ColetasPanel({
                                 state.tone,
                                 isSelected && "ring-2 ring-primary ring-offset-1"
                               )}
+                              title={
+                                isExtrapolating
+                                  ? `${sampleCount} na amostra · ~${displayCount} no ML total`
+                                  : undefined
+                              }
                             >
                               <span className="flex items-center gap-2">
                                 <Icon className="h-4 w-4" />
                                 {state.label}
                               </span>
-                              <Badge variant="secondary">{count}</Badge>
+                              <Badge variant="secondary">
+                                {displayCount}
+                                {isExtrapolating && sampleCount > 0 && (
+                                  <span className="ml-1 text-[9px] opacity-60">~</span>
+                                )}
+                              </Badge>
                             </button>
                           );
                         })}
@@ -452,6 +491,11 @@ export function ColetasPanel({
                       <Badge variant="secondary" className="ml-2">
                         {selectedEntries.length} pedido{selectedEntries.length === 1 ? "" : "s"}
                       </Badge>
+                      {isExtrapolating && (
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          (da amostra — ML total ~{extrapolate(selectedEntries.length)})
+                        </span>
+                      )}
                     </div>
                     <Button
                       variant="ghost"
