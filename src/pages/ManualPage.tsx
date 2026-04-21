@@ -15,6 +15,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  APP_VERSION_LABEL,
+  APP_VERSION_DATE,
+  APP_VERSION_HIGHLIGHTS,
+} from "@/lib/version";
 
 // ─── Conteúdo do manual ──────────────────────────────────────────────
 //
@@ -93,12 +98,33 @@ const SECTIONS: ManualSection[] = [
     icon: BookOpen,
     content: (
       <div>
+        {/* Badge de versão */}
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl bg-gradient-to-br from-emerald-50 to-white p-4 ring-1 ring-emerald-200">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center rounded-full bg-emerald-500 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white">
+              {APP_VERSION_LABEL}
+            </span>
+            <span className="text-[12px] font-medium text-emerald-900">
+              Versão atual · release {APP_VERSION_DATE}
+            </span>
+          </div>
+        </div>
+
         <p className="text-[15px] leading-relaxed text-[#333]">
           Bem-vindo ao <strong>EcoFerro Vendas · Etiquetas</strong>.
           Este sistema centraliza o fluxo de vendas do Mercado Livre
           da Ecoferro, desde receber o pedido até gerar etiqueta,
           conferir e despachar.
         </p>
+
+        <h3 className="mt-6 text-[17px] font-bold text-[#333]">
+          Novidades da V 3.0
+        </h3>
+        <ul className="mt-2 list-disc pl-6 text-[14px] leading-relaxed text-[#333]">
+          {APP_VERSION_HIGHLIGHTS.map((highlight, idx) => (
+            <li key={idx}>{highlight}</li>
+          ))}
+        </ul>
 
         <h3 className="mt-6 text-[17px] font-bold text-[#333]">
           Para quem é este sistema?
@@ -806,6 +832,12 @@ export default function ManualPage() {
               <h2 className="text-[15px] font-bold text-[#333]">
                 Manual do Sistema
               </h2>
+              <span
+                className="ml-auto inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 ring-1 ring-inset ring-emerald-200"
+                title={`Release ${APP_VERSION_DATE}`}
+              >
+                {APP_VERSION_LABEL}
+              </span>
             </div>
             <nav className="flex flex-col gap-1">
               {SECTIONS.map((section) => {

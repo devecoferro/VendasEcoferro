@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { APP_VERSION_LABEL } from "@/lib/version";
 
 interface SidebarNavItem {
   to: string;
@@ -100,9 +101,14 @@ function SidebarContent({
         </div>
         {!collapsed && (
           <div className="min-w-0 animate-slide-in">
-            <h1 className="truncate text-[15px] font-bold tracking-tight text-sidebar-foreground">
-              EcoFerro
-            </h1>
+            <div className="flex items-center gap-1.5">
+              <h1 className="truncate text-[15px] font-bold tracking-tight text-sidebar-foreground">
+                EcoFerro
+              </h1>
+              <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300 ring-1 ring-inset ring-emerald-500/30">
+                {APP_VERSION_LABEL}
+              </span>
+            </div>
             <p className="truncate text-[11px] uppercase tracking-[0.14em] text-sidebar-foreground/50">
               Vendas · Etiquetas
             </p>

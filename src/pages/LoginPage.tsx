@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { APP_VERSION_LABEL } from "@/lib/version";
 
 const LOGIN_BACKGROUND = "/ChatGPT Image 2 de abr. de 2026, 11_27_17.png";
 const LOGO_PATH = "/login-ecoferro-logo-transparent.png";
@@ -67,8 +68,11 @@ export default function LoginPage() {
               alt="EcoFerro"
               className="mb-3 h-[76px] w-[76px] object-contain sm:h-[84px] sm:w-[84px]"
             />
-            <div className="text-[15px] font-semibold tracking-tight text-white">
+            <div className="flex items-center gap-2 text-[15px] font-semibold tracking-tight text-white">
               EcoFerro
+              <span className="inline-flex items-center rounded-full bg-emerald-500/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-200 ring-1 ring-inset ring-emerald-400/40">
+                {APP_VERSION_LABEL}
+              </span>
             </div>
           </div>
 
