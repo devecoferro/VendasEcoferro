@@ -78,31 +78,83 @@ function getTodayDayMonthLabel(offsetDays: number): string {
   return `${day} de ${ordered[monthIdx]}`;
 }
 
-function extractPickupDateLabel(snapOrder: MLLiveSnapshotOrder): string | null {
+// Classificação do order em relação à data de coleta:
+//   - { label: X }  → data X (explícita ou derivada direto)
+//   - "pending"     → status operacional pendente (aguardando NF-e ou
+//                     etiqueta) — sem data agendada ainda. Vai ficar
+//                     alocado na PRÓXIMA data de coleta agendada.
+//   - null          → status nao identificavel (ignorar)
+type PickupClassification =
+  | { kind: "date"; label: string }
+  | { kind: "pending" }
+  | null;
+
+function classifyPickupFromSnapshot(
+  snapOrder: MLLiveSnapshotOrder
+): PickupClassification {
   const text = `${snapOrder.status_text || ""} ${snapOrder.description || ""}`;
 
-  // 1. Data explícita
+  // 1. Data explícita ("coleta do dia 23 de abril")
   const m = text.match(PICKUP_DATE_EXPLICIT_RE);
-  if (m) return m[1].toLowerCase().replace("março", "março");
+  if (m) return { kind: "date", label: m[1].toLowerCase().replace("março", "março") };
 
-  // 2. "passará amanhã" / "passará hoje" na description
+  // 2. Referências temporais na description
   const lower = text.toLowerCase();
   if (lower.includes("passará hoje") || lower.includes("passara hoje")) {
-    return getTodayDayMonthLabel(0);
+    return { kind: "date", label: getTodayDayMonthLabel(0) };
   }
   if (lower.includes("passará amanhã") || lower.includes("passara amanha")) {
-    return getTodayDayMonthLabel(1);
+    return { kind: "date", label: getTodayDayMonthLabel(1) };
   }
   if (lower.includes("próxima coleta") || lower.includes("proxima coleta")) {
-    return getTodayDayMonthLabel(1);
+    return { kind: "date", label: getTodayDayMonthLabel(1) };
   }
 
-  // 3. Status "Pronto para coleta" sem mais info → Hoje (a coleta é diária)
+  // 3. "Pronto para coleta" sem mais info → Hoje (coleta diária)
   if (lower.includes("pronto para coleta")) {
-    return getTodayDayMonthLabel(0);
+    return { kind: "date", label: getTodayDayMonthLabel(0) };
+  }
+
+  // 4. Status operacional PENDENTE — ainda não tem coleta agendada.
+  // O ML só agenda coleta quando a etiqueta está pronta E a NF-e está
+  // emitida. Enquanto isso, esses orders ficam "pending" e serão
+  // alocados na PRÓXIMA data de coleta agendada nos dados.
+  if (
+    lower.includes("etiqueta pronta para impressão") ||
+    lower.includes("etiqueta pronta para impressao") ||
+    lower.includes("pronta para emitir nf-e") ||
+    lower.includes("pronto para emitir nf-e") ||
+    lower.includes("pronta para emitir nfe") ||
+    lower.includes("pronto para emitir nfe")
+  ) {
+    return { kind: "pending" };
   }
 
   return null;
+}
+
+// Dado um Set de labels de datas ja detectadas nos dados, retorna o
+// label da PRÓXIMA data de coleta (primeiro label > hoje). Se nenhum
+// label detectado > hoje, retorna amanhã (hoje+1) como fallback.
+function pickNextScheduledDate(availableLabels: string[]): string {
+  const todayLabel = getTodayDayMonthLabel(0);
+  const todayIdx = monthDayIndex(todayLabel);
+  const candidates = availableLabels
+    .map((l) => ({ label: l, idx: monthDayIndex(l) }))
+    .filter((c) => c.idx > todayIdx)
+    .sort((a, b) => a.idx - b.idx);
+  if (candidates.length > 0) return candidates[0].label;
+  return getTodayDayMonthLabel(1); // fallback: amanhã
+}
+
+// Converte "DD de mês" num indice ordenavel (month*100 + day) pra
+// comparacao simples. Nao considera virada de ano, mas e suficiente
+// pro horizonte de coletas (~7 dias).
+function monthDayIndex(label: string): number {
+  const [dayStr, monthStr] = label.split(" de ");
+  const day = parseInt(dayStr, 10) || 0;
+  const monthNum = parseInt(MONTHS_PT[monthStr?.toLowerCase() || ""] || "0", 10);
+  return monthNum * 100 + day;
 }
 
 function formatShort(label: string): string {
@@ -177,21 +229,44 @@ export function ColetasPanel({
     >();
     const upcoming = scopedLiveSnapshot?.orders?.upcoming ?? [];
 
+    // Passada 1: orders com data identificada (explícita ou derivada)
+    const pendingOrders: Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }> = [];
     for (const snap of upcoming) {
-      const dateLabel = extractPickupDateLabel(snap);
-      if (!dateLabel) continue;
-
+      const cls = classifyPickupFromSnapshot(snap);
       const local = localByOrderId.get(String(snap.order_id));
+      if (!cls) continue;
+      if (cls.kind === "pending") {
+        pendingOrders.push({ snap, local });
+        continue;
+      }
       const state = getPipelineState(local);
-
-      if (!byDate.has(dateLabel)) {
-        byDate.set(dateLabel, {
+      if (!byDate.has(cls.label)) {
+        byDate.set(cls.label, {
           sem_gerar_lo: [],
           nf_gerada: [],
           etiqueta_impressa: [],
         });
       }
-      byDate.get(dateLabel)![state].push({ snap, local });
+      byDate.get(cls.label)![state].push({ snap, local });
+    }
+
+    // Passada 2: aloca orders "pending" na PRÓXIMA data agendada.
+    // "Próxima" = menor data > hoje nos dados já coletados; fallback
+    // pra amanhã se não houver nenhuma data futura identificada.
+    if (pendingOrders.length > 0) {
+      const existingLabels = Array.from(byDate.keys());
+      const nextLabel = pickNextScheduledDate(existingLabels);
+      if (!byDate.has(nextLabel)) {
+        byDate.set(nextLabel, {
+          sem_gerar_lo: [],
+          nf_gerada: [],
+          etiqueta_impressa: [],
+        });
+      }
+      for (const entry of pendingOrders) {
+        const state = getPipelineState(entry.local);
+        byDate.get(nextLabel)![state].push(entry);
+      }
     }
 
     const pickupDates = Array.from(byDate.keys()).sort(sortDateLabels);
