@@ -38,3 +38,9 @@ data/
 *.db-wal
 backup/
 backups/
+
+# Claude Code local config (per-developer)
+.claude/
+
+# Vite build timestamp artifacts
+vite.config.ts.timestamp-*.mjs
