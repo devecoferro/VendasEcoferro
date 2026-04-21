@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDocumentsDialog";
 import { SubClassificationsBar } from "@/components/SubClassificationsBar";
+import { LiveSubCardsStrip } from "@/components/LiveSubCardsStrip";
 import {
   type MLSubStatus,
   type MLStoreKey,
@@ -2305,6 +2306,20 @@ export default function MercadoLivrePage() {
               </span>
             </div>
           </div>
+
+          {/* ─── Fase 2 Commit 3: sub-classificação ao vivo do ML ─────
+              Strip compacto com os sub-counters do bucket ativo
+              (Etiqueta pronta, Coleta 22 abr, A caminho, Entregue, etc)
+              direto do /api/ml/live-snapshot. 1:1 com ML Seller Center.
+              Renderiza nada se o snapshot não estiver disponível. */}
+          {liveSnapshot && (
+            <div className="mt-4">
+              <LiveSubCardsStrip
+                subCards={liveSnapshot.sub_cards}
+                bucket={shipmentFilter}
+              />
+            </div>
+          )}
 
           <div className="mt-5 grid gap-4 xl:grid-cols-4">
             {operationalCards.map(({ deposit, presentation }) => (
