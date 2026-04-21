@@ -96,19 +96,31 @@ function storeToUrlParam(store) {
   return store;
 }
 
+// ID do Ourinhos Rua Dario Alonso no ML Seller Center.
+// Descoberto em 2026-04-21 pelo operador via URL do ML:
+//   https://www.mercadolivre.com.br/vendas/omni/lista?store=79856028&...
+//
+// Overridável via env var ML_OURINHOS_STORE_ID caso o ID mude no futuro
+// ou seja necessário apontar pra outra loja.
+const DEFAULT_OURINHOS_STORE_ID = "79856028";
+
 /**
  * Mapeia scope (usado pela API pública) → store URL param do ML.
  * Scope é mais estável que o store param (que pode ter valores opacos
  * tipo IDs numéricos específicos da conta).
+ *
+ * Valores descobertos via engenharia reversa do ML Seller Center UI:
+ *   - scope=all              → store=all (ou sem param)
+ *   - scope=without_deposit  → store=unknown
+ *   - scope=full             → store=full
+ *   - scope=ourinhos         → store=79856028 (ID da loja Ecoferro)
  */
 export function scopeToStoreUrlParam(scope) {
-  if (!scope || scope === "all") return "";
+  if (!scope || scope === "all") return "all";
   if (scope === "without_deposit") return "unknown";
   if (scope === "full") return "full";
   if (scope === "ourinhos") {
-    // ID do Ourinhos vem de env var. Se não setada, tenta "outros" como
-    // fallback (pode nao funcionar 100% mas nao quebra).
-    return process.env.ML_OURINHOS_STORE_ID || "outros";
+    return process.env.ML_OURINHOS_STORE_ID || DEFAULT_OURINHOS_STORE_ID;
   }
   return scope;
 }
@@ -515,10 +527,27 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
   let totalSeen = 0;
   let blacklisted = 0;
   let nonJson = 0;
+  // Auto-deteccao de store IDs — coleta valores `store=X` de qualquer URL
+  // XHR. Util pra descobrir novos IDs (quando ML adicionar nova loja).
+  // Exemplo: depois de rodar um scrape, detectedStoreIds pode conter
+  // { "all", "unknown", "79856028", "full" } — e a gente sabe que
+  // essa conta tem Ourinhos (79856028) + Full + Vendas sem deposito.
+  const detectedStoreIds = new Set();
+  const extractStoreId = (urlStr) => {
+    try {
+      const u = new URL(urlStr);
+      const storeVal = u.searchParams.get("store");
+      if (storeVal) detectedStoreIds.add(storeVal);
+    } catch {
+      // ignore
+    }
+  };
   const responseHandler = async (response) => {
     try {
       totalSeen++;
       const url = response.url();
+      // Extrai store ID ANTES de blacklist (detecta mesmo em URLs ignoradas)
+      extractStoreId(url);
       if (!shouldCaptureUrl(url)) {
         blacklisted++;
         return;
@@ -928,6 +957,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     htmlMatches,
     directFetches,
     clicksAttempted,
+    detectedStoreIds: Array.from(detectedStoreIds),
     navError,
     capture_stats: {
       total_seen: totalSeen,
@@ -939,6 +969,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
       direct_fetches: directFetches ? Object.keys(directFetches).length : 0,
       clicks_attempted: clicksAttempted ? clicksAttempted.length : 0,
       clicks_successful: clicksAttempted ? clicksAttempted.filter((a) => a.clicked).length : 0,
+      detected_store_ids: Array.from(detectedStoreIds),
     },
   };
 }
