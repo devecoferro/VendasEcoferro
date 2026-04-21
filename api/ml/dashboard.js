@@ -2356,6 +2356,16 @@ export async function buildDashboardPayload(options = {}) {
   // contadores (provavelmente são históricos que ML removeu da visão
   // operacional). Pedidos do ML que não estão no DB ainda ficam de fora
   // do grid mas contam no chip (via ml_live_chip_counts global).
+  //
+  // ⚠️ IMPORTANTE: itera `allOrders` (não `deposit._orders`), porque
+  // `_orders` só contém pedidos que passaram pelo filtro de freshness
+  // (STALE_THRESHOLDS_DAYS). Pedidos que o ML considera ativos mas o
+  // app marcou como stale eram perdidos pelo override — gerava
+  // PERSISTENT_CLASSIFICATION_LOGIC_BUG nos logs com ~230 pedidos
+  // "missing". Usando `allOrders`, o override consegue recuperar TODOS
+  // os pedidos que o ML atualmente classifica, independente do status
+  // local. O filtro de freshness continua útil pra limpar a listagem
+  // quando NÃO há override (fallback).
   // ═══════════════════════════════════════════════════════════════════
   if (mlBucketByMlOrderId && mlBucketByMlOrderId.size > 0) {
     const makeEmptyCounts = () => ({
@@ -2373,12 +2383,29 @@ export async function buildDashboardPayload(options = {}) {
       cancelled: [],
     });
 
+    // Agrupa TODOS os orders ativos (pré-freshness) por depósito, pra
+    // garantir que o override veja pedidos que o ML ainda considera
+    // ativos mesmo quando localmente eles foram marcados como stale.
+    // Só considera depósitos que já existem em `deposits` (criados pelo
+    // loop principal com pelo menos 1 order fresh). Pedidos de depósitos
+    // 100% stale caem no `ml_live_chip_counts` global sem aparecer no
+    // breakdown por depósito — trade-off aceitável (raro na prática).
+    const allOrdersByDepositKey = new Map();
+    for (const order of allOrders) {
+      const depositInfo = getDepositInfo(order);
+      if (!allOrdersByDepositKey.has(depositInfo.key)) {
+        allOrdersByDepositKey.set(depositInfo.key, []);
+      }
+      allOrdersByDepositKey.get(depositInfo.key).push(order);
+    }
+
     for (const deposit of deposits) {
       const newCounts = makeEmptyCounts();
       const newOrderIds = makeEmptyLists();
       const dedupeInBucket = new Set();
 
-      for (const order of (deposit._orders || [])) {
+      const ordersForDeposit = allOrdersByDepositKey.get(deposit.key) || [];
+      for (const order of ordersForDeposit) {
         // Busca por ML order_id (mesmo pra todos os items do pedido —
         // garante que pedidos multi-item batem corretamente).
         const mlBucket = order.order_id
