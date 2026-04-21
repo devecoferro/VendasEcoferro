@@ -594,7 +594,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
               inputId: radio.id,
             });
             clicked = true;
-            await new Promise((r) => setTimeout(r, 600));
+            await new Promise((r) => setTimeout(r, 2500));
             continue;
           } catch (err) {
             attempts.push({ label, id, clicked: false, matchType: "radio_value", error: String(err) });
@@ -619,7 +619,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
               textSample: (lbl.textContent || "").trim().slice(0, 50),
             });
             clicked = true;
-            await new Promise((r) => setTimeout(r, 600));
+            await new Promise((r) => setTimeout(r, 2500));
             continue;
           } catch (err) {
             attempts.push({ label, id, clicked: false, matchType: "label_for", error: String(err) });
@@ -647,7 +647,7 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
                   textSample: text.slice(0, 60),
                 });
                 clicked = true;
-                await new Promise((r) => setTimeout(r, 600));
+                await new Promise((r) => setTimeout(r, 2500));
                 break;
               } catch (err) {
                 // keep trying
@@ -714,9 +714,11 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
       return attempts;
     }, { currentTab: tabFilter });
 
-    // Espera mais 8s pra os clicks dispararem os XHRs (se algum click rolou)
+    // Espera mais 10s pra os clicks dispararem os XHRs (se algum click rolou)
+    // Cada click tem 2.5s de delay antes do proximo, entao o ultimo fetch
+    // tem tempo de comecar. Esse wait final pega o retorno dele.
     if (Array.isArray(clicksAttempted) && clicksAttempted.some((a) => a.clicked)) {
-      await page.waitForTimeout(8000);
+      await page.waitForTimeout(10000);
     }
   } catch (err) {
     navError = err instanceof Error ? err.message : String(err);
