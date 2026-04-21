@@ -1199,25 +1199,39 @@ let cachedLiveSnapshot = null; // alias pro escopo "all"
  * Retorna { today, upcoming, in_transit, finalized } ou null.
  */
 function extractCountersFromXhrs(xhrs) {
+  // Agrega counters de TODOS os XHRs (não retorna no primeiro match).
+  //
+  // Motivo: o ML retorna um brick `segmented_actions_marketshops` em
+  // múltiplos event-requests, mas em CADA um só a tab "ativa" vem com
+  // count real — as outras costumam vir com 0. Sem agregação, só a tab
+  // do 1º XHR ficava populada (ex: scope=ourinhos retornava
+  // today=3 mas upcoming/in_transit/finalized=0, apesar de sub_cards.*
+  // mostrar totais corretos).
+  //
+  // Estratégia: varrer todos os XHRs e manter o MAIOR count visto por
+  // tab. Zero em todos é válido (aba vazia), então só consideramos
+  // "não-encontrado" se nenhum XHR trouxer o brick.
+  const counters = { today: 0, upcoming: 0, in_transit: 0, finalized: 0 };
+  let foundAny = false;
   for (const x of xhrs) {
     if (!x || !x.url || !x.url.includes("event-request")) continue;
     const body = x.body;
     if (!body) continue;
-    // Procura brick segmented_actions_marketshops
     const stack = [body];
     while (stack.length) {
       const cur = stack.pop();
       if (!cur || typeof cur !== "object") continue;
       if (cur.id === "segmented_actions_marketshops" && cur.data?.segments) {
-        const counters = { today: 0, upcoming: 0, in_transit: 0, finalized: 0 };
+        foundAny = true;
         for (const seg of cur.data.segments) {
           const count = parseInt(String(seg.count || "0"), 10) || 0;
-          if (seg.id === "TAB_TODAY") counters.today = count;
-          else if (seg.id === "TAB_NEXT_DAYS") counters.upcoming = count;
-          else if (seg.id === "TAB_IN_THE_WAY") counters.in_transit = count;
-          else if (seg.id === "TAB_FINISHED") counters.finalized = count;
+          if (seg.id === "TAB_TODAY" && count > counters.today) counters.today = count;
+          else if (seg.id === "TAB_NEXT_DAYS" && count > counters.upcoming) counters.upcoming = count;
+          else if (seg.id === "TAB_IN_THE_WAY" && count > counters.in_transit) counters.in_transit = count;
+          else if (seg.id === "TAB_FINISHED" && count > counters.finalized) counters.finalized = count;
         }
-        return counters;
+        // Não retorna — continua varrendo os demais XHRs pra pegar
+        // contagens das outras abas.
       }
       if (Array.isArray(cur)) {
         for (const v of cur) stack.push(v);
@@ -1226,7 +1240,7 @@ function extractCountersFromXhrs(xhrs) {
       }
     }
   }
-  return null;
+  return foundAny ? counters : null;
 }
 
 /**
