@@ -91,6 +91,7 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
+import { ColetasPanel } from "@/components/ColetasPanel";
 import { exportSalePdf } from "@/services/pdfExportService";
 import {
   mergeLabelPdfs,
@@ -2285,6 +2286,8 @@ export default function MercadoLivrePage() {
             </div>
           </div>
         </div>
+
+        <ColetasPanel orders={orders} liveSnapshot={liveSnapshot} />
 
         <div className="space-y-6 pt-2">
         <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
