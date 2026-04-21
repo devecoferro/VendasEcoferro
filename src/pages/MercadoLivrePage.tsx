@@ -2309,7 +2309,6 @@ export default function MercadoLivrePage() {
         <ColetasPanel
           orders={orders}
           scopedLiveSnapshot={scopedLiveSnapshot}
-          currentFilterLabel={selectedDepositLabel}
           toolbar={
             <>
               <Select
@@ -2406,14 +2405,6 @@ export default function MercadoLivrePage() {
               >
                 Limpar
               </Button>
-
-              <DepositFilterMenu
-                selectedLabel={selectedDepositLabel}
-                selectedValues={selectedDepositFilters}
-                onToggle={handleDepositToggle}
-                onReset={handleDepositReset}
-                options={depositOptions}
-              />
             </>
           }
         />

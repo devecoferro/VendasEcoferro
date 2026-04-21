@@ -1,9 +1,8 @@
-import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMemo } from "react";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Calendar, FileText, Printer, PackageCheck, Truck, ChevronDown, ChevronUp } from "lucide-react";
+import { Calendar, FileText, Printer, PackageCheck } from "lucide-react";
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type {
   MLLiveSnapshotResponse,
@@ -241,28 +240,17 @@ interface ColetasPanelProps {
    * depósito da página (selectedDepositFilters no topo). Se null ou
    * sem orders, o painel indica estado vazio. */
   scopedLiveSnapshot: MLLiveSnapshotResponse | null;
-  /** Label do filtro de depósito atual (pra mostrar no header do painel). */
-  currentFilterLabel?: string;
   /** Slot de toolbar renderizado no header (filtros rápidos: periodo,
    * ordenar, status, buscar, limpar). Fornecido pela MercadoLivrePage
    * pra manter o estado dos filtros centralizado. */
   toolbar?: React.ReactNode;
-  defaultExpanded?: boolean;
 }
 
 export function ColetasPanel({
   orders,
   scopedLiveSnapshot,
-  currentFilterLabel,
   toolbar,
-  defaultExpanded = true,
 }: ColetasPanelProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const [selectedCell, setSelectedCell] = useState<{
-    pickupDate: string;
-    state: PipelineState;
-  } | null>(null);
-
   const localByOrderId = useMemo(() => {
     const map = new Map<string, MLOrder>();
     for (const o of orders) {
@@ -322,13 +310,6 @@ export function ColetasPanel({
     return { pickupDates, byDate };
   }, [scopedLiveSnapshot, localByOrderId]);
 
-  const effectiveSelection =
-    selectedCell && byDate.has(selectedCell.pickupDate) ? selectedCell : null;
-
-  const selectedEntries = effectiveSelection
-    ? byDate.get(effectiveSelection.pickupDate)![effectiveSelection.state]
-    : [];
-
   const snapshotUpcomingTotal = scopedLiveSnapshot?.orders?.upcoming?.length ?? 0;
   const withoutPickupDate = snapshotUpcomingTotal - pickupDates.reduce(
     (acc, d) =>
@@ -361,38 +342,14 @@ export function ColetasPanel({
 
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
-        <button
-          type="button"
-          onClick={() => setExpanded((e) => !e)}
-          className="flex items-center gap-2 text-left hover:opacity-80 transition-opacity shrink-0"
-        >
-          <Truck className="h-5 w-5" />
-          <CardTitle className="text-base font-semibold whitespace-nowrap">Coletas por Data</CardTitle>
-          <Badge variant="secondary" className="ml-1">
-            {pickupDates.length} data{pickupDates.length === 1 ? "" : "s"}
-          </Badge>
-          {expanded ? (
-            <ChevronUp className="h-4 w-4 ml-1 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 ml-1 text-muted-foreground" />
-          )}
-        </button>
-
-        {toolbar ? (
+      {toolbar && (
+        <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 2xl:flex-row 2xl:items-center 2xl:justify-end">
           <div className="flex flex-wrap items-center gap-2 min-w-0">{toolbar}</div>
-        ) : (
-          currentFilterLabel && (
-            <span className="text-xs text-muted-foreground">
-              Filtro: <span className="font-medium text-foreground">{currentFilterLabel}</span>
-            </span>
-          )
-        )}
-      </CardHeader>
+        </CardHeader>
+      )}
 
-      {expanded && (
-        <CardContent className="pt-0 space-y-4">
-          {pickupDates.length === 0 ? (
+      <CardContent className={cn("space-y-4", toolbar ? "pt-0" : "pt-4")}>
+        {pickupDates.length === 0 ? (
             <div className="py-6 text-center text-sm text-muted-foreground">
               {!scopedLiveSnapshot
                 ? "Aguardando snapshot do ML Seller Center..."
@@ -438,24 +395,12 @@ export function ColetasPanel({
                           const sampleCount = cells[state.value].length;
                           const displayCount = extrapolate(sampleCount);
                           const Icon = state.icon;
-                          const isSelected =
-                            effectiveSelection?.pickupDate === date &&
-                            effectiveSelection?.state === state.value;
                           return (
-                            <button
+                            <div
                               key={state.value}
-                              type="button"
-                              onClick={() =>
-                                setSelectedCell(
-                                  isSelected
-                                    ? null
-                                    : { pickupDate: date, state: state.value }
-                                )
-                              }
                               className={cn(
-                                "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
-                                state.tone,
-                                isSelected && "ring-2 ring-primary ring-offset-1"
+                                "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium",
+                                state.tone
                               )}
                               title={
                                 isExtrapolating
@@ -473,7 +418,7 @@ export function ColetasPanel({
                                   <span className="ml-1 text-[9px] opacity-60">~</span>
                                 )}
                               </Badge>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -482,62 +427,9 @@ export function ColetasPanel({
                 })}
               </div>
 
-              {effectiveSelection && (
-                <div className="rounded-md border bg-background">
-                  <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
-                    <div className="text-sm font-medium">
-                      {PIPELINE_STATES.find((s) => s.value === effectiveSelection.state)?.label} —
-                      Coleta {formatShort(effectiveSelection.pickupDate)}
-                      <Badge variant="secondary" className="ml-2">
-                        {selectedEntries.length} pedido{selectedEntries.length === 1 ? "" : "s"}
-                      </Badge>
-                      {isExtrapolating && (
-                        <span className="ml-2 text-xs font-normal text-muted-foreground">
-                          (da amostra — ML total ~{extrapolate(selectedEntries.length)})
-                        </span>
-                      )}
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSelectedCell(null)}
-                      className="h-7"
-                    >
-                      Fechar
-                    </Button>
-                  </div>
-                  {selectedEntries.length === 0 ? (
-                    <div className="py-4 text-center text-sm text-muted-foreground">
-                      Nenhum pedido nesta célula.
-                    </div>
-                  ) : (
-                    <div className="divide-y max-h-72 overflow-y-auto">
-                      {selectedEntries.map((entry) => (
-                        <div
-                          key={entry.snap.row_id || entry.snap.order_id}
-                          className="flex items-center gap-3 px-4 py-2 text-sm"
-                        >
-                          <span className="font-mono text-xs text-muted-foreground shrink-0">
-                            #{entry.snap.order_id}
-                          </span>
-                          <span className="truncate flex-1">
-                            {entry.local?.item_title ||
-                              entry.snap.status_text ||
-                              "(sem título)"}
-                          </span>
-                          <span className="text-xs text-muted-foreground shrink-0">
-                            {entry.snap.buyer_name || "—"}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )}
         </CardContent>
-      )}
     </Card>
   );
 }
