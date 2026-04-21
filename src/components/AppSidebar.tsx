@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
+  BookOpen,
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
@@ -49,6 +50,7 @@ const baseNavItems: SidebarNavItem[] = [
     logoSrc: "/menu-fantom-logo-96.png",
     logoAlt: "Logo Fantom",
   },
+  { to: "/manual", icon: BookOpen, label: "Manual" },
 ];
 
 function SidebarContent({
