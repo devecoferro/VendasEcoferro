@@ -227,6 +227,52 @@ const SORT_LABELS: Record<MercadoLivreFilters["sort"], string> = {
   amount_asc: "Menor valor",
 };
 
+// ─── Presets de periodo pro toolbar compacto do painel Coletas ───────
+type DatePreset =
+  | "all"
+  | "today"
+  | "yesterday"
+  | "last_week"
+  | "this_month"
+  | "last_30d";
+
+const DATE_PRESET_LABELS: Record<DatePreset, string> = {
+  all: "Todas as datas",
+  today: "Hoje",
+  yesterday: "Ontem",
+  last_week: "Última semana",
+  this_month: "Este mês",
+  last_30d: "Últimos 30 dias",
+};
+
+function getDatePresetRange(preset: DatePreset): { from: string; to: string } {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const iso = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const today = iso(now);
+  if (preset === "all") return { from: "", to: "" };
+  if (preset === "today") return { from: today, to: today };
+  if (preset === "yesterday") {
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    const yIso = iso(y);
+    return { from: yIso, to: yIso };
+  }
+  if (preset === "last_week") {
+    const from = new Date(now); from.setDate(from.getDate() - 7);
+    return { from: iso(from), to: today };
+  }
+  if (preset === "this_month") {
+    const from = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { from: iso(from), to: today };
+  }
+  if (preset === "last_30d") {
+    const from = new Date(now); from.setDate(from.getDate() - 30);
+    return { from: iso(from), to: today };
+  }
+  return { from: "", to: "" };
+}
+
 function createDefaultFilters(): MercadoLivreFilters {
   return cloneFilters(DEFAULT_ML_FILTERS);
 }
@@ -909,6 +955,9 @@ export default function MercadoLivrePage() {
   const [appliedQuickFilters, setAppliedQuickFilters] = useState<QuickSalesFilters>(
     DEFAULT_QUICK_SALES_FILTERS
   );
+  // Preset de período do toolbar compacto no painel Coletas. Muda os
+  // dateFrom/dateTo do draftQuickFilters automaticamente ao selecionar.
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
@@ -2258,35 +2307,53 @@ export default function MercadoLivrePage() {
           orders={orders}
           scopedLiveSnapshot={scopedLiveSnapshot}
           currentFilterLabel={selectedDepositLabel}
-        />
-
-        <div className="space-y-6 pt-2">
-        <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="grid flex-1 gap-3 md:grid-cols-2 xl:grid-cols-[180px_180px_180px_auto_auto]">
-              <Input
-                type="date"
-                value={draftQuickFilters.dateFrom}
-                onChange={(event) =>
+          toolbar={
+            <>
+              <Select
+                value={datePreset}
+                onValueChange={(value) => {
+                  const preset = value as DatePreset;
+                  setDatePreset(preset);
+                  const range = getDatePresetRange(preset);
                   setDraftQuickFilters((current) => ({
                     ...current,
-                    dateFrom: event.target.value,
-                  }))
-                }
-                className="h-12 rounded-full border-[#e5e5e5] bg-white text-[15px] text-[#333333] focus-visible:ring-[#3483fa]"
-              />
+                    dateFrom: range.from,
+                    dateTo: range.to,
+                  }));
+                }}
+              >
+                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {DATE_PRESET_LABELS[p]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-              <Input
-                type="date"
-                value={draftQuickFilters.dateTo}
-                onChange={(event) =>
-                  setDraftQuickFilters((current) => ({
+              <Select
+                value={draftFilters.sort}
+                onValueChange={(value) =>
+                  setDraftFilters((current) => ({
                     ...current,
-                    dateTo: event.target.value,
+                    sort: value as MercadoLivreFilters["sort"],
                   }))
                 }
-                className="h-12 rounded-full border-[#e5e5e5] bg-white text-[15px] text-[#333333] focus-visible:ring-[#3483fa]"
-              />
+              >
+                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[180px]">
+                  <SelectValue placeholder="Ordenar" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(SORT_LABELS) as MercadoLivreFilters["sort"][]).map((s) => (
+                    <SelectItem key={s} value={s}>
+                      Ordenar: {SORT_LABELS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
               <Select
                 value={draftQuickFilters.status}
@@ -2297,7 +2364,7 @@ export default function MercadoLivrePage() {
                   }))
                 }
               >
-                <SelectTrigger className="h-12 rounded-full border-[#e5e5e5] text-[15px]">
+                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[140px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2311,8 +2378,12 @@ export default function MercadoLivrePage() {
 
               <Button
                 type="button"
-                className="h-12 rounded-full bg-[#3483fa] px-5 text-sm font-semibold text-white hover:bg-[#2968c8]"
-                onClick={() => setAppliedQuickFilters({ ...draftQuickFilters })}
+                size="sm"
+                className="h-9 rounded-md bg-[#3483fa] px-4 text-[13px] font-semibold text-white hover:bg-[#2968c8]"
+                onClick={() => {
+                  setAppliedQuickFilters({ ...draftQuickFilters });
+                  setAppliedFilters(cloneFilters(draftFilters));
+                }}
               >
                 Buscar
               </Button>
@@ -2320,23 +2391,27 @@ export default function MercadoLivrePage() {
               <Button
                 type="button"
                 variant="outline"
-                className="h-12 rounded-full border-[#e5e5e5] px-5 text-sm font-semibold"
+                size="sm"
+                className="h-9 rounded-md border-[#e5e5e5] px-4 text-[13px] font-semibold"
                 onClick={() => {
                   setDraftQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
                   setAppliedQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+                  setDraftFilters(createDefaultFilters());
+                  setAppliedFilters(createDefaultFilters());
+                  setDatePreset("all");
                 }}
               >
                 Limpar
               </Button>
-            </div>
-          </div>
+            </>
+          }
+        />
 
-          {quickFiltersSummaryText && (
-            <div className="mt-3 text-sm text-[#666666]">{quickFiltersSummaryText}</div>
-          )}
-        </div>
+        {quickFiltersSummaryText && (
+          <div className="text-xs text-[#666666] px-1">{quickFiltersSummaryText}</div>
+        )}
 
-
+        <div className="space-y-6 pt-2">
         <div className="rounded-[22px] border border-[#e6e6e6] bg-[#f3f3f3] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
           {/* ─── Indicador Fase 2: dados live do ML (se disponivel) ──── */}
           {(liveSnapshot || liveSnapshotLoading || liveSnapshotError) && (

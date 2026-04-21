@@ -142,6 +142,10 @@ interface ColetasPanelProps {
   scopedLiveSnapshot: MLLiveSnapshotResponse | null;
   /** Label do filtro de depósito atual (pra mostrar no header do painel). */
   currentFilterLabel?: string;
+  /** Slot de toolbar renderizado no header (filtros rápidos: periodo,
+   * ordenar, status, buscar, limpar). Fornecido pela MercadoLivrePage
+   * pra manter o estado dos filtros centralizado. */
+  toolbar?: React.ReactNode;
   defaultExpanded?: boolean;
 }
 
@@ -149,6 +153,7 @@ export function ColetasPanel({
   orders,
   scopedLiveSnapshot,
   currentFilterLabel,
+  toolbar,
   defaultExpanded = true,
 }: ColetasPanelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -212,14 +217,14 @@ export function ColetasPanel({
 
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0 py-3 px-4">
+      <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 lg:flex-row lg:items-center lg:justify-between">
         <button
           type="button"
           onClick={() => setExpanded((e) => !e)}
-          className="flex items-center gap-2 text-left hover:opacity-80 transition-opacity"
+          className="flex items-center gap-2 text-left hover:opacity-80 transition-opacity shrink-0"
         >
           <Truck className="h-5 w-5" />
-          <CardTitle className="text-base font-semibold">Coletas por Data</CardTitle>
+          <CardTitle className="text-base font-semibold whitespace-nowrap">Coletas por Data</CardTitle>
           <Badge variant="secondary" className="ml-1">
             {pickupDates.length} data{pickupDates.length === 1 ? "" : "s"}
           </Badge>
@@ -230,10 +235,14 @@ export function ColetasPanel({
           )}
         </button>
 
-        {currentFilterLabel && (
-          <span className="text-xs text-muted-foreground">
-            Filtro: <span className="font-medium text-foreground">{currentFilterLabel}</span>
-          </span>
+        {toolbar ? (
+          <div className="flex flex-wrap items-center gap-2">{toolbar}</div>
+        ) : (
+          currentFilterLabel && (
+            <span className="text-xs text-muted-foreground">
+              Filtro: <span className="font-medium text-foreground">{currentFilterLabel}</span>
+            </span>
+          )
         )}
       </CardHeader>
 
