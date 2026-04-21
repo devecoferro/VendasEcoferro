@@ -1829,15 +1829,22 @@ export default function MercadoLivrePage() {
     };
   }, [filteredOperationalOrders]);
 
+  // FIX (2026-04-21): elegibilidade dos botoes em lote (Gerar NF-e,
+  // Imprimir etiqueta ML+DANFe, Etiquetas Ecoferro, Separacao) respeita
+  // TODOS os filtros visiveis ao usuario — incluindo loja (Ourinhos vs
+  // Full), sub-status, pickup group, label printed. Antes usava apenas
+  // filteredOperationalOrders (que NAO tem esses filtros), causando
+  // bug: user filtrava Ourinhos (2 pedidos) mas Etiqueta Ecoferro gerava
+  // pra todos os 50 da lista sem filtro.
   const readyOrders = useMemo(
-    () => filteredOperationalOrders.filter(isOrderReadyToPrintLabel),
-    [filteredOperationalOrders]
+    () => displayedOperationalOrders.filter(isOrderReadyToPrintLabel),
+    [displayedOperationalOrders]
   );
   // Pedidos que ainda precisam ter NF-e emitida — alimentam o botao
   // "Gerar NF-e" em lote no banner.
   const invoicePendingOrders = useMemo(
-    () => filteredOperationalOrders.filter(isOrderInvoicePending),
-    [filteredOperationalOrders]
+    () => displayedOperationalOrders.filter(isOrderInvoicePending),
+    [displayedOperationalOrders]
   );
   // Pedidos elegiveis que o usuario marcou — fonte de verdade dos botoes
   // do banner. Os botoes so agem sobre o que esta selecionado (nao sobre
@@ -1862,9 +1869,11 @@ export default function MercadoLivrePage() {
   // Pedidos elegiveis para etiqueta interna Ecoferro — inclui TODOS com
   // pagamento aprovado + ready_to_ship (ready + invoice_pending).
   // Etiqueta Ecoferro e interna, NAO depende de NF-e ter sido emitida.
+  // IMPORTANTE: respeita filtro de loja (Ourinhos vs Full) pra nao
+  // gerar etiquetas de pedidos de loja diferente da filtrada.
   const ecoferroEligibleOrders = useMemo(
-    () => filteredOperationalOrders.filter(isOrderReadyForInvoiceLabel),
-    [filteredOperationalOrders]
+    () => displayedOperationalOrders.filter(isOrderReadyForInvoiceLabel),
+    [displayedOperationalOrders]
   );
   const selectedEcoferroOrders = useMemo(
     () => ecoferroEligibleOrders.filter((order) => selectedOrderIds.has(order.id)),
