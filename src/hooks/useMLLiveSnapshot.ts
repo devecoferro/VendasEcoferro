@@ -7,7 +7,11 @@ import {
 // Cache em memória compartilhado entre múltiplos mounts (HMR, StrictMode).
 // TTL pequeno — o backend já tem cache 5min, mas aqui evitamos múltiplas
 // chamadas no mesmo instante (durante render de vários componentes).
-const FRONTEND_CACHE_TTL_MS = 30_000; // 30s
+// Cache do frontend é menor que o polling (30s) pra garantir que toda
+// tick do polling realmente busca dados do servidor. O backend faz o
+// rate-limiting/single-flight do scrape, então chamadas excedentes só
+// retornam do cache do backend (instantâneo, sem custo).
+const FRONTEND_CACHE_TTL_MS = 15_000; // 15s
 
 let sharedSnapshot: {
   expiresAt: number;

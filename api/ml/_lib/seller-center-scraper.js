@@ -45,7 +45,11 @@ const DEFAULT_STORAGE_STATE_PATH = path.join(
 );
 const SCRAPER_STORAGE_STATE_PATH =
   process.env.ML_SCRAPER_STORAGE_STATE_PATH || DEFAULT_STORAGE_STATE_PATH;
-const SCRAPER_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+const SCRAPER_CACHE_TTL_MS = 2 * 60 * 1000; // 2 min
+// TTL do snapshot fica menor (2min) pra sensação de "ao vivo".
+// Auto-refresh em background dispara quando cache expira e alguem chama
+// o endpoint — ver maybeRefreshLiveSnapshotInBackground().
+const LIVE_SNAPSHOT_REFRESH_THRESHOLD_MS = 2 * 60 * 1000;
 
 // Cache em memória do último scrape bem-sucedido
 let cachedResult = null; // { data, expiresAt, capturedAt }
@@ -1517,4 +1521,64 @@ export function getCachedLiveSnapshot() {
     return { ...cachedLiveSnapshot, stale: true };
   }
   return cachedLiveSnapshot;
+}
+
+// ─── Auto-refresh em background (single-flight) ──────────────────────
+// Garante que apenas 1 scrape roda por vez. Se o cache está stale e
+// alguém chama /api/ml/live-snapshot, dispara scrape em background sem
+// bloquear a resposta (cliente recebe cache stale e próxima request
+// após ~60-90s pega dados frescos).
+
+let liveSnapshotInflightPromise = null;
+let lastBackgroundRefreshStarted = 0;
+
+/**
+ * Se cache está stale (ou não existe) E não há scrape em andamento,
+ * dispara um scrape em background. Não aguarda — retorna imediatamente.
+ *
+ * Idempotente: chamar várias vezes em sequência só dispara 1 scrape.
+ */
+export function maybeRefreshLiveSnapshotInBackground() {
+  const now = Date.now();
+
+  // Já tem scrape em andamento → não duplica
+  if (liveSnapshotInflightPromise) {
+    return { triggered: false, reason: "scrape_in_progress" };
+  }
+
+  // Cache fresh → não precisa refresh
+  const cached = cachedLiveSnapshot;
+  if (cached && cached.expiresAt > now) {
+    return { triggered: false, reason: "cache_fresh" };
+  }
+
+  // Throttle: evita disparos múltiplos muito rápidos (guarda de 10s)
+  if (now - lastBackgroundRefreshStarted < 10_000) {
+    return { triggered: false, reason: "throttled" };
+  }
+
+  // Dispara scrape em background (fire-and-forget)
+  lastBackgroundRefreshStarted = now;
+  log.info("[live-snapshot] disparando refresh em background");
+  liveSnapshotInflightPromise = scrapeMlLiveSnapshot({ timeoutMs: 180_000 })
+    .then((result) => {
+      log.info(`[live-snapshot] refresh background concluido (${result.ok ? "ok" : "erro"})`);
+      return result;
+    })
+    .catch((err) => {
+      log.error(
+        "[live-snapshot] refresh background falhou",
+        err instanceof Error ? err : new Error(String(err))
+      );
+      return { ok: false, error: "background_failed" };
+    })
+    .finally(() => {
+      liveSnapshotInflightPromise = null;
+    });
+
+  return { triggered: true };
+}
+
+export function isLiveSnapshotScrapeInProgress() {
+  return liveSnapshotInflightPromise !== null;
 }

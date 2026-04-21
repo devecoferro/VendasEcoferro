@@ -97,6 +97,10 @@ export interface MLLiveSnapshotResponse {
   success: true;
   from_cache: boolean;
   stale: boolean;
+  /** True quando o backend está rodando scrape fresh em background. */
+  scrape_in_progress?: boolean;
+  /** Info sobre o background refresh (se foi disparado neste request). */
+  background_refresh?: { triggered: boolean; reason?: string } | null;
   captured_at: string;
   counters: MLLiveSnapshotCounters;
   sub_cards: MLLiveSnapshotSubCards;

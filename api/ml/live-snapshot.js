@@ -32,6 +32,8 @@ import {
   getCachedLiveSnapshot,
   isScraperConfigured,
   getLastScraperError,
+  maybeRefreshLiveSnapshotInBackground,
+  isLiveSnapshotScrapeInProgress,
 } from "./_lib/seller-center-scraper.js";
 
 export default async function handler(request, response) {
@@ -64,15 +66,37 @@ export default async function handler(request, response) {
   if (!forceRun) {
     const cached = getCachedLiveSnapshot();
     if (cached) {
+      // AUTO-REFRESH em background: se cache está stale, dispara scrape
+      // novo em background (single-flight — só 1 por vez). Cliente
+      // recebe cache stale imediato e próxima request (30s depois,
+      // do polling automático) já pega dados frescos.
+      let bgRefresh = null;
+      if (cached.stale === true) {
+        bgRefresh = maybeRefreshLiveSnapshotInBackground();
+      }
       return response.status(200).json({
         success: true,
         from_cache: true,
         stale: cached.stale === true,
+        scrape_in_progress: isLiveSnapshotScrapeInProgress(),
+        background_refresh: bgRefresh,
         captured_at: cached.capturedAt,
         ...cached.data,
       });
     }
-    // sem cache → roda fresh (1a request faz scrape)
+    // Sem cache algum → dispara scrape em background e retorna 202
+    // (Accepted — cliente deve fazer polling). Evita que o primeiro
+    // usuario do dia trave 90s esperando.
+    if (!isLiveSnapshotScrapeInProgress()) {
+      maybeRefreshLiveSnapshotInBackground();
+    }
+    return response.status(202).json({
+      success: true,
+      from_cache: false,
+      stale: false,
+      scrape_in_progress: true,
+      message: "Sem cache. Scrape disparado em background — tente novamente em 60-90s.",
+    });
   }
 
   // Scrape fresh (2 navegacoes sequenciais, pode levar ate 180s)

@@ -822,7 +822,11 @@ export default function MercadoLivrePage() {
   });
 
   // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
-  // Carrega automaticamente no mount (pega do cache do backend, TTL 5min).
+  // Carrega automaticamente no mount (pega do cache do backend, TTL 2min)
+  // e faz polling a cada 30s pra atualizar. O backend auto-refresh em
+  // background quando cache stale — cliente nunca espera scrape, só pega
+  // do cache a cada request.
+  //
   // Fonte de verdade #1 pros 4 chips principais — prioriza estes dados
   // acima de ml_ui_chip_counts e ml_live_chip_counts.
   const {
@@ -830,7 +834,7 @@ export default function MercadoLivrePage() {
     loading: liveSnapshotLoading,
     error: liveSnapshotError,
     refresh: refreshLiveSnapshot,
-  } = useMLLiveSnapshot({ enabled: true, pollingIntervalMs: 0 });
+  } = useMLLiveSnapshot({ enabled: true, pollingIntervalMs: 30_000 });
 
   const [connecting, setConnecting] = useState(false);
   const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("today");
@@ -2268,23 +2272,35 @@ export default function MercadoLivrePage() {
               {liveSnapshot && !liveSnapshotError ? (
                 <>
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${
+                        liveSnapshot.scrape_in_progress ? "animate-pulse" : ""
+                      }`}
+                    />
                     ML ao vivo
                   </span>
                   <span className="text-[#666666]">
                     {(() => {
                       const capturedAt = new Date(liveSnapshot.captured_at);
                       const diffMs = Date.now() - capturedAt.getTime();
-                      const diffMin = Math.max(0, Math.floor(diffMs / 60000));
-                      if (diffMin === 0) return "atualizado agora";
+                      const diffSec = Math.max(0, Math.floor(diffMs / 1000));
+                      const diffMin = Math.floor(diffSec / 60);
+                      if (diffSec < 30) return "atualizado agora";
+                      if (diffSec < 60) return `atualizado há ${diffSec}s`;
                       if (diffMin === 1) return "atualizado há 1 min";
                       if (diffMin < 60) return `atualizado há ${diffMin} min`;
                       return `atualizado há ${Math.floor(diffMin / 60)}h ${diffMin % 60}min`;
                     })()}
                   </span>
-                  {liveSnapshot.stale && (
-                    <span className="text-amber-600">(cache expirado)</span>
+                  {liveSnapshot.scrape_in_progress && (
+                    <span className="inline-flex items-center gap-1 text-blue-600">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                      sincronizando em background…
+                    </span>
                   )}
+                  <span className="text-[#888] text-[11px]">
+                    · auto-sync a cada 30s
+                  </span>
                 </>
               ) : liveSnapshotLoading ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
