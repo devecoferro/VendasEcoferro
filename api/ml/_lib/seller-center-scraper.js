@@ -1549,6 +1549,7 @@ export async function scrapeMlLiveSnapshot({
   //
   // Tempo: ~60-90s. Timeout 180s pra folga.
   const allXhrs = [];
+  const detectedStoreIds = new Set();
   let lastResult = null;
 
   const navPlan = [
@@ -1586,6 +1587,10 @@ export async function scrapeMlLiveSnapshot({
         if (cap?.xhr_responses) {
           allXhrs.push(...cap.xhr_responses);
         }
+        const ids = cap?.capture_stats?.detected_store_ids;
+        if (Array.isArray(ids)) {
+          for (const id of ids) detectedStoreIds.add(id);
+        }
       }
     }
   }
@@ -1609,6 +1614,11 @@ export async function scrapeMlLiveSnapshot({
         .map(([k]) => k),
       xhr_count: allXhrs.length,
       navs_successful: lastResult ? navPlan.findIndex((n) => n.key === "upcoming") + 1 : 1,
+      // IDs de loja detectados nas URLs dos XHRs durante o scrape.
+      // Agrega os detected_store_ids de cada captura (scrapeMlSellerCenterFull)
+      // num Set único, eliminando duplicatas. Permite descobrir novas lojas
+      // automaticamente quando ML adicionar no Seller Center.
+      detected_store_ids: Array.from(detectedStoreIds).sort(),
     },
   };
 
