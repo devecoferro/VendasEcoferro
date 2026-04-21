@@ -11,7 +11,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDocumentsDialog";
 import { SubClassificationsBar } from "@/components/SubClassificationsBar";
-import { LiveSubCardsStrip } from "@/components/LiveSubCardsStrip";
+import {
+  LiveSubCardsStrip,
+  matchesLiveStatusFilter,
+  type LiveStatusFilter,
+} from "@/components/LiveSubCardsStrip";
 import {
   type MLSubStatus,
   type MLStoreKey,
@@ -859,6 +863,11 @@ export default function MercadoLivrePage() {
   // Store (Mercado Envios Full vs outras lojas) — substitui visualmente o
   // filtro de "loja" do ML. Default "all" mostra tudo somado igual hoje.
   const [selectedStore, setSelectedStore] = useState<MLStoreKey | "all">("all");
+  // Filtro do live snapshot: quando user clica num pill do LiveSubCardsStrip
+  // (ex: "Etiqueta pronta 37", "Coleta 23 de abril 2"), filtra a lista abaixo
+  // pra mostrar só pedidos com aquele status_text. Toggle ao clicar de novo.
+  const [selectedLiveStatusFilter, setSelectedLiveStatusFilter] =
+    useState<LiveStatusFilter | null>(null);
 
   // Reset dos sub-filtros quando trocar de bucket — sub-status e relativo
   // ao bucket atual (ready_to_print so existe em "upcoming" por exemplo).
@@ -1788,6 +1797,27 @@ export default function MercadoLivrePage() {
       );
     }
 
+    // Filtro LIVE do ML (clique num pill do LiveSubCardsStrip — ex
+    // "Etiqueta pronta 37", "Coleta 23 de abril 2", "A caminho 49").
+    // Filtra pelos pedidos do snapshot que batem com o filtro, e
+    // intersecta com os orders locais via pack_id/order_id.
+    if (selectedLiveStatusFilter && liveSnapshot?.orders?.[shipmentFilter]) {
+      const matchingIds = new Set<string>();
+      for (const snapOrder of liveSnapshot.orders[shipmentFilter]) {
+        if (matchesLiveStatusFilter(snapOrder.status_text, selectedLiveStatusFilter)) {
+          if (snapOrder.pack_id) matchingIds.add(String(snapOrder.pack_id));
+          if (snapOrder.order_id) matchingIds.add(String(snapOrder.order_id));
+        }
+      }
+      result = result.filter((order) => {
+        if (matchingIds.has(order.id)) return true;
+        if (order.order_id && matchingIds.has(order.order_id)) return true;
+        const packId = getOrderPackId(order);
+        if (packId && matchingIds.has(packId)) return true;
+        return false;
+      });
+    }
+
     // Filtro de etiqueta impressa (mantido)
     if (labelPrintFilter === "printed") {
       result = result.filter((order) => Boolean(order.label_printed_at));
@@ -1802,14 +1832,17 @@ export default function MercadoLivrePage() {
     selectedStore,
     selectedSubStatus,
     selectedPickupGroup,
+    selectedLiveStatusFilter,
+    liveSnapshot,
     shipmentFilter,
   ]);
 
-  // Reset sub-status + pickup quando trocar de bucket — eles sao especificos
-  // do bucket atual e nao fazem sentido em outro.
+  // Reset sub-status + pickup + filtro live quando trocar de bucket — eles
+  // sao especificos do bucket atual e nao fazem sentido em outro.
   useEffect(() => {
     setSelectedSubStatus(null);
     setSelectedPickupGroup(null);
+    setSelectedLiveStatusFilter(null);
   }, [shipmentFilter]);
 
   // Contagens pros badges dos botoes de filtro — usam o conjunto ja filtrado
@@ -2379,6 +2412,8 @@ export default function MercadoLivrePage() {
               <LiveSubCardsStrip
                 subCards={liveSnapshot.sub_cards}
                 bucket={shipmentFilter}
+                selectedFilter={selectedLiveStatusFilter}
+                onSelectFilter={setSelectedLiveStatusFilter}
               />
             </div>
           )}
