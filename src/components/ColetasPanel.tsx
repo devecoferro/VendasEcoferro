@@ -217,7 +217,7 @@ export function ColetasPanel({
 
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 lg:flex-row lg:items-center lg:justify-between">
+      <CardHeader className="flex flex-col gap-3 space-y-0 py-3 px-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
         <button
           type="button"
           onClick={() => setExpanded((e) => !e)}
@@ -236,7 +236,7 @@ export function ColetasPanel({
         </button>
 
         {toolbar ? (
-          <div className="flex flex-wrap items-center gap-2">{toolbar}</div>
+          <div className="flex flex-wrap items-center gap-2 min-w-0">{toolbar}</div>
         ) : (
           currentFilterLabel && (
             <span className="text-xs text-muted-foreground">

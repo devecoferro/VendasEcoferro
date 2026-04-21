@@ -882,7 +882,10 @@ export default function MercadoLivrePage() {
   // dispara novo fetch (ou pega do cache se já foi carregado antes).
 
   const [connecting, setConnecting] = useState(false);
-  const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("today");
+  // Default "upcoming" (Proximos dias) pra bater com o painel Coletas
+  // por Data — antes era "today", fazia a lista ficar vazia na maioria
+  // das vezes (os chips de bucket foram removidos do layout).
+  const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("upcoming");
   const [selectedDepositFilters, setSelectedDepositFilters] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   // Filtro de etiqueta impressa: "all" mostra todos, "not_printed" so pendentes
