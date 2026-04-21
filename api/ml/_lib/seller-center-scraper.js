@@ -557,47 +557,97 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
       // Filtra pra nao clicar na tab atual (nao muda, nao dispara fetch)
       const labels = allLabels.filter((l) => l.id !== ctx.currentTab);
 
-      // Strategy 1: busca por texto (includes, nao starts with — text pode ter "5" junto)
-      const candidates = document.querySelectorAll(
-        'button, a, [role="tab"], [role="button"], div[onclick], li, [data-testid]'
-      );
+      // Strategy v4: mirar no INPUT radio do Andes Segmented Control
+      // O ML renderiza:
+      //   <input type="radio" value="TAB_NEXT_DAYS" id="_r_XX_-segment-input-TAB_NEXT_DAYS">
+      //   <label for="_r_XX_-segment-input-TAB_NEXT_DAYS">145Próximos dias</label>
+      // Clicar no radio dispara change event (o que o ML listena).
+      // Se nao achar radio, tenta o label (for attribute ativa o radio).
       for (const { label, id } of labels) {
         let clicked = false;
-        for (const el of candidates) {
-          // Match por atributos primeiro (mais robusto)
-          const testId = el.getAttribute("data-testid") || "";
-          const ariaLabel = el.getAttribute("aria-label") || "";
-          const dataId = el.getAttribute("data-id") || el.getAttribute("id") || "";
-          const text = (el.textContent || "").trim();
-          const matchedBy =
-            testId.includes(id) ||
-            dataId.includes(id) ||
-            ariaLabel.includes(label) ||
-            text === label ||
-            text.startsWith(label) ||
-            text.replace(/\s+/g, " ").includes(label);
-          if (matchedBy) {
-            try {
-              el.scrollIntoView({ block: "center" });
-              el.click();
-              attempts.push({
-                label,
-                id,
-                clicked: true,
-                tagName: el.tagName,
-                matchType: testId.includes(id) ? "testid" :
-                  dataId.includes(id) ? "dataid" :
-                  ariaLabel.includes(label) ? "arialabel" : "text",
-                textSample: text.slice(0, 80),
-              });
-              clicked = true;
-              await new Promise((r) => setTimeout(r, 400));
-            } catch (err) {
-              attempts.push({ label, id, clicked: false, error: String(err) });
-            }
-            break;
+
+        // Tentativa 1: input radio via value=TAB_XXX
+        const radio = document.querySelector(`input[type="radio"][value="${id}"]`);
+        if (radio && !radio.checked) {
+          try {
+            radio.scrollIntoView({ block: "center" });
+            // Dispatchar change event tambem, caso click puro nao baste
+            radio.click();
+            // Forca trigger de change + input events (React sometimes needs)
+            radio.dispatchEvent(new Event("change", { bubbles: true }));
+            radio.dispatchEvent(new Event("input", { bubbles: true }));
+            attempts.push({
+              label,
+              id,
+              clicked: true,
+              tagName: "INPUT",
+              matchType: "radio_value",
+              selector: `input[type="radio"][value="${id}"]`,
+              inputId: radio.id,
+            });
+            clicked = true;
+            await new Promise((r) => setTimeout(r, 600));
+            continue;
+          } catch (err) {
+            attempts.push({ label, id, clicked: false, matchType: "radio_value", error: String(err) });
+          }
+        } else if (radio && radio.checked) {
+          attempts.push({ label, id, clicked: false, reason: "radio_already_checked" });
+          continue;
+        }
+
+        // Tentativa 2: label[for*=TAB_XXX]
+        const lbl = document.querySelector(`label[for*="${id}"]`);
+        if (lbl) {
+          try {
+            lbl.scrollIntoView({ block: "center" });
+            lbl.click();
+            attempts.push({
+              label,
+              id,
+              clicked: true,
+              tagName: "LABEL",
+              matchType: "label_for",
+              textSample: (lbl.textContent || "").trim().slice(0, 50),
+            });
+            clicked = true;
+            await new Promise((r) => setTimeout(r, 600));
+            continue;
+          } catch (err) {
+            attempts.push({ label, id, clicked: false, matchType: "label_for", error: String(err) });
           }
         }
+
+        // Tentativa 3: fallback pra busca por texto amplo
+        if (!clicked) {
+          const all = document.querySelectorAll(
+            "button, a, label, div, span, li, input"
+          );
+          for (const el of all) {
+            const text = (el.textContent || "").trim();
+            const value = el.getAttribute("value") || "";
+            if (value === id || text.includes(label)) {
+              try {
+                el.scrollIntoView({ block: "center" });
+                el.click();
+                attempts.push({
+                  label,
+                  id,
+                  clicked: true,
+                  tagName: el.tagName,
+                  matchType: value === id ? "value_attr" : "text_includes",
+                  textSample: text.slice(0, 60),
+                });
+                clicked = true;
+                await new Promise((r) => setTimeout(r, 600));
+                break;
+              } catch (err) {
+                // keep trying
+              }
+            }
+          }
+        }
+
         if (!clicked) {
           attempts.push({ label, id, clicked: false, reason: "not_found" });
         }
