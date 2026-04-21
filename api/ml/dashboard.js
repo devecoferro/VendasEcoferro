@@ -301,17 +301,27 @@ function fetchStoredOrders(connectionId = null, limit = null) {
   const placeholders = DASHBOARD_ACTIVE_STATUSES.map(() => "?").join(", ");
   const connectionFilter = connectionId ? "AND connection_id = ?" : "";
 
-  // Janela de 15 dias pra delivered (cobre entregas recentes com sale_date
-  // um pouco anterior — pedido vendido dia 5, entregue dia 15 ainda entra).
-  // Outros status não têm esse filtro; só o finalized/cancelled do LOOP
-  // aplica filtro fino de 7 dias pela data da exceção.
-  const deliveredCutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+  // Janela pra delivered: usa sale_date OU date_delivered (o mais recente).
+  //
+  // Antes: apenas `sale_date > cutoff_15d`. Problema: um pedido vendido
+  // ha 20 dias e entregue HOJE (entrega tardia) era filtrado, apesar
+  // do ML ainda mostra-lo em "Finalizadas" pela date_delivered recente.
+  // Efeito: override ML nao conseguia recuperar esses pedidos e o diff
+  // persistia com ~4 missing→finalized nos logs.
+  //
+  // Fix: deixar passar se EITHER sale_date > cutoff OR date_delivered
+  // > cutoff. Janela do delivered pode ser maior (30d) pra cobrir todas
+  // as entregas que o ML ainda lista no chip (observado em prod: ML
+  // mantem ~2-3 dias, mas pedidos podem entrar/sair conforme substatus).
+  const deliveredSaleCutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+  const deliveredDateCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   // Ordem dos params deve bater com os "?" na query:
   // 1. statuses (IN placeholders)
-  // 2. deliveredCutoff
-  // 3. connectionId (se tiver)
-  const params = [...DASHBOARD_ACTIVE_STATUSES, deliveredCutoff];
+  // 2. deliveredSaleCutoff
+  // 3. deliveredDateCutoff
+  // 4. connectionId (se tiver)
+  const params = [...DASHBOARD_ACTIVE_STATUSES, deliveredSaleCutoff, deliveredDateCutoff];
   if (connectionId) params.push(String(connectionId));
 
   const rows = db.prepare(`
@@ -326,6 +336,7 @@ function fetchStoredOrders(connectionId = null, limit = null) {
         AND (
           lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) != 'delivered'
           OR sale_date > ?
+          OR json_extract(raw_data, '$.shipment_snapshot.status_history.date_delivered') > ?
         )
         ${connectionFilter}
     )
