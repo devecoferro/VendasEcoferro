@@ -45,6 +45,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useMercadoLivreData } from "@/hooks/useMercadoLivreData";
 import { useMLLiveSnapshot } from "@/hooks/useMLLiveSnapshot";
 import {
+  scopeLiveSnapshot,
+  type SnapshotScope,
+} from "@/services/mlLiveSnapshotService";
+import {
   Check,
   CheckCircle2,
   ChevronDown,
@@ -1578,6 +1582,34 @@ export default function MercadoLivrePage() {
     );
   }, [accessibleDashboardDeposits, selectedDepositFilters]);
 
+  // ─── Escopo do snapshot live baseado no filtro de depósito do topo ────
+  // Quando o user seleciona "Vendas sem depósito" / "Ourinhos" / "Full"
+  // no dropdown, o snapshot precisa ser filtrado pra refletir só aquele
+  // escopo. Recalcula counters + sub_cards localmente com os orders
+  // filtrados por store_label.
+  //
+  // ATENÇÃO: snapshot só tem ~50 orders por tab. Pra depósitos com
+  // volumes maiores, os counters podem ser SUBESTIMADOS. A flag
+  // is_partial_count indica isso pra UI mostrar aviso.
+  const snapshotScope = useMemo<SnapshotScope>(() => {
+    if (selectedDepositFilters.length === 0) return { kind: "all" };
+    // Se múltiplos selecionados, usa "all" (suportar multi-select depois)
+    if (selectedDepositFilters.length > 1) return { kind: "all" };
+
+    const depositKey = selectedDepositFilters[0];
+    const deposit = accessibleDashboardDeposits.find((d) => d.key === depositKey);
+    if (!deposit) return { kind: "all" };
+
+    if (deposit.key === "without-deposit") return { kind: "without_deposit" };
+    if (deposit.logistic_type === "fulfillment") return { kind: "full" };
+    // Default: loja física (Ourinhos). Usa label pra match mais específico.
+    return { kind: "outros", matchText: "ourinhos" };
+  }, [selectedDepositFilters, accessibleDashboardDeposits]);
+
+  const scopedLiveSnapshot = useMemo(() => {
+    return scopeLiveSnapshot(liveSnapshot, snapshotScope);
+  }, [liveSnapshot, snapshotScope]);
+
   // Contagens dos chips: ML LIVE como fonte de verdade (pack-deduplicated).
   // Fallback para contagem local se ML API indisponível.
   const shipmentCounts = useMemo(() => {
@@ -1599,13 +1631,19 @@ export default function MercadoLivrePage() {
     // 3. ml_live_chip_counts — nossa API ML (~95% alinhado)
     // 4. localCounts — classificação interna do app (fallback final)
 
-    // #1: Live snapshot (Fase 2) — fonte de verdade 1:1 com o Seller Center
-    if (liveSnapshot?.counters && typeof liveSnapshot.counters.today === "number") {
+    // #1: Live snapshot (Fase 2) — fonte de verdade 1:1 com o Seller Center.
+    // Usa a versão ESCOPADA pelo filtro de depósito do topo (Vendas sem
+    // depósito / Ourinhos / Full). Quando scope é "all" (nenhum filtro),
+    // scopedLiveSnapshot é igual ao liveSnapshot original.
+    if (
+      scopedLiveSnapshot?.counters &&
+      typeof scopedLiveSnapshot.counters.today === "number"
+    ) {
       return {
-        today: liveSnapshot.counters.today,
-        upcoming: liveSnapshot.counters.upcoming,
-        in_transit: liveSnapshot.counters.in_transit,
-        finalized: liveSnapshot.counters.finalized,
+        today: scopedLiveSnapshot.counters.today,
+        upcoming: scopedLiveSnapshot.counters.upcoming,
+        in_transit: scopedLiveSnapshot.counters.in_transit,
+        finalized: scopedLiveSnapshot.counters.finalized,
         cancelled: 0,
       };
     }
@@ -1637,7 +1675,7 @@ export default function MercadoLivrePage() {
     }
 
     return localCounts;
-  }, [selectedDashboardDeposits, dashboard, liveSnapshot]);
+  }, [selectedDashboardDeposits, dashboard, scopedLiveSnapshot]);
 
   // IDs dos pedidos que compõem a lista abaixo do chip selecionado.
   //
@@ -1673,8 +1711,9 @@ export default function MercadoLivrePage() {
     // (pack_id + order_id dos pedidos capturados via scraper Playwright).
     // São a fonte de verdade 1:1 com o ML — priorizamos eles sobre o
     // ml_live_chip_order_ids_by_bucket do dashboard antigo.
+    // Usa a versão ESCOPADA pelo filtro de depósito do topo.
     const snapshotIds = new Set<string>();
-    const snapshotOrders = liveSnapshot?.orders?.[shipmentFilter];
+    const snapshotOrders = scopedLiveSnapshot?.orders?.[shipmentFilter];
     if (Array.isArray(snapshotOrders)) {
       for (const o of snapshotOrders) {
         if (o.pack_id) snapshotIds.add(String(o.pack_id));
@@ -1719,7 +1758,7 @@ export default function MercadoLivrePage() {
 
     // Fallback: nenhum live ID disponível, usa escopo local
     return localScope;
-  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, liveSnapshot]);
+  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, scopedLiveSnapshot]);
 
   const bucketOrders = useMemo(() => {
     if (operationalOrderIds.size === 0) return [];
@@ -1801,9 +1840,9 @@ export default function MercadoLivrePage() {
     // "Etiqueta pronta 37", "Coleta 23 de abril 2", "A caminho 49").
     // Filtra pelos pedidos do snapshot que batem com o filtro, e
     // intersecta com os orders locais via pack_id/order_id.
-    if (selectedLiveStatusFilter && liveSnapshot?.orders?.[shipmentFilter]) {
+    if (selectedLiveStatusFilter && scopedLiveSnapshot?.orders?.[shipmentFilter]) {
       const matchingIds = new Set<string>();
-      for (const snapOrder of liveSnapshot.orders[shipmentFilter]) {
+      for (const snapOrder of scopedLiveSnapshot.orders[shipmentFilter]) {
         if (matchesLiveStatusFilter(snapOrder.status_text, selectedLiveStatusFilter)) {
           if (snapOrder.pack_id) matchingIds.add(String(snapOrder.pack_id));
           if (snapOrder.order_id) matchingIds.add(String(snapOrder.order_id));
@@ -1833,7 +1872,7 @@ export default function MercadoLivrePage() {
     selectedSubStatus,
     selectedPickupGroup,
     selectedLiveStatusFilter,
-    liveSnapshot,
+    scopedLiveSnapshot,
     shipmentFilter,
   ]);
 
@@ -2343,6 +2382,26 @@ export default function MercadoLivrePage() {
                   <span className="text-[#888] text-[11px]">
                     · auto-sync a cada 30s
                   </span>
+                  {snapshotScope.kind !== "all" && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                      escopo:{" "}
+                      {snapshotScope.kind === "without_deposit"
+                        ? "Vendas sem depósito"
+                        : snapshotScope.kind === "full"
+                          ? "Mercado Envios Full"
+                          : "Ourinhos"}
+                    </span>
+                  )}
+                  {scopedLiveSnapshot &&
+                    "is_partial_count" in scopedLiveSnapshot &&
+                    scopedLiveSnapshot.is_partial_count && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+                        title="Escopo filtrado: contagem limitada aos 50 primeiros pedidos por tab. Totais reais podem ser maiores."
+                      >
+                        ~ contagem parcial
+                      </span>
+                    )}
                 </>
               ) : liveSnapshotLoading ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
@@ -2407,10 +2466,10 @@ export default function MercadoLivrePage() {
               (Etiqueta pronta, Coleta 22 abr, A caminho, Entregue, etc)
               direto do /api/ml/live-snapshot. 1:1 com ML Seller Center.
               Renderiza nada se o snapshot não estiver disponível. */}
-          {liveSnapshot && (
+          {scopedLiveSnapshot && (
             <div className="mt-4">
               <LiveSubCardsStrip
-                subCards={liveSnapshot.sub_cards}
+                subCards={scopedLiveSnapshot.sub_cards}
                 bucket={shipmentFilter}
                 selectedFilter={selectedLiveStatusFilter}
                 onSelectFilter={setSelectedLiveStatusFilter}

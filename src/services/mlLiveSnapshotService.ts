@@ -115,6 +115,180 @@ export interface MLLiveSnapshotError {
 }
 
 /**
+ * Determina se um order do snapshot pertence ao depósito identificado
+ * pelo `scopeKind`. Usado pra filtrar o snapshot quando o usuário
+ * seleciona um escopo de loja no dropdown do topo ("Vendas sem depósito",
+ * "Ourinhos", "Full").
+ *
+ * Mapeamento:
+ *   - "without_deposit": store_label vazio/null (vendas diretas sem loja)
+ *   - "full":            store_label contém "full"
+ *   - "outros":          qualquer loja física (Ourinhos, Dario Alonso)
+ *   - "all":             sempre true (sem filtro)
+ */
+export type SnapshotScope =
+  | { kind: "all" }
+  | { kind: "without_deposit" }
+  | { kind: "full" }
+  | { kind: "outros"; matchText?: string };
+
+export function orderMatchesScope(
+  order: MLLiveSnapshotOrder,
+  scope: SnapshotScope
+): boolean {
+  if (scope.kind === "all") return true;
+  const label = (order.store_label || "").toLowerCase().normalize("NFD");
+  const labelStripped = label.replace(/[\u0300-\u036f]/g, "");
+  if (scope.kind === "without_deposit") {
+    return !order.store_label || order.store_label.trim() === "";
+  }
+  if (scope.kind === "full") {
+    return labelStripped.includes("full") || order.channel === "fulfillment";
+  }
+  if (scope.kind === "outros") {
+    if (!order.store_label) return false;
+    if (scope.matchText) {
+      return labelStripped.includes(scope.matchText.toLowerCase());
+    }
+    // Default "outros": qualquer loja não-Full
+    return !labelStripped.includes("full");
+  }
+  return false;
+}
+
+/**
+ * Re-agrega sub_cards a partir de uma lista de orders do snapshot.
+ * Usado depois de filtrar por escopo — os sub_cards originais do
+ * snapshot são globais e precisam ser recalculados pro escopo filtrado.
+ */
+function recomputeSubCardsFromOrders(ordersByTab: MLLiveSnapshotOrdersByTab): MLLiveSnapshotSubCards {
+  const subCards: MLLiveSnapshotSubCards = {
+    today: {
+      label_ready_to_print: 0,
+      ready_for_pickup: 0,
+      ready_to_send: 0,
+      with_unread_messages: 0,
+      total: 0,
+      by_status: {},
+    },
+    upcoming: {
+      scheduled_pickup: 0,
+      label_ready_to_print: 0,
+      total: 0,
+      by_pickup_date: {},
+      by_status: {},
+    },
+    in_transit: {
+      in_transit: 0,
+      total: 0,
+      by_status: {},
+    },
+    finalized: {
+      delivered: 0,
+      cancelled_seller: 0,
+      cancelled_buyer: 0,
+      with_claims: 0,
+      total: 0,
+      by_status: {},
+    },
+  };
+
+  for (const [tabKey, orders] of Object.entries(ordersByTab) as Array<
+    [keyof MLLiveSnapshotOrdersByTab, MLLiveSnapshotOrder[]]
+  >) {
+    const sub = subCards[tabKey];
+    sub.total = orders.length;
+    for (const o of orders) {
+      const s = (o.status_text || "").toLowerCase();
+      if (o.status_text) {
+        sub.by_status[o.status_text] = (sub.by_status[o.status_text] || 0) + 1;
+      }
+      if (o.messages_unread) {
+        (sub as MLLiveSnapshotSubCardToday).with_unread_messages =
+          ((sub as MLLiveSnapshotSubCardToday).with_unread_messages || 0) + 1;
+      }
+      if (tabKey === "today") {
+        const subT = sub as MLLiveSnapshotSubCardToday;
+        if (s.includes("etiqueta pronta")) subT.label_ready_to_print++;
+        else if (s.includes("pronto para coleta")) subT.ready_for_pickup++;
+        if (s.includes("pronto") || s.includes("etiqueta pronta")) subT.ready_to_send++;
+      } else if (tabKey === "upcoming") {
+        const subU = sub as MLLiveSnapshotSubCardUpcoming;
+        if (s.includes("para entregar na coleta do dia")) {
+          subU.scheduled_pickup++;
+          const m = o.status_text?.match(/coleta do dia (\d+ de \w+)/i);
+          if (m) {
+            const d = m[1];
+            subU.by_pickup_date[d] = (subU.by_pickup_date[d] || 0) + 1;
+          }
+        } else if (s.includes("etiqueta pronta")) {
+          subU.label_ready_to_print++;
+        }
+      } else if (tabKey === "in_transit") {
+        (sub as MLLiveSnapshotSubCardInTransit).in_transit++;
+      } else if (tabKey === "finalized") {
+        const subF = sub as MLLiveSnapshotSubCardFinalized;
+        if (s.includes("entregue")) subF.delivered++;
+        else if (s.includes("não envie") || s.includes("cancelada. não")) subF.cancelled_seller++;
+        else if (s.includes("cancelada pelo comprador") || s.includes("cancelado")) subF.cancelled_buyer++;
+        if (o.reputation_priority && o.reputation_priority !== "NORMAL") subF.with_claims++;
+      }
+    }
+  }
+  return subCards;
+}
+
+/**
+ * Retorna uma versão do snapshot filtrada pelo escopo (depósito/loja).
+ * - orders: filtrados pelo match de store_label
+ * - counters: recalculados contando os orders filtrados (primeira página
+ *   do snapshot — até 50 por tab. Para depósitos com volumes maiores,
+ *   o número pode estar SUBESTIMADO)
+ * - sub_cards: re-agregados
+ *
+ * Quando scope.kind === "all", retorna o snapshot original sem mudanças.
+ *
+ * @returns snapshot escopado + flag `is_partial_count` se os counters
+ *          podem estar subestimados pelo limite de 50 por tab.
+ */
+export function scopeLiveSnapshot(
+  snapshot: MLLiveSnapshotResponse | null,
+  scope: SnapshotScope
+): (MLLiveSnapshotResponse & { is_partial_count?: boolean }) | null {
+  if (!snapshot) return null;
+  if (scope.kind === "all") return snapshot;
+
+  const scopedOrders: MLLiveSnapshotOrdersByTab = {
+    today: snapshot.orders.today.filter((o) => orderMatchesScope(o, scope)),
+    upcoming: snapshot.orders.upcoming.filter((o) => orderMatchesScope(o, scope)),
+    in_transit: snapshot.orders.in_transit.filter((o) => orderMatchesScope(o, scope)),
+    finalized: snapshot.orders.finalized.filter((o) => orderMatchesScope(o, scope)),
+  };
+
+  // Se alguma tab tinha 50 orders (limite da primeira página), os counters
+  // escopados podem estar subestimados (tab do ML tem mais que 50 no total
+  // e alguns desses 50+ podem ser do escopo filtrado).
+  const isPartialCount = Object.values(snapshot.orders).some(
+    (arr) => arr.length >= 50
+  );
+
+  const scopedCounters: MLLiveSnapshotCounters = {
+    today: scopedOrders.today.length,
+    upcoming: scopedOrders.upcoming.length,
+    in_transit: scopedOrders.in_transit.length,
+    finalized: scopedOrders.finalized.length,
+  };
+
+  return {
+    ...snapshot,
+    counters: scopedCounters,
+    orders: scopedOrders,
+    sub_cards: recomputeSubCardsFromOrders(scopedOrders),
+    is_partial_count: isPartialCount,
+  };
+}
+
+/**
  * Busca o snapshot live do ML.
  * Por default retorna do cache (5min TTL); passe force=true pra forçar
  * scrape fresh (demora 60-90s).
