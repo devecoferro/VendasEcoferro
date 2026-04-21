@@ -76,6 +76,7 @@ import {
   findOrdersInSamePack,
   getStockLocations,
   getMLConnectionStatus,
+  getOrderPackId,
   markLabelsAsPrinted,
   markLabelsAsUnprinted,
   type MLDashboardDeposit,
@@ -1655,6 +1656,33 @@ export default function MercadoLivrePage() {
       }
     }
 
+    // FASE 2 (2026-04-20): IDs vindos do live snapshot do ML Seller Center
+    // (pack_id + order_id dos pedidos capturados via scraper Playwright).
+    // São a fonte de verdade 1:1 com o ML — priorizamos eles sobre o
+    // ml_live_chip_order_ids_by_bucket do dashboard antigo.
+    const snapshotIds = new Set<string>();
+    const snapshotOrders = liveSnapshot?.orders?.[shipmentFilter];
+    if (Array.isArray(snapshotOrders)) {
+      for (const o of snapshotOrders) {
+        if (o.pack_id) snapshotIds.add(String(o.pack_id));
+        if (o.order_id) snapshotIds.add(String(o.order_id));
+      }
+    }
+
+    // Prioridade: snapshot > liveIds (dashboard antigo) > localScope
+    if (snapshotIds.size > 0) {
+      if (selectedDepositFilters.length > 0) {
+        const intersected = new Set<string>(
+          [...snapshotIds].filter((id) => localScope.has(id))
+        );
+        if (intersected.size === 0 && localScope.size > 0) {
+          return localScope;
+        }
+        return intersected;
+      }
+      return snapshotIds;
+    }
+
     if (Array.isArray(liveIds) && liveIds.length > 0) {
       const ids = new Set<string>(liveIds);
       // Se houver filtro de depósito ativo, restringimos aos pedidos que
@@ -1678,7 +1706,7 @@ export default function MercadoLivrePage() {
 
     // Fallback: nenhum live ID disponível, usa escopo local
     return localScope;
-  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter]);
+  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, liveSnapshot]);
 
   const bucketOrders = useMemo(() => {
     if (operationalOrderIds.size === 0) return [];
@@ -1690,7 +1718,16 @@ export default function MercadoLivrePage() {
             selectedDepositFilters.includes(getDepositInfo(order).key)
           );
 
-    return depositScopedOrders.filter((order) => operationalOrderIds.has(order.id));
+    // Match por qualquer identificador (MLOrder.id composto, .order_id
+    // externo do ML, ou pack_id). Assim cobrimos IDs vindos do live
+    // snapshot (que usa pack_id) e do dashboard antigo (que usa .id).
+    return depositScopedOrders.filter((order) => {
+      if (operationalOrderIds.has(order.id)) return true;
+      if (order.order_id && operationalOrderIds.has(order.order_id)) return true;
+      const packId = getOrderPackId(order);
+      if (packId && operationalOrderIds.has(packId)) return true;
+      return false;
+    });
   }, [operationalOrderIds, permittedOrders, selectedDepositFilters]);
 
   const focusedOperationalOrders = useMemo(() => {
