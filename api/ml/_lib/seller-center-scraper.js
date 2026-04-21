@@ -545,17 +545,25 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     //     tablist) caso os textos estejam vazios (skeleton loading)
     clicksAttempted = await page.evaluate(async (ctx) => {
       const attempts = [];
-      // Clica em tabs DIFERENTES da atual pra forcar mudanca (o ML so
-      // dispara /operations-dashboard quando muda de tab ativo).
-      // Strategy: dada a currentTab, clica nas 3 outras em sequencia.
+      // Clica em TODOS os 4 tabs, comecando pelos DIFERENTES da atual
+      // e terminando voltando ao atual. Isso garante que o ML dispare
+      // o fetch de TODAS as listas (mudanca de tab = novo /event-request
+      // grande com rows populadas).
+      //
+      // Exemplo: se current=TAB_TODAY, clica order: NEXT_DAYS, IN_THE_WAY,
+      // FINISHED, TODAY (volta). ML dispara 4 event-requests grandes.
       const allLabels = [
         { label: "Envios de hoje", id: "TAB_TODAY" },
         { label: "Próximos dias", id: "TAB_NEXT_DAYS" },
         { label: "Em trânsito", id: "TAB_IN_THE_WAY" },
         { label: "Finalizadas", id: "TAB_FINISHED" },
       ];
-      // Filtra pra nao clicar na tab atual (nao muda, nao dispara fetch)
-      const labels = allLabels.filter((l) => l.id !== ctx.currentTab);
+      // Ordena: outras primeiro (pra nao dar no-op inicial),
+      // atual por ultimo (volta, forca novo fetch pro current)
+      const labels = [
+        ...allLabels.filter((l) => l.id !== ctx.currentTab),
+        ...allLabels.filter((l) => l.id === ctx.currentTab),
+      ];
 
       // Strategy v4: mirar no INPUT radio do Andes Segmented Control
       // O ML renderiza:
@@ -1415,8 +1423,11 @@ function aggregateSubCards(ordersByTab) {
  */
 export async function scrapeMlLiveSnapshot({ timeoutMs = 90_000 } = {}) {
   // Reusa o scrape full com waitMs generoso pra ter tempo dos clicks
-  // dispararem todos os XHRs. SingleTab = null (queremos todos).
-  // SingleStore = 'outros' (pra nao duplicar store=all com store=outros).
+  // dispararem todos os XHRs.
+  //
+  // O scraper clica nos 4 tabs (outros primeiro + atual por ultimo pra
+  // forcar re-fetch do atual). Cada click dispara /event-request grande
+  // com a lista populada daquele tab.
   const result = await scrapeMlSellerCenterFull({
     timeoutMs,
     singleTab: "today",
