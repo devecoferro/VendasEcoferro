@@ -176,11 +176,45 @@ function sortDateLabels(a: string, b: string): number {
   return (parseInt(dayA, 10) || 0) - (parseInt(dayB, 10) || 0);
 }
 
-function getPipelineState(localOrder: MLOrder | undefined): PipelineState {
-  if (!localOrder) return "sem_gerar_lo";
-  if (localOrder.label_printed_at) return "etiqueta_impressa";
-  if (hasEmittedInvoice(localOrder)) return "nf_gerada";
-  return "sem_gerar_lo";
+// Determina em qual das 3 linhas da grid o order cai.
+//
+// Fonte de verdade preferida: `status_text` do snapshot ML (ao-vivo).
+// Motivo: a flag local `__nfe_emitted` só é true quando o EcoFerro emite
+// a NF via nosso sistema. Se o vendedor emitir por fora (ou o ML ja
+// considerar emitida), nosso DB fica stale. Auditoria em prod mostrou
+// 50/50 orders de Ourinhos classificados como "sem_gerar_lo" — todos
+// com __nfe_emitted=false — mesmo com o ML mostrando coleta agendada
+// (o que so e possivel com NF ja emitida).
+//
+// Regras (por prioridade):
+//   1. label_printed_at local → "etiqueta_impressa" (marca definitiva
+//      de impressao pelo nosso sistema; NF implicitamente esta emitida)
+//   2. status_text "Pronta para emitir NF-e" → "sem_gerar_lo"
+//   3. hasEmittedInvoice(local) === true → "nf_gerada"
+//      (preserva o caso legado onde confiamos no nosso sistema)
+//   4. Fallback: qualquer outro status em upcoming implica NF ja
+//      emitida pelo vendedor (ML so mostra coleta/etiqueta-pronta/etc
+//      apos a NF) → "nf_gerada"
+function getPipelineState(
+  snap: MLLiveSnapshotOrder,
+  local: MLOrder | undefined
+): PipelineState {
+  if (local?.label_printed_at) return "etiqueta_impressa";
+
+  const s = (snap.status_text || "").toLowerCase();
+  if (
+    s.includes("pronta para emitir nf-e") ||
+    s.includes("pronto para emitir nf-e") ||
+    s.includes("pronta para emitir nfe") ||
+    s.includes("pronto para emitir nfe")
+  ) {
+    return "sem_gerar_lo";
+  }
+
+  if (local && hasEmittedInvoice(local)) return "nf_gerada";
+
+  // Em upcoming, sem status de NF pendente → ML ja confirmou NF
+  return "nf_gerada";
 }
 
 // ─── Componente ──────────────────────────────────────────────────────
@@ -239,7 +273,7 @@ export function ColetasPanel({
         pendingOrders.push({ snap, local });
         continue;
       }
-      const state = getPipelineState(local);
+      const state = getPipelineState(snap, local);
       if (!byDate.has(cls.label)) {
         byDate.set(cls.label, {
           sem_gerar_lo: [],
@@ -264,7 +298,7 @@ export function ColetasPanel({
         });
       }
       for (const entry of pendingOrders) {
-        const state = getPipelineState(entry.local);
+        const state = getPipelineState(entry.snap, entry.local);
         byDate.get(nextLabel)![state].push(entry);
       }
     }
