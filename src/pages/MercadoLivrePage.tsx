@@ -2287,7 +2287,11 @@ export default function MercadoLivrePage() {
           </div>
         </div>
 
-        <ColetasPanel orders={orders} liveSnapshot={liveSnapshot} />
+        <ColetasPanel
+          orders={orders}
+          scopedLiveSnapshot={scopedLiveSnapshot}
+          currentFilterLabel={selectedDepositLabel}
+        />
 
         <div className="space-y-6 pt-2">
         <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">

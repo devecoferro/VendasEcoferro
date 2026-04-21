@@ -1,11 +1,9 @@
 import { useMemo, useState } from "react";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Calendar, FileText, Printer, PackageCheck, Truck, ChevronDown, ChevronUp } from "lucide-react";
-import { getOrderStoreKey, type MLStoreKey } from "@/services/mlSubStatusClassifier";
 import { hasEmittedInvoice } from "@/services/mercadoLivreHelpers";
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type {
@@ -13,16 +11,12 @@ import type {
   MLLiveSnapshotOrder,
 } from "@/services/mlLiveSnapshotService";
 
-// ─── Filtros de vendas (dropdown do topo direito da imagem) ──────────
-type StoreFilter = "all" | "without_deposit" | "ourinhos" | "full";
-
 // ─── Estados do pipeline (linhas da grid) ────────────────────────────
 type PipelineState = "sem_gerar_lo" | "nf_gerada" | "etiqueta_impressa";
 
 interface PipelineStateConfig {
   value: PipelineState;
   label: string;
-  description: string;
   icon: typeof FileText;
   tone: string;
 }
@@ -31,62 +25,107 @@ const PIPELINE_STATES: PipelineStateConfig[] = [
   {
     value: "sem_gerar_lo",
     label: "NFs SEM GERAR LO",
-    description: "Vendas que ainda não tiveram a Nota Fiscal gerada (local de origem — LO).",
     icon: FileText,
     tone: "border-amber-300/70 bg-amber-50 text-amber-900 hover:bg-amber-100",
   },
   {
     value: "nf_gerada",
     label: "NFs GERADAS",
-    description: "NF gerada. Imprimir etiqueta move pra \"Etiquetas Impressas\".",
     icon: Printer,
     tone: "border-blue-300/70 bg-blue-50 text-blue-900 hover:bg-blue-100",
   },
   {
     value: "etiqueta_impressa",
     label: "NFs e ETIQUETAS IMPRESSAS",
-    description: "NF gerada e etiquetas impressas — prontas pra coleta.",
     icon: PackageCheck,
     tone: "border-emerald-300/70 bg-emerald-50 text-emerald-900 hover:bg-emerald-100",
   },
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────
+// ─── Extração da data de coleta do order do snapshot ─────────────────
+//
+// O ML Seller Center expressa a data de coleta de 2 formas no
+// status_text/description do order:
+//
+//   1. Explicit:  "Para entregar na coleta do dia 23 de abril"
+//   2. Relativa: "A coleta passará amanhã" / "A coleta passará hoje"
+//                (texto fica em description, não em status_text)
+//
+// Também há status como "Pronto para coleta" / "Etiqueta pronta para
+// impressão" que NÃO carregam data — esses agrupamos em "Sem data
+// definida" pra ainda aparecerem no relatório (operador precisa
+// saber que existem mesmo sem previsão explícita).
 
-// Parseia "coleta do dia DD de mês" → "DD de mês" (chave canônica)
-const PICKUP_DATE_RE = /coleta do dia (\d+ de \w+)/i;
+const PICKUP_DATE_EXPLICIT_RE = /coleta do dia (\d+ de \w+)/i;
 
-function extractPickupDateLabel(snapOrder: MLLiveSnapshotOrder): string | null {
-  const text = snapOrder.status_text || "";
-  const match = text.match(PICKUP_DATE_RE);
-  return match ? match[1].toLowerCase() : null;
+const MONTHS_PT: Record<string, string> = {
+  janeiro: "01", fevereiro: "02", marco: "03", março: "03", abril: "04",
+  maio: "05", junho: "06", julho: "07", agosto: "08",
+  setembro: "09", outubro: "10", novembro: "11", dezembro: "12",
+};
+
+function getTodayDayMonthLabel(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const day = String(d.getDate());
+  const monthIdx = d.getMonth();
+  const monthNames = Object.keys(MONTHS_PT).filter(
+    (k) => !["março", "março"].includes(k)
+  );
+  // Gera lista padronizada em português (usa "março" sem pc-latin)
+  const ordered = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
+  void monthNames; // silencia lint
+  return `${day} de ${ordered[monthIdx]}`;
 }
 
-function matchesStoreFilter(
-  localOrder: MLOrder | undefined,
-  snapOrder: MLLiveSnapshotOrder,
-  filter: StoreFilter
-): boolean {
-  if (filter === "all") return true;
+function extractPickupDateLabel(snapOrder: MLLiveSnapshotOrder): string | null {
+  const text = `${snapOrder.status_text || ""} ${snapOrder.description || ""}`;
 
-  // Primeiro tenta classificar via order local
-  if (localOrder) {
-    const key: MLStoreKey = getOrderStoreKey(localOrder);
-    if (filter === "full") return key === "full";
-    if (filter === "ourinhos") return key === "ourinhos" || key === "outros";
-    if (filter === "without_deposit") return key === "unknown";
+  // 1. Data explícita
+  const m = text.match(PICKUP_DATE_EXPLICIT_RE);
+  if (m) return m[1].toLowerCase().replace("março", "março");
+
+  // 2. "passará amanhã" / "passará hoje" na description
+  const lower = text.toLowerCase();
+  if (lower.includes("passará hoje") || lower.includes("passara hoje")) {
+    return getTodayDayMonthLabel(0);
+  }
+  if (lower.includes("passará amanhã") || lower.includes("passara amanha")) {
+    return getTodayDayMonthLabel(1);
+  }
+  if (lower.includes("próxima coleta") || lower.includes("proxima coleta")) {
+    return getTodayDayMonthLabel(1);
   }
 
-  // Fallback: usa store_label do snapshot (ex "OURINHOS RUA DARIO ALONSO" ou "FULL")
-  const snapLabel = (snapOrder.store_label || "").toLowerCase();
-  if (filter === "full") return snapLabel.includes("full");
-  if (filter === "ourinhos") return snapLabel.includes("ourinhos");
-  if (filter === "without_deposit") return snapLabel.trim() === "";
-  return false;
+  // 3. Status "Pronto para coleta" sem mais info → Hoje (a coleta é diária)
+  if (lower.includes("pronto para coleta")) {
+    return getTodayDayMonthLabel(0);
+  }
+
+  return null;
+}
+
+function formatShort(label: string): string {
+  const parts = label.split(" de ");
+  if (parts.length !== 2) return label;
+  const day = parts[0].padStart(2, "0");
+  const monthKey = parts[1].toLowerCase();
+  const month = MONTHS_PT[monthKey] || MONTHS_PT[monthKey.replace("ç", "c")] || "??";
+  return `${day}/${month}`;
+}
+
+function sortDateLabels(a: string, b: string): number {
+  const [dayA, monthA] = a.split(" de ");
+  const [dayB, monthB] = b.split(" de ");
+  const mA = MONTHS_PT[monthA?.toLowerCase() || ""] || "99";
+  const mB = MONTHS_PT[monthB?.toLowerCase() || ""] || "99";
+  const cmp = mA.localeCompare(mB);
+  if (cmp !== 0) return cmp;
+  return (parseInt(dayA, 10) || 0) - (parseInt(dayB, 10) || 0);
 }
 
 function getPipelineState(localOrder: MLOrder | undefined): PipelineState {
-  if (!localOrder) return "sem_gerar_lo"; // no DB ainda → assume não gerou
+  if (!localOrder) return "sem_gerar_lo";
   if (localOrder.label_printed_at) return "etiqueta_impressa";
   if (hasEmittedInvoice(localOrder)) return "nf_gerada";
   return "sem_gerar_lo";
@@ -97,25 +136,27 @@ function getPipelineState(localOrder: MLOrder | undefined): PipelineState {
 interface ColetasPanelProps {
   /** Orders locais do DB (fonte da verdade pra estados NF/etiqueta). */
   orders: MLOrder[];
-  /** Snapshot ao-vivo do ML Seller Center (fonte das datas de coleta). */
-  liveSnapshot: MLLiveSnapshotResponse | null;
-  /** Inicia expandido? Default: true. */
+  /** Snapshot ao-vivo do ML Seller Center, JÁ ESCOPADO pelo filtro de
+   * depósito da página (selectedDepositFilters no topo). Se null ou
+   * sem orders, o painel indica estado vazio. */
+  scopedLiveSnapshot: MLLiveSnapshotResponse | null;
+  /** Label do filtro de depósito atual (pra mostrar no header do painel). */
+  currentFilterLabel?: string;
   defaultExpanded?: boolean;
 }
 
 export function ColetasPanel({
   orders,
-  liveSnapshot,
+  scopedLiveSnapshot,
+  currentFilterLabel,
   defaultExpanded = true,
 }: ColetasPanelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const [storeFilter, setStoreFilter] = useState<StoreFilter>("all");
   const [selectedCell, setSelectedCell] = useState<{
     pickupDate: string;
     state: PipelineState;
   } | null>(null);
 
-  // Index de orders locais por order_id + pack_id pra lookup rápido
   const localByOrderId = useMemo(() => {
     const map = new Map<string, MLOrder>();
     for (const o of orders) {
@@ -124,21 +165,18 @@ export function ColetasPanel({
     return map;
   }, [orders]);
 
-  // Extrai data de coleta de cada order "upcoming" do snapshot
   const { pickupDates, byDate } = useMemo(() => {
     const byDate = new Map<
       string,
       Record<PipelineState, Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }>>
     >();
-    const upcoming = liveSnapshot?.orders?.upcoming ?? [];
+    const upcoming = scopedLiveSnapshot?.orders?.upcoming ?? [];
 
     for (const snap of upcoming) {
       const dateLabel = extractPickupDateLabel(snap);
       if (!dateLabel) continue;
 
       const local = localByOrderId.get(String(snap.order_id));
-      if (!matchesStoreFilter(local, snap, storeFilter)) continue;
-
       const state = getPipelineState(local);
 
       if (!byDate.has(dateLabel)) {
@@ -151,14 +189,9 @@ export function ColetasPanel({
       byDate.get(dateLabel)![state].push({ snap, local });
     }
 
-    // Ordena por dia → extrai o número dos "DD de mês"
-    const pickupDates = Array.from(byDate.keys()).sort((a, b) => {
-      const da = parseInt(a.split(" ")[0], 10) || 0;
-      const dbb = parseInt(b.split(" ")[0], 10) || 0;
-      return da - dbb;
-    });
+    const pickupDates = Array.from(byDate.keys()).sort(sortDateLabels);
     return { pickupDates, byDate };
-  }, [liveSnapshot, localByOrderId, storeFilter]);
+  }, [scopedLiveSnapshot, localByOrderId]);
 
   const effectiveSelection =
     selectedCell && byDate.has(selectedCell.pickupDate) ? selectedCell : null;
@@ -167,20 +200,15 @@ export function ColetasPanel({
     ? byDate.get(effectiveSelection.pickupDate)![effectiveSelection.state]
     : [];
 
-  // Labels curtos tipo "22/04" a partir de "22 de abril"
-  const MONTHS_PT: Record<string, string> = {
-    janeiro: "01", fevereiro: "02", marco: "03", abril: "04",
-    maio: "05", junho: "06", julho: "07", agosto: "08",
-    setembro: "09", outubro: "10", novembro: "11", dezembro: "12",
-  };
-  const formatShort = (label: string): string => {
-    const parts = label.split(" de ");
-    if (parts.length !== 2) return label;
-    const day = parts[0].padStart(2, "0");
-    const monthKey = parts[1].toLowerCase().replace("ç", "c");
-    const month = MONTHS_PT[monthKey] || "??";
-    return `${day}/${month}`;
-  };
+  const snapshotUpcomingTotal = scopedLiveSnapshot?.orders?.upcoming?.length ?? 0;
+  const withoutPickupDate = snapshotUpcomingTotal - pickupDates.reduce(
+    (acc, d) =>
+      acc +
+      byDate.get(d)!.sem_gerar_lo.length +
+      byDate.get(d)!.nf_gerada.length +
+      byDate.get(d)!.etiqueta_impressa.length,
+    0
+  );
 
   return (
     <Card className="overflow-hidden">
@@ -202,21 +230,10 @@ export function ColetasPanel({
           )}
         </button>
 
-        {expanded && (
-          <Select value={storeFilter} onValueChange={(v) => setStoreFilter(v as StoreFilter)}>
-            <SelectTrigger className="w-[240px] h-9">
-              <SelectValue placeholder="Filtro de Vendas" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas as vendas</SelectItem>
-              <SelectItem value="without_deposit">Vendas sem depósito</SelectItem>
-              <SelectGroup>
-                <SelectLabel>Por depósito</SelectLabel>
-                <SelectItem value="ourinhos">Ourinhos Rua Dario Alonso</SelectItem>
-                <SelectItem value="full">Full</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+        {currentFilterLabel && (
+          <span className="text-xs text-muted-foreground">
+            Filtro: <span className="font-medium text-foreground">{currentFilterLabel}</span>
+          </span>
         )}
       </CardHeader>
 
@@ -224,15 +241,24 @@ export function ColetasPanel({
         <CardContent className="pt-0 space-y-4">
           {pickupDates.length === 0 ? (
             <div className="py-6 text-center text-sm text-muted-foreground">
-              {liveSnapshot
-                ? "Nenhuma coleta agendada no filtro atual."
-                : "Aguardando snapshot do ML Seller Center..."}
+              {!scopedLiveSnapshot
+                ? "Aguardando snapshot do ML Seller Center..."
+                : snapshotUpcomingTotal === 0
+                  ? "Nenhum pedido em \"Próximos dias\" no filtro atual."
+                  : "Nenhum pedido desse filtro tem data de coleta identificável."}
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Calendar className="h-3.5 w-3.5" />
-                Coletas: {pickupDates.map(formatShort).join("  |  ")}
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Calendar className="h-3.5 w-3.5" />
+                  Coletas: {pickupDates.map(formatShort).join("  |  ")}
+                </div>
+                {withoutPickupDate > 0 && (
+                  <span className="text-muted-foreground">
+                    (+{withoutPickupDate} sem data identificável)
+                  </span>
+                )}
               </div>
 
               <div
