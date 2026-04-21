@@ -2,44 +2,48 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getMLLiveSnapshot,
   type MLLiveSnapshotResponse,
+  type MLSnapshotScope,
 } from "@/services/mlLiveSnapshotService";
 
-// Cache em memória compartilhado entre múltiplos mounts (HMR, StrictMode).
-// TTL pequeno — o backend já tem cache 5min, mas aqui evitamos múltiplas
-// chamadas no mesmo instante (durante render de vários componentes).
-// Cache do frontend é menor que o polling (30s) pra garantir que toda
-// tick do polling realmente busca dados do servidor. O backend faz o
-// rate-limiting/single-flight do scrape, então chamadas excedentes só
-// retornam do cache do backend (instantâneo, sem custo).
+// Cache POR ESCOPO em memória compartilhado entre múltiplos mounts
+// (HMR, StrictMode). TTL pequeno — o backend já tem cache 2min, mas
+// aqui evitamos múltiplas chamadas no mesmo instante.
 const FRONTEND_CACHE_TTL_MS = 15_000; // 15s
 
-let sharedSnapshot: {
-  expiresAt: number;
-  data: MLLiveSnapshotResponse;
-} | null = null;
+const sharedSnapshotByScope = new Map<
+  MLSnapshotScope,
+  { expiresAt: number; data: MLLiveSnapshotResponse }
+>();
+const inflightPromiseByScope = new Map<
+  MLSnapshotScope,
+  Promise<MLLiveSnapshotResponse>
+>();
 
-let inflightPromise: Promise<MLLiveSnapshotResponse> | null = null;
-
-async function fetchAndCache(force: boolean): Promise<MLLiveSnapshotResponse> {
+async function fetchAndCache(
+  scope: MLSnapshotScope,
+  force: boolean
+): Promise<MLLiveSnapshotResponse> {
   if (force) {
-    sharedSnapshot = null;
+    sharedSnapshotByScope.delete(scope);
   }
-  if (!force && sharedSnapshot && sharedSnapshot.expiresAt > Date.now()) {
-    return sharedSnapshot.data;
+  const cached = sharedSnapshotByScope.get(scope);
+  if (!force && cached && cached.expiresAt > Date.now()) {
+    return cached.data;
   }
-  // Deduplicação: se já tem uma chamada em andamento, reusa.
-  if (inflightPromise && !force) {
-    return inflightPromise;
+  // Dedup: se já tem uma chamada em andamento, reusa.
+  const inflight = inflightPromiseByScope.get(scope);
+  if (inflight && !force) {
+    return inflight;
   }
-  const promise = getMLLiveSnapshot({ force }).then((data) => {
-    sharedSnapshot = {
+  const promise = getMLLiveSnapshot({ force, scope }).then((data) => {
+    sharedSnapshotByScope.set(scope, {
       expiresAt: Date.now() + FRONTEND_CACHE_TTL_MS,
       data,
-    };
-    inflightPromise = null;
+    });
+    inflightPromiseByScope.delete(scope);
     return data;
   });
-  inflightPromise = promise;
+  inflightPromiseByScope.set(scope, promise);
   return promise;
 }
 
@@ -48,36 +52,35 @@ export interface UseMLLiveSnapshotOptions {
   enabled?: boolean;
   /** Polling interval em ms. 0 = desliga polling. Default 0 (sem polling). */
   pollingIntervalMs?: number;
+  /** Escopo do snapshot. Default "all" (agregado global). */
+  scope?: MLSnapshotScope;
 }
 
 export interface UseMLLiveSnapshotReturn {
   snapshot: MLLiveSnapshotResponse | null;
   loading: boolean;
-  /** `true` apenas durante o fetch inicial (antes de ter qualquer dado). */
   initialLoading: boolean;
   error: string | null;
-  /** Re-busca do cache ou do servidor. `force: true` dispara scrape novo. */
   refresh: (options?: { force?: boolean }) => Promise<void>;
+  scope: MLSnapshotScope;
 }
 
 /**
- * Hook pra consumir /api/ml/live-snapshot com cache em memória e
- * deduplicação. Use em qualquer componente que precise dos dados
- * live do ML (banner counters, sub-cards, lista de pedidos por tab).
+ * Hook pra consumir /api/ml/live-snapshot POR ESCOPO. Cache separado
+ * por escopo — trocar de scope limpa o snapshot local e busca o novo.
  */
 export function useMLLiveSnapshot(
   options: UseMLLiveSnapshotOptions = {}
 ): UseMLLiveSnapshotReturn {
-  const { enabled = true, pollingIntervalMs = 0 } = options;
+  const { enabled = true, pollingIntervalMs = 0, scope = "all" } = options;
 
   const [snapshot, setSnapshot] = useState<MLLiveSnapshotResponse | null>(
-    () => sharedSnapshot?.data ?? null
+    () => sharedSnapshotByScope.get(scope)?.data ?? null
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
-
-  const initialLoadedRef = useRef(sharedSnapshot !== null);
+  const initialLoadedRef = useRef(sharedSnapshotByScope.has(scope));
 
   useEffect(() => {
     mountedRef.current = true;
@@ -92,7 +95,7 @@ export function useMLLiveSnapshot(
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchAndCache(force);
+        const data = await fetchAndCache(scope, force);
         if (!mountedRef.current) return;
         setSnapshot(data);
         initialLoadedRef.current = true;
@@ -107,13 +110,20 @@ export function useMLLiveSnapshot(
         }
       }
     },
-    []
+    [scope]
   );
 
+  // Quando o escopo muda, atualiza snapshot pro cache novo (se existir) e
+  // dispara fetch.
   useEffect(() => {
     if (!enabled) return;
+    // Reset snapshot ao trocar escopo pra evitar mostrar dados do escopo
+    // anterior enquanto carrega novo.
+    const cachedNew = sharedSnapshotByScope.get(scope);
+    setSnapshot(cachedNew?.data ?? null);
+    initialLoadedRef.current = !!cachedNew;
     load(false);
-  }, [enabled, load]);
+  }, [enabled, scope, load]);
 
   useEffect(() => {
     if (!enabled || pollingIntervalMs <= 0) return;
@@ -136,5 +146,6 @@ export function useMLLiveSnapshot(
     initialLoading: loading && !initialLoadedRef.current,
     error,
     refresh,
+    scope,
   };
 }

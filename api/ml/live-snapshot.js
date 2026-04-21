@@ -23,8 +23,11 @@
 //   }
 //
 // Usage:
-//   GET /api/ml/live-snapshot           — retorna cache (ou null se vazio)
-//   GET /api/ml/live-snapshot?run=1     — forca scrape fresh (demora 30-60s)
+//   GET /api/ml/live-snapshot                — retorna cache escopo "all"
+//   GET /api/ml/live-snapshot?scope=X        — escopo específico
+//     scope: all | without_deposit | full | ourinhos
+//   GET /api/ml/live-snapshot?run=1          — forca scrape fresh (demora ~90s)
+//   GET /api/ml/live-snapshot?scope=X&run=1  — force + escopo
 
 import { requireAdmin } from "../_lib/auth-server.js";
 import {
@@ -34,6 +37,7 @@ import {
   getLastScraperError,
   maybeRefreshLiveSnapshotInBackground,
   isLiveSnapshotScrapeInProgress,
+  normalizeScope,
 } from "./_lib/seller-center-scraper.js";
 
 export default async function handler(request, response) {
@@ -61,50 +65,55 @@ export default async function handler(request, response) {
   }
 
   const forceRun = request.query?.run === "1" || request.query?.run === "true";
+  const rawScope = request.query?.scope ? String(request.query.scope) : "all";
+  const scope = normalizeScope(rawScope);
 
   // Tenta cache primeiro (a menos que force)
   if (!forceRun) {
-    const cached = getCachedLiveSnapshot();
+    const cached = getCachedLiveSnapshot(scope);
     if (cached) {
       // AUTO-REFRESH em background: se cache está stale, dispara scrape
-      // novo em background (single-flight — só 1 por vez). Cliente
+      // novo em background (single-flight por escopo). Cliente
       // recebe cache stale imediato e próxima request (30s depois,
       // do polling automático) já pega dados frescos.
       let bgRefresh = null;
       if (cached.stale === true) {
-        bgRefresh = maybeRefreshLiveSnapshotInBackground();
+        bgRefresh = maybeRefreshLiveSnapshotInBackground(scope);
       }
       return response.status(200).json({
         success: true,
+        scope,
         from_cache: true,
         stale: cached.stale === true,
-        scrape_in_progress: isLiveSnapshotScrapeInProgress(),
+        scrape_in_progress: isLiveSnapshotScrapeInProgress(scope),
         background_refresh: bgRefresh,
         captured_at: cached.capturedAt,
         ...cached.data,
       });
     }
-    // Sem cache algum → dispara scrape em background e retorna 202
+    // Sem cache deste escopo → dispara scrape em background e retorna 202
     // (Accepted — cliente deve fazer polling). Evita que o primeiro
-    // usuario do dia trave 90s esperando.
-    if (!isLiveSnapshotScrapeInProgress()) {
-      maybeRefreshLiveSnapshotInBackground();
+    // usuario do escopo trave 90s esperando.
+    if (!isLiveSnapshotScrapeInProgress(scope)) {
+      maybeRefreshLiveSnapshotInBackground(scope);
     }
     return response.status(202).json({
       success: true,
+      scope,
       from_cache: false,
       stale: false,
       scrape_in_progress: true,
-      message: "Sem cache. Scrape disparado em background — tente novamente em 60-90s.",
+      message: `Sem cache para escopo "${scope}". Scrape disparado em background — tente novamente em 60-90s.`,
     });
   }
 
-  // Scrape fresh (2 navegacoes sequenciais, pode levar ate 180s)
-  const result = await scrapeMlLiveSnapshot({ timeoutMs: 180_000 });
+  // Scrape fresh (pode levar ate 180s)
+  const result = await scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope });
 
   if (!result.ok) {
     return response.status(502).json({
       success: false,
+      scope,
       error: result.error || "scrape_failed",
       message: result.message || null,
     });
@@ -112,6 +121,7 @@ export default async function handler(request, response) {
 
   return response.status(200).json({
     success: true,
+    scope,
     from_cache: false,
     stale: false,
     ...result,

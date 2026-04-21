@@ -289,17 +289,29 @@ export function scopeLiveSnapshot(
 }
 
 /**
+ * Escopo do snapshot — determina qual "filtro de depósito" do ML
+ * Seller Center o scraper navega.
+ */
+export type MLSnapshotScope = "all" | "without_deposit" | "full" | "ourinhos";
+
+/**
  * Busca o snapshot live do ML.
  * Por default retorna do cache (5min TTL); passe force=true pra forçar
  * scrape fresh (demora 60-90s).
+ *
+ * @param scope Escopo do ML: "all" (default), "without_deposit" (vendas
+ *              sem depósito), "full" (Mercado Envios Full), "ourinhos"
+ *              (Ourinhos Rua Dario Alonso).
  */
 export async function getMLLiveSnapshot(
-  options: { force?: boolean } = {}
+  options: { force?: boolean; scope?: MLSnapshotScope } = {}
 ): Promise<MLLiveSnapshotResponse> {
-  const { force = false } = options;
-  const url = force
-    ? "/api/ml/live-snapshot?run=1"
-    : "/api/ml/live-snapshot";
+  const { force = false, scope = "all" } = options;
+  const params = new URLSearchParams();
+  if (force) params.set("run", "1");
+  if (scope && scope !== "all") params.set("scope", scope);
+  const qs = params.toString();
+  const url = `/api/ml/live-snapshot${qs ? `?${qs}` : ""}`;
 
   const controller = new AbortController();
   // Force scrape pode demorar 180s no servidor; cache hit é instantâneo.
@@ -317,6 +329,13 @@ export async function getMLLiveSnapshot(
       | null;
 
     if (!response.ok || !data || data.success === false) {
+      // HTTP 202 = accepted (scrape em background, cache vazio).
+      // Não é erro — indica que o cliente deve tentar de novo em 60-90s.
+      if (response.status === 202) {
+        throw new Error(
+          `Snapshot do escopo "${scope}" ainda carregando (primeira vez demora ~90s). Tente em alguns segundos.`
+        );
+      }
       const message =
         (data as MLLiveSnapshotError | null)?.message ||
         (data as MLLiveSnapshotError | null)?.error ||

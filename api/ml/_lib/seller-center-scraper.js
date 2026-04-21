@@ -75,12 +75,42 @@ const ML_STORES = (process.env.ML_SCRAPER_STORES || "all,outros,full")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Mapeia store key → URL store param que o ML usa
+// Mapeia store key → URL store param que o ML usa.
+//
+// Valores conhecidos (vistos em URLs do ML Seller Center):
+//   - "all" (ou sem param): Todas as vendas (agregado global)
+//   - "unknown": Vendas sem depósito (sem loja física associada)
+//   - "full": Mercado Envios Full (logistic_type fulfillment)
+//   - ID numérico/string: loja física específica (ex: "79856028" = Ourinhos)
+//
+// O ID do Ourinhos pode variar por conta e é detectado dinamicamente
+// via env var ML_OURINHOS_STORE_ID ou passando o scope direto (ex:
+// scope="OURINHOS" vira store=OURINHOS na URL).
 function storeToUrlParam(store) {
-  if (store === "all") return ""; // Todas as vendas
-  if (store === "outros") return ""; // Vendas sem deposito (usa mesma URL)
+  if (!store || store === "all") return ""; // Todas as vendas
+  // Aliases de retrocompatibilidade
+  if (store === "outros") return ""; // legacy — era usado como "all"
+  if (store === "without_deposit" || store === "without-deposit") return "unknown";
   if (store === "full") return "full";
-  return store; // Pode ser ID numerico (ex: 79856028 = Ourinhos)
+  // Qualquer outro valor (ID numerico, nome explicito) vai direto pra URL
+  return store;
+}
+
+/**
+ * Mapeia scope (usado pela API pública) → store URL param do ML.
+ * Scope é mais estável que o store param (que pode ter valores opacos
+ * tipo IDs numéricos específicos da conta).
+ */
+export function scopeToStoreUrlParam(scope) {
+  if (!scope || scope === "all") return "";
+  if (scope === "without_deposit") return "unknown";
+  if (scope === "full") return "full";
+  if (scope === "ourinhos") {
+    // ID do Ourinhos vem de env var. Se não setada, tenta "outros" como
+    // fallback (pode nao funcionar 100% mas nao quebra).
+    return process.env.ML_OURINHOS_STORE_ID || "outros";
+  }
+  return scope;
 }
 
 /**
@@ -1124,8 +1154,14 @@ export function getUiChipCounts() {
 // Exportamos `scrapeMlLiveSnapshot()` que roda scraper + clicks em TODAS
 // as tabs e retorna snapshot normalizado pra o frontend consumir 1:1.
 
-// Cache do snapshot (compartilhado com getCachedLiveSnapshot)
-let cachedLiveSnapshot = null;
+// Cache do snapshot POR ESCOPO. Cada escopo tem seu proprio cache
+// independente (TTL de 2min cada). Chaves: "all" | "without_deposit" |
+// "full" | "ourinhos" | outros.
+//
+// Mantemos cachedLiveSnapshot como alias pro escopo "all" pra
+// retrocompatibilidade com codigo que ja usa getCachedLiveSnapshot().
+const cachedLiveSnapshotByScope = new Map();
+let cachedLiveSnapshot = null; // alias pro escopo "all"
 
 /**
  * Extrai contadores dos segments do event-request pequeno.
@@ -1421,13 +1457,55 @@ function aggregateSubCards(ordersByTab) {
 }
 
 /**
+ * Scope válidos pro snapshot. Cada um faz scrape com um `?store=X`
+ * diferente na URL do ML Seller Center, retornando dados AGREGADOS
+ * pelo próprio ML pra aquele escopo.
+ *
+ * - "all": Todas as vendas (URL sem store param)
+ * - "without_deposit": Vendas sem depósito (store=unknown no ML)
+ * - "full": Mercado Envios Full (store=full)
+ * - "ourinhos": Ourinhos Rua Dario Alonso (usa ML_OURINHOS_STORE_ID
+ *    env var; fallback "outros" se não setada)
+ */
+export const VALID_SNAPSHOT_SCOPES = [
+  "all",
+  "without_deposit",
+  "full",
+  "ourinhos",
+];
+
+export function normalizeScope(scope) {
+  if (!scope) return "all";
+  const s = String(scope).toLowerCase();
+  if (s === "without-deposit" || s === "without_deposit" || s === "unknown") return "without_deposit";
+  if (s === "full" || s === "fulfillment") return "full";
+  if (s === "ourinhos" || s.includes("ourinhos") || s.includes("dario")) return "ourinhos";
+  if (s === "all" || s === "") return "all";
+  return s; // passa direto (pra IDs customizados)
+}
+
+/**
  * Scrape FASE 2: live snapshot normalizado.
- * 1. Abre ML Seller Center
+ *
+ * Parâmetro `scope` determina qual escopo do ML é capturado.
+ * Cada escopo tem cache INDEPENDENTE (TTL 2min).
+ *
+ * 1. Abre ML Seller Center (com store param correspondente ao scope)
  * 2. Clica em todos os 4 tabs pra capturar XHRs grandes de cada um
  * 3. Extrai counters + pedidos normalizados + sub-cards agregados
  * 4. Retorna JSON estruturado pro frontend
  */
-export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
+export async function scrapeMlLiveSnapshot({
+  timeoutMs = 180_000,
+  scope = "all",
+} = {}) {
+  const normalizedScope = normalizeScope(scope);
+  const storeUrlParam = scopeToStoreUrlParam(normalizedScope);
+
+  log.info(
+    `[live-snapshot] iniciando scrape scope="${normalizedScope}" (store="${storeUrlParam || "(empty)"}")`
+  );
+
   // Estrategia: 2 navegacoes com tabs iniciais DIFERENTES.
   //
   // Cada navegacao clica nos 3 outros tabs + volta ao atual (4 clicks
@@ -1437,12 +1515,6 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
   //
   // Nav 1 (abre em TODAY):     clicks NEXT_DAYS -> IN_THE_WAY -> FINISHED -> TODAY
   // Nav 2 (abre em NEXT_DAYS): clicks TODAY -> IN_THE_WAY -> FINISHED -> NEXT_DAYS
-  //
-  // Total:
-  //   TODAY:      clicada 2x (1 volta + 1 outra)
-  //   NEXT_DAYS:  clicada 2x
-  //   IN_THE_WAY: clicada 2x
-  //   FINISHED:   clicada 2x
   //
   // Tempo: ~60-90s. Timeout 180s pra folga.
   const allXhrs = [];
@@ -1458,7 +1530,13 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
     const r = await scrapeMlSellerCenterFull({
       timeoutMs: 90_000,
       singleTab: nav.key,
-      singleStore: "outros",
+      // singleStore passa PRA URL do ML via storeToUrlParam:
+      // - "" (empty) pra scope=all
+      // - "unknown" pra scope=without_deposit
+      // - "full" pra scope=full
+      // - ID do Ourinhos pra scope=ourinhos
+      // Passamos o storeUrlParam diretamente pra evitar dupla conversão.
+      singleStore: storeUrlParam || "all",
       waitMs: 10_000,
       fetchDirect: false,
     });
@@ -1487,6 +1565,8 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
 
   const snapshot = {
     ok: true,
+    scope: normalizedScope,
+    store_url_param: storeUrlParam || null,
     capturedAt: new Date().toISOString(),
     counters: counters || { today: 0, upcoming: 0, in_transit: 0, finalized: 0 },
     sub_cards: subCards,
@@ -1501,12 +1581,18 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
     },
   };
 
-  // Cache 5 min
-  cachedLiveSnapshot = {
+  // Cache POR ESCOPO (2min)
+  const cacheEntry = {
     data: snapshot,
     capturedAt: snapshot.capturedAt,
     expiresAt: Date.now() + SCRAPER_CACHE_TTL_MS,
+    scope: normalizedScope,
   };
+  cachedLiveSnapshotByScope.set(normalizedScope, cacheEntry);
+  // Mantem alias "all" em cachedLiveSnapshot pra retrocompatibilidade
+  if (normalizedScope === "all") {
+    cachedLiveSnapshot = cacheEntry;
+  }
 
   return snapshot;
 }
@@ -1515,70 +1601,77 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
  * Retorna o ultimo live snapshot bem-sucedido (cache). Stale=true se
  * passou do TTL.
  */
-export function getCachedLiveSnapshot() {
-  if (!cachedLiveSnapshot) return null;
-  if (cachedLiveSnapshot.expiresAt <= Date.now()) {
-    return { ...cachedLiveSnapshot, stale: true };
+export function getCachedLiveSnapshot(scope = "all") {
+  // scope opcional — default "all" (retrocompat)
+  const normalizedScope = normalizeScope(scope);
+  const entry = cachedLiveSnapshotByScope.get(normalizedScope);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    return { ...entry, stale: true };
   }
-  return cachedLiveSnapshot;
+  return entry;
 }
 
-// ─── Auto-refresh em background (single-flight) ──────────────────────
-// Garante que apenas 1 scrape roda por vez. Se o cache está stale e
-// alguém chama /api/ml/live-snapshot, dispara scrape em background sem
-// bloquear a resposta (cliente recebe cache stale e próxima request
-// após ~60-90s pega dados frescos).
+// ─── Auto-refresh em background (single-flight POR ESCOPO) ───────────
+// Agora cada escopo tem seu próprio lock e throttle. Permite que
+// scrapes de escopos diferentes rodem em paralelo se necessário.
+// Throttle interno evita disparos múltiplos pro MESMO escopo em < 10s.
 
-let liveSnapshotInflightPromise = null;
-let lastBackgroundRefreshStarted = 0;
+const liveSnapshotInflightByScope = new Map(); // scope → Promise
+const lastBackgroundRefreshByScope = new Map(); // scope → timestamp
 
 /**
- * Se cache está stale (ou não existe) E não há scrape em andamento,
- * dispara um scrape em background. Não aguarda — retorna imediatamente.
- *
- * Idempotente: chamar várias vezes em sequência só dispara 1 scrape.
+ * Se cache do escopo está stale (ou não existe) E não há scrape em
+ * andamento desse escopo, dispara um scrape em background.
+ * Não aguarda — retorna imediatamente. Idempotente.
  */
-export function maybeRefreshLiveSnapshotInBackground() {
+export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
+  const normalizedScope = normalizeScope(scope);
   const now = Date.now();
 
-  // Já tem scrape em andamento → não duplica
-  if (liveSnapshotInflightPromise) {
-    return { triggered: false, reason: "scrape_in_progress" };
+  // Já tem scrape DESTE ESCOPO em andamento → não duplica
+  if (liveSnapshotInflightByScope.has(normalizedScope)) {
+    return { triggered: false, reason: "scrape_in_progress", scope: normalizedScope };
   }
 
   // Cache fresh → não precisa refresh
-  const cached = cachedLiveSnapshot;
+  const cached = cachedLiveSnapshotByScope.get(normalizedScope);
   if (cached && cached.expiresAt > now) {
-    return { triggered: false, reason: "cache_fresh" };
+    return { triggered: false, reason: "cache_fresh", scope: normalizedScope };
   }
 
-  // Throttle: evita disparos múltiplos muito rápidos (guarda de 10s)
-  if (now - lastBackgroundRefreshStarted < 10_000) {
-    return { triggered: false, reason: "throttled" };
+  // Throttle por escopo: evita disparos múltiplos muito rápidos (10s)
+  const lastStarted = lastBackgroundRefreshByScope.get(normalizedScope) || 0;
+  if (now - lastStarted < 10_000) {
+    return { triggered: false, reason: "throttled", scope: normalizedScope };
   }
 
   // Dispara scrape em background (fire-and-forget)
-  lastBackgroundRefreshStarted = now;
-  log.info("[live-snapshot] disparando refresh em background");
-  liveSnapshotInflightPromise = scrapeMlLiveSnapshot({ timeoutMs: 180_000 })
+  lastBackgroundRefreshByScope.set(normalizedScope, now);
+  log.info(`[live-snapshot] disparando refresh background scope="${normalizedScope}"`);
+  const promise = scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope: normalizedScope })
     .then((result) => {
-      log.info(`[live-snapshot] refresh background concluido (${result.ok ? "ok" : "erro"})`);
+      log.info(
+        `[live-snapshot] refresh background scope="${normalizedScope}" concluido (${result.ok ? "ok" : "erro"})`
+      );
       return result;
     })
     .catch((err) => {
       log.error(
-        "[live-snapshot] refresh background falhou",
+        `[live-snapshot] refresh background scope="${normalizedScope}" falhou`,
         err instanceof Error ? err : new Error(String(err))
       );
       return { ok: false, error: "background_failed" };
     })
     .finally(() => {
-      liveSnapshotInflightPromise = null;
+      liveSnapshotInflightByScope.delete(normalizedScope);
     });
+  liveSnapshotInflightByScope.set(normalizedScope, promise);
 
-  return { triggered: true };
+  return { triggered: true, scope: normalizedScope };
 }
 
-export function isLiveSnapshotScrapeInProgress() {
-  return liveSnapshotInflightPromise !== null;
+export function isLiveSnapshotScrapeInProgress(scope = "all") {
+  const normalizedScope = normalizeScope(scope);
+  return liveSnapshotInflightByScope.has(normalizedScope);
 }

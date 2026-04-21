@@ -44,10 +44,7 @@ import { useExtraction } from "@/contexts/ExtractionContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMercadoLivreData } from "@/hooks/useMercadoLivreData";
 import { useMLLiveSnapshot } from "@/hooks/useMLLiveSnapshot";
-import {
-  scopeLiveSnapshot,
-  type SnapshotScope,
-} from "@/services/mlLiveSnapshotService";
+import type { MLSnapshotScope } from "@/services/mlLiveSnapshotService";
 import {
   Check,
   CheckCircle2,
@@ -831,18 +828,11 @@ export default function MercadoLivrePage() {
 
   // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
   // Carrega automaticamente no mount (pega do cache do backend, TTL 2min)
-  // e faz polling a cada 30s pra atualizar. O backend auto-refresh em
-  // background quando cache stale — cliente nunca espera scrape, só pega
-  // do cache a cada request.
+  // e faz polling a cada 30s pra atualizar.
   //
-  // Fonte de verdade #1 pros 4 chips principais — prioriza estes dados
-  // acima de ml_ui_chip_counts e ml_live_chip_counts.
-  const {
-    snapshot: liveSnapshot,
-    loading: liveSnapshotLoading,
-    error: liveSnapshotError,
-    refresh: refreshLiveSnapshot,
-  } = useMLLiveSnapshot({ enabled: true, pollingIntervalMs: 30_000 });
+  // Scope é derivado do dropdown do topo (selectedDepositFilters).
+  // Cada scope tem cache independente no backend — trocar de depósito
+  // dispara novo fetch (ou pega do cache se já foi carregado antes).
 
   const [connecting, setConnecting] = useState(false);
   const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("today");
@@ -856,6 +846,33 @@ export default function MercadoLivrePage() {
     "all" | "not_printed" | "printed"
   >("all");
   const [markingLabelsPrinted, setMarkingLabelsPrinted] = useState(false);
+
+  // Deriva scope do live snapshot baseado no filtro de depósito do topo.
+  // NOTA: multi-select (length > 1) usa "all" — não suportado ainda.
+  const liveSnapshotScope = useMemo<MLSnapshotScope>(() => {
+    if (selectedDepositFilters.length === 0) return "all";
+    if (selectedDepositFilters.length > 1) return "all";
+    const key = (selectedDepositFilters[0] || "").toLowerCase();
+    if (key === "without-deposit" || key === "without_deposit") {
+      return "without_deposit";
+    }
+    if (key === "full" || key.includes("full") || key.includes("fulfillment")) {
+      return "full";
+    }
+    // Default: loja física (Ourinhos é a única no momento)
+    return "ourinhos";
+  }, [selectedDepositFilters]);
+
+  const {
+    snapshot: liveSnapshot,
+    loading: liveSnapshotLoading,
+    error: liveSnapshotError,
+    refresh: refreshLiveSnapshot,
+  } = useMLLiveSnapshot({
+    enabled: true,
+    pollingIntervalMs: 30_000,
+    scope: liveSnapshotScope,
+  });
 
   // ─── Filtros novos: replica visual do ML Seller Center ──────────────
   // Sub-status (Etiquetas pra imprimir, NF-e, Em processamento, etc) — clique
@@ -1582,33 +1599,15 @@ export default function MercadoLivrePage() {
     );
   }, [accessibleDashboardDeposits, selectedDepositFilters]);
 
-  // ─── Escopo do snapshot live baseado no filtro de depósito do topo ────
-  // Quando o user seleciona "Vendas sem depósito" / "Ourinhos" / "Full"
-  // no dropdown, o snapshot precisa ser filtrado pra refletir só aquele
-  // escopo. Recalcula counters + sub_cards localmente com os orders
-  // filtrados por store_label.
+  // ─── Snapshot escopado (Fase 2 — scope agora é aplicado no BACKEND) ──
+  // O backend faz scrape por escopo (all / without_deposit / full /
+  // ourinhos) e cacheia cada um independentemente. Aqui só aliasamos
+  // scopedLiveSnapshot = liveSnapshot (que já vem do escopo correto).
   //
-  // ATENÇÃO: snapshot só tem ~50 orders por tab. Pra depósitos com
-  // volumes maiores, os counters podem ser SUBESTIMADOS. A flag
-  // is_partial_count indica isso pra UI mostrar aviso.
-  const snapshotScope = useMemo<SnapshotScope>(() => {
-    if (selectedDepositFilters.length === 0) return { kind: "all" };
-    // Se múltiplos selecionados, usa "all" (suportar multi-select depois)
-    if (selectedDepositFilters.length > 1) return { kind: "all" };
-
-    const depositKey = selectedDepositFilters[0];
-    const deposit = accessibleDashboardDeposits.find((d) => d.key === depositKey);
-    if (!deposit) return { kind: "all" };
-
-    if (deposit.key === "without-deposit") return { kind: "without_deposit" };
-    if (deposit.logistic_type === "fulfillment") return { kind: "full" };
-    // Default: loja física (Ourinhos). Usa label pra match mais específico.
-    return { kind: "outros", matchText: "ourinhos" };
-  }, [selectedDepositFilters, accessibleDashboardDeposits]);
-
-  const scopedLiveSnapshot = useMemo(() => {
-    return scopeLiveSnapshot(liveSnapshot, snapshotScope);
-  }, [liveSnapshot, snapshotScope]);
+  // Vantagem: números 1:1 com ML pra qualquer escopo (não mais limitado
+  // aos 50 primeiros da primeira página). Desvantagem: primeira troca
+  // de escopo dispara scrape novo (~90s), depois fica em cache.
+  const scopedLiveSnapshot = liveSnapshot;
 
   // Contagens dos chips: ML LIVE como fonte de verdade (pack-deduplicated).
   // Fallback para contagem local se ML API indisponível.
@@ -2382,26 +2381,16 @@ export default function MercadoLivrePage() {
                   <span className="text-[#888] text-[11px]">
                     · auto-sync a cada 30s
                   </span>
-                  {snapshotScope.kind !== "all" && (
+                  {liveSnapshotScope !== "all" && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
                       escopo:{" "}
-                      {snapshotScope.kind === "without_deposit"
+                      {liveSnapshotScope === "without_deposit"
                         ? "Vendas sem depósito"
-                        : snapshotScope.kind === "full"
+                        : liveSnapshotScope === "full"
                           ? "Mercado Envios Full"
                           : "Ourinhos"}
                     </span>
                   )}
-                  {scopedLiveSnapshot &&
-                    "is_partial_count" in scopedLiveSnapshot &&
-                    scopedLiveSnapshot.is_partial_count && (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
-                        title="Escopo filtrado: contagem limitada aos 50 primeiros pedidos por tab. Totais reais podem ser maiores."
-                      >
-                        ~ contagem parcial
-                      </span>
-                    )}
                 </>
               ) : liveSnapshotLoading ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
