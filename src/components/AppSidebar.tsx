@@ -13,6 +13,7 @@ import {
   Package,
   ScanLine,
   ShieldCheck,
+  Truck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ const baseNavItems: SidebarNavItem[] = [
   { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda" },
   { to: "/history", icon: History, label: "Historico" },
   { to: "/stock", icon: Package, label: "Estoque" },
+  { to: "/coletas", icon: Truck, label: "Coletas" },
   {
     to: "/mercado-livre",
     label: "EcoFerro",

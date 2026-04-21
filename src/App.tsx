@@ -15,6 +15,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const ReviewPage = lazy(() => import("./pages/ReviewPage"));
 const HistoryPage = lazy(() => import("./pages/HistoryPage"));
 const MercadoLivrePage = lazy(() => import("./pages/MercadoLivrePage"));
+const ColetasPage = lazy(() => import("./pages/ColetasPage"));
 const MercadoLivreFantomPage = lazy(() => import("./pages/MercadoLivreFantomPage"));
 const MLCallbackPage = lazy(() => import("./pages/MLCallbackPage"));
 const MLReconnectPage = lazy(() => import("./pages/MLReconnectPage"));
@@ -56,6 +57,7 @@ const App = () => (
                   <Route path="/review" element={<ReviewPage />} />
                   <Route path="/history" element={<HistoryPage />} />
                   <Route path="/mercado-livre" element={<MercadoLivrePage />} />
+                  <Route path="/coletas" element={<ColetasPage />} />
                   <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
                   <Route path="/mercado-livre/reconnect" element={<MLReconnectPage />} />
                   <Route path="/stock" element={<StockPage />} />
