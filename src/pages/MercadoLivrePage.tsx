@@ -2403,6 +2403,14 @@ export default function MercadoLivrePage() {
               >
                 Limpar
               </Button>
+
+              <DepositFilterMenu
+                selectedLabel={selectedDepositLabel}
+                selectedValues={selectedDepositFilters}
+                onToggle={handleDepositToggle}
+                onReset={handleDepositReset}
+                options={depositOptions}
+              />
             </>
           }
         />
