@@ -530,7 +530,10 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     // de dados serem chamados apos as configs dos microfrontends.
     await page.waitForTimeout(waitMs);
 
-    // ── PLANO C v2: simular interacao pra forcar disparo dos XHRs ──
+    // ── PLANO C v3: simular interacao pra forcar disparo dos XHRs ──
+    // v3: clicamos em tab DIFERENTE do atual pra forcar mudanca (o ML so
+    // dispara /operations-dashboard/* quando o tab ativo muda). Tambem
+    // capturamos DOM debug SEMPRE (nao so quando falha).
     // O JS do ML configura onRenderEvents em /operations-dashboard/tabs
     // mas NAO dispara em browser headless. Solucao: clicar explicitamente
     // nos tabs pra acionar os events manualmente.
@@ -540,14 +543,19 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     //   - Captura sample do DOM pra debug quando nao acha nada
     //   - Tenta clicar por indice (o 1o/2o/3o elemento <button> dentro do
     //     tablist) caso os textos estejam vazios (skeleton loading)
-    clicksAttempted = await page.evaluate(async () => {
+    clicksAttempted = await page.evaluate(async (ctx) => {
       const attempts = [];
-      const labels = [
+      // Clica em tabs DIFERENTES da atual pra forcar mudanca (o ML so
+      // dispara /operations-dashboard quando muda de tab ativo).
+      // Strategy: dada a currentTab, clica nas 3 outras em sequencia.
+      const allLabels = [
         { label: "Envios de hoje", id: "TAB_TODAY" },
         { label: "Próximos dias", id: "TAB_NEXT_DAYS" },
         { label: "Em trânsito", id: "TAB_IN_THE_WAY" },
         { label: "Finalizadas", id: "TAB_FINISHED" },
       ];
+      // Filtra pra nao clicar na tab atual (nao muda, nao dispara fetch)
+      const labels = allLabels.filter((l) => l.id !== ctx.currentTab);
 
       // Strategy 1: busca por texto (includes, nao starts with — text pode ter "5" junto)
       const candidates = document.querySelectorAll(
@@ -595,43 +603,58 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
         }
       }
 
-      // Strategy 2: se NADA foi clicado, dump do DOM pra debug
-      if (!attempts.some((a) => a.clicked)) {
-        const dom_debug = {
-          total_buttons: document.querySelectorAll("button").length,
-          total_links: document.querySelectorAll("a").length,
-          total_testid: document.querySelectorAll("[data-testid]").length,
-          tablist_elements: Array.from(
-            document.querySelectorAll('[role="tablist"], [role="tab"]')
-          ).slice(0, 10).map((el) => ({
-            tag: el.tagName,
+      // Dump DOM SEMPRE (nao so quando falha) — ajuda a entender por que
+      // alguns clicks funcionam e outros nao.
+      const dom_debug = {
+        total_buttons: document.querySelectorAll("button").length,
+        total_links: document.querySelectorAll("a").length,
+        total_testid: document.querySelectorAll("[data-testid]").length,
+        total_role_tab: document.querySelectorAll('[role="tab"]').length,
+        tablist_elements: Array.from(
+          document.querySelectorAll('[role="tablist"], [role="tab"]')
+        ).slice(0, 10).map((el) => ({
+          tag: el.tagName,
+          testId: el.getAttribute("data-testid"),
+          role: el.getAttribute("role"),
+          dataId: el.getAttribute("data-id"),
+          className: (el.className?.toString?.() || "").slice(0, 80),
+          text: (el.textContent || "").trim().slice(0, 80),
+        })),
+        // Sample dos primeiros 30 testids visiveis
+        sample_testids: Array.from(document.querySelectorAll("[data-testid]"))
+          .slice(0, 30)
+          .map((el) => ({
             testId: el.getAttribute("data-testid"),
-            role: el.getAttribute("role"),
-            text: (el.textContent || "").trim().slice(0, 80),
-          })),
-          // Sample dos primeiros 20 testids visiveis
-          sample_testids: Array.from(document.querySelectorAll("[data-testid]"))
-            .slice(0, 20)
-            .map((el) => ({
-              testId: el.getAttribute("data-testid"),
-              text: (el.textContent || "").trim().slice(0, 40),
-            })),
-          // Elementos com classes que sugerem "segment" / "tab"
-          segment_like: Array.from(
-            document.querySelectorAll(
-              '[class*="segment"], [class*="tab"], [class*="filter-dashboard"]'
-            )
-          ).slice(0, 10).map((el) => ({
             tag: el.tagName,
-            className: el.className?.toString?.().slice(0, 100),
-            text: (el.textContent || "").trim().slice(0, 80),
+            text: (el.textContent || "").trim().slice(0, 40),
           })),
-        };
-        attempts.push({ _dom_debug: dom_debug });
-      }
+        // Elementos com classes que sugerem "segment" / "tab"
+        segment_like: Array.from(
+          document.querySelectorAll(
+            '[class*="segment"], [class*="tab"], [class*="filter-dashboard"]'
+          )
+        ).slice(0, 15).map((el) => ({
+          tag: el.tagName,
+          className: el.className?.toString?.().slice(0, 120),
+          text: (el.textContent || "").trim().slice(0, 80),
+        })),
+        // Buscar especificamente elementos com TAB_TODAY/NEXT_DAYS no markup
+        tab_id_elements: Array.from(document.querySelectorAll("*"))
+          .filter((el) => {
+            const attrs = Array.from(el.attributes || []).map((a) => a.value).join(" ");
+            return /TAB_(TODAY|NEXT_DAYS|IN_THE_WAY|FINISHED)/.test(attrs);
+          })
+          .slice(0, 10)
+          .map((el) => ({
+            tag: el.tagName,
+            attrs: Array.from(el.attributes || []).map((a) => `${a.name}=${a.value.slice(0, 40)}`).join(", ").slice(0, 200),
+            text: (el.textContent || "").trim().slice(0, 60),
+          })),
+      };
+      attempts.push({ _dom_debug: dom_debug });
 
       return attempts;
-    });
+    }, { currentTab: tabFilter });
 
     // Espera mais 8s pra os clicks dispararem os XHRs (se algum click rolou)
     if (Array.isArray(clicksAttempted) && clicksAttempted.some((a) => a.clicked)) {
