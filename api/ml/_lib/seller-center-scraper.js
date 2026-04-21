@@ -1423,32 +1423,56 @@ function aggregateSubCards(ordersByTab) {
  * 3. Extrai counters + pedidos normalizados + sub-cards agregados
  * 4. Retorna JSON estruturado pro frontend
  */
-export async function scrapeMlLiveSnapshot({ timeoutMs = 90_000 } = {}) {
-  // Reusa o scrape full com waitMs generoso pra ter tempo dos clicks
-  // dispararem todos os XHRs.
+export async function scrapeMlLiveSnapshot({ timeoutMs = 180_000 } = {}) {
+  // Estrategia: 2 navegacoes com tabs iniciais DIFERENTES.
   //
-  // O scraper clica nos 4 tabs (outros primeiro + atual por ultimo pra
-  // forcar re-fetch do atual). Cada click dispara /event-request grande
-  // com a lista populada daquele tab.
-  const result = await scrapeMlSellerCenterFull({
-    timeoutMs,
-    singleTab: "today",
-    singleStore: "outros",
-    waitMs: 10_000,
-    fetchDirect: false,
-  });
-
-  if (!result.ok) {
-    return { ok: false, ...result };
-  }
-
-  // Junta todos os XHRs de todas as tab×store (redundancia por store)
+  // Cada navegacao clica nos 3 outros tabs + volta ao atual (4 clicks
+  // total). O ML as vezes "perde" um click (cancel/timing/flaky) —
+  // fazer 2 navegacoes com tabs iniciais diferentes garante que cada
+  // tab tem 2 oportunidades de ser capturada.
+  //
+  // Nav 1 (abre em TODAY):     clicks NEXT_DAYS -> IN_THE_WAY -> FINISHED -> TODAY
+  // Nav 2 (abre em NEXT_DAYS): clicks TODAY -> IN_THE_WAY -> FINISHED -> NEXT_DAYS
+  //
+  // Total:
+  //   TODAY:      clicada 2x (1 volta + 1 outra)
+  //   NEXT_DAYS:  clicada 2x
+  //   IN_THE_WAY: clicada 2x
+  //   FINISHED:   clicada 2x
+  //
+  // Tempo: ~60-90s. Timeout 180s pra folga.
   const allXhrs = [];
-  for (const tabKey of Object.keys(result.tabs)) {
-    for (const storeKey of Object.keys(result.tabs[tabKey])) {
-      const cap = result.tabs[tabKey][storeKey];
-      if (cap?.xhr_responses) {
-        allXhrs.push(...cap.xhr_responses);
+  let lastResult = null;
+
+  const navPlan = [
+    { key: "today", label: "Nav 1 (abre em TODAY)" },
+    { key: "upcoming", label: "Nav 2 (abre em NEXT_DAYS)" },
+  ];
+
+  for (const nav of navPlan) {
+    log.info(`[live-snapshot] ${nav.label}`);
+    const r = await scrapeMlSellerCenterFull({
+      timeoutMs: 90_000,
+      singleTab: nav.key,
+      singleStore: "outros",
+      waitMs: 10_000,
+      fetchDirect: false,
+    });
+    if (!r.ok) {
+      // Se a 1a falhou, aborta. Se a 2a falhou mas a 1a rolou, usa so a 1a.
+      if (allXhrs.length === 0) {
+        return { ok: false, ...r };
+      }
+      log.warn(`[live-snapshot] ${nav.label} falhou — usando XHRs da nav anterior`);
+      break;
+    }
+    lastResult = r;
+    for (const tabKey of Object.keys(r.tabs)) {
+      for (const storeKey of Object.keys(r.tabs[tabKey])) {
+        const cap = r.tabs[tabKey][storeKey];
+        if (cap?.xhr_responses) {
+          allXhrs.push(...cap.xhr_responses);
+        }
       }
     }
   }
@@ -1459,7 +1483,7 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 90_000 } = {}) {
 
   const snapshot = {
     ok: true,
-    capturedAt: result.capturedAt,
+    capturedAt: new Date().toISOString(),
     counters: counters || { today: 0, upcoming: 0, in_transit: 0, finalized: 0 },
     sub_cards: subCards,
     orders: ordersByTab,
@@ -1469,6 +1493,7 @@ export async function scrapeMlLiveSnapshot({ timeoutMs = 90_000 } = {}) {
         .filter(([, o]) => o.length > 0)
         .map(([k]) => k),
       xhr_count: allXhrs.length,
+      navs_successful: lastResult ? navPlan.findIndex((n) => n.key === "upcoming") + 1 : 1,
     },
   };
 

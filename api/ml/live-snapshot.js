@@ -75,8 +75,8 @@ export default async function handler(request, response) {
     // sem cache → roda fresh (1a request faz scrape)
   }
 
-  // Scrape fresh
-  const result = await scrapeMlLiveSnapshot({ timeoutMs: 90_000 });
+  // Scrape fresh (2 navegacoes sequenciais, pode levar ate 180s)
+  const result = await scrapeMlLiveSnapshot({ timeoutMs: 180_000 });
 
   if (!result.ok) {
     return response.status(502).json({
