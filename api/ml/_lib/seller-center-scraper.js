@@ -1098,3 +1098,385 @@ export function getUiChipCounts() {
     captured_at: cached.capturedAt,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// LIVE SNAPSHOT — Fase 2 (engenharia reversa concluida)
+// ═══════════════════════════════════════════════════════════════════
+// Apos descobrir que o ML retorna:
+//   - 4 contadores principais via event-request pequeno (~13KB)
+//   - Lista completa de pedidos de cada tab via event-request grande
+//     (~500KB) quando clicamos no radio da tab
+//
+// Exportamos `scrapeMlLiveSnapshot()` que roda scraper + clicks em TODAS
+// as tabs e retorna snapshot normalizado pra o frontend consumir 1:1.
+
+// Cache do snapshot (compartilhado com getCachedLiveSnapshot)
+let cachedLiveSnapshot = null;
+
+/**
+ * Extrai contadores dos segments do event-request pequeno.
+ * Retorna { today, upcoming, in_transit, finalized } ou null.
+ */
+function extractCountersFromXhrs(xhrs) {
+  for (const x of xhrs) {
+    if (!x || !x.url || !x.url.includes("event-request")) continue;
+    const body = x.body;
+    if (!body) continue;
+    // Procura brick segmented_actions_marketshops
+    const stack = [body];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+      if (cur.id === "segmented_actions_marketshops" && cur.data?.segments) {
+        const counters = { today: 0, upcoming: 0, in_transit: 0, finalized: 0 };
+        for (const seg of cur.data.segments) {
+          const count = parseInt(String(seg.count || "0"), 10) || 0;
+          if (seg.id === "TAB_TODAY") counters.today = count;
+          else if (seg.id === "TAB_NEXT_DAYS") counters.upcoming = count;
+          else if (seg.id === "TAB_IN_THE_WAY") counters.in_transit = count;
+          else if (seg.id === "TAB_FINISHED") counters.finalized = count;
+        }
+        return counters;
+      }
+      if (Array.isArray(cur)) {
+        for (const v of cur) stack.push(v);
+      } else {
+        for (const v of Object.values(cur)) stack.push(v);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrai pedidos (rows) de um event-request body — formato ML bricks.
+ * Retorna array de pedidos normalizados: { pack_id, order_id, status_text,
+ * description, buyer_name, store_label, date_text, shipment_ids,
+ * primary_action, url_detail, tab_filter }.
+ */
+function extractOrdersFromBody(body) {
+  const orders = [];
+  const stack = [body];
+  let tabFilter = null;
+
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object") continue;
+
+    // row brick
+    if (
+      typeof cur.id === "string" &&
+      cur.id.startsWith("row-") &&
+      cur.uiType === "row" &&
+      cur.data?.identificationData
+    ) {
+      const d = cur.data;
+      const idData = d.identificationData || {};
+      const statusData = d.statusActionsData || {};
+      const idStr = (idData.id || "").replace(/^#/, "");
+      // row id format: row-{pack_id}_{order_id}
+      const m = cur.id.match(/^row-(\d+)_(\d+)$/);
+      const packId = m ? m[1] : idStr;
+      const orderId = m ? m[2] : idStr;
+
+      // extrai shipmentIds do primaryAction (quando existir)
+      let shipmentIds = [];
+      let primaryActionText = null;
+      if (statusData.primaryAction) {
+        primaryActionText = statusData.primaryAction.text || null;
+        const events = statusData.primaryAction.events || [];
+        for (const ev of events) {
+          if (ev.type === "request" && ev.data?.body?.shipmentIds) {
+            shipmentIds = ev.data.body.shipmentIds;
+            break;
+          }
+        }
+      }
+
+      // tab filter vem dentro dos eventos de tracking — procura no primeiro
+      if (!tabFilter) {
+        const events = statusData.primaryAction?.events || [];
+        for (const ev of events) {
+          if (ev.type === "tracking_event" && ev.data?.tracks) {
+            for (const t of ev.data.tracks) {
+              const f = t.data?.eventData?.filters;
+              if (typeof f === "string" && f.startsWith("TAB_")) {
+                tabFilter = f;
+                break;
+              }
+            }
+          }
+          if (tabFilter) break;
+        }
+      }
+
+      // url do detalhe vem dentro de secondaryActions[0]
+      let urlDetail = null;
+      const sec = statusData.secondaryActions?.actions || [];
+      for (const a of sec) {
+        if (a.url && typeof a.url === "string") {
+          urlDetail = a.url;
+          break;
+        }
+      }
+
+      orders.push({
+        pack_id: packId,
+        order_id: orderId,
+        row_id: cur.id,
+        status_text: statusData.status || null,
+        description: statusData.description || null,
+        priority: statusData.priority || "normal",
+        buyer_name: idData.buyer?.name || null,
+        buyer_nickname: idData.buyer?.nickName || null,
+        store_label: idData.store?.pill?.label || null,
+        date_text: idData.date || null,
+        channel: idData.pill?.channel || null,
+        reputation_text: idData.reputationInfo?.text || null,
+        reputation_priority: idData.reputationInfo?.priority || null,
+        shipment_ids: shipmentIds,
+        primary_action_text: primaryActionText,
+        messages_unread: !!idData.messengerLink?.messagesUnread,
+        new_messages_amount: idData.messengerLink?.newMessagesAmount || 0,
+        url_detail: urlDetail,
+      });
+    }
+
+    if (Array.isArray(cur)) {
+      for (const v of cur) stack.push(v);
+    } else {
+      for (const v of Object.values(cur)) stack.push(v);
+    }
+  }
+
+  return { orders, tab_filter: tabFilter };
+}
+
+/**
+ * Procura nos XHRs capturados o event-request grande de CADA tab e extrai
+ * os pedidos dela. Retorna { today: [...], upcoming: [...], in_transit: [...],
+ * finalized: [...] } — cada array com pedidos normalizados.
+ */
+function extractOrdersByTab(xhrs) {
+  const ordersByTab = {
+    today: [],
+    upcoming: [],
+    in_transit: [],
+    finalized: [],
+  };
+  // O event-request grande tem size > 50KB e contem rows.
+  // Ordenamos por size desc pra processar os maiores primeiro.
+  const bigXhrs = xhrs
+    .filter(
+      (x) =>
+        x.url?.includes("event-request") &&
+        x.size > 30_000 &&
+        x.body
+    )
+    .sort((a, b) => b.size - a.size);
+
+  for (const x of bigXhrs) {
+    const { orders, tab_filter } = extractOrdersFromBody(x.body);
+    if (!orders.length || !tab_filter) continue;
+    let tabKey = null;
+    if (tab_filter === "TAB_TODAY") tabKey = "today";
+    else if (tab_filter === "TAB_NEXT_DAYS") tabKey = "upcoming";
+    else if (tab_filter === "TAB_IN_THE_WAY") tabKey = "in_transit";
+    else if (tab_filter === "TAB_FINISHED") tabKey = "finalized";
+    if (!tabKey) continue;
+    // Evita duplicatas (dedup por pack_id)
+    const existingIds = new Set(ordersByTab[tabKey].map((o) => o.pack_id));
+    for (const o of orders) {
+      if (!existingIds.has(o.pack_id)) {
+        ordersByTab[tabKey].push(o);
+        existingIds.add(o.pack_id);
+      }
+    }
+  }
+
+  return ordersByTab;
+}
+
+/**
+ * Agrega sub-cards a partir dos status_text dos pedidos.
+ * Imita os sub-cards que o ML mostraria em /operations-dashboard/tabs
+ * (que a gente nao consegue capturar em headless).
+ *
+ * Categorias (case-insensitive, match por includes no status_text):
+ *   today:
+ *     label_ready_to_print: "Etiqueta pronta para impressão"
+ *     ready_for_pickup:     "Pronto para coleta"
+ *     other_today:          demais status
+ *   upcoming:
+ *     scheduled_pickup:     "Para entregar na coleta do dia X"
+ *     label_ready:          "Etiqueta pronta"
+ *     other_upcoming:       demais
+ *   in_transit:
+ *     in_transit:           todos (ja sao em transito)
+ *   finalized:
+ *     delivered:            "Entregue"
+ *     cancelled_seller:     "Venda cancelada. Não envie"
+ *     cancelled_buyer:      "Cancelada pelo comprador"
+ *     other_finalized:      demais
+ */
+function aggregateSubCards(ordersByTab) {
+  const subCards = {
+    today: {
+      label_ready_to_print: 0,
+      ready_for_pickup: 0,
+      ready_to_send: 0, // alias
+      with_unread_messages: 0,
+      total: 0,
+      by_status: {},
+    },
+    upcoming: {
+      scheduled_pickup: 0,
+      label_ready_to_print: 0,
+      total: 0,
+      by_pickup_date: {},
+      by_status: {},
+    },
+    in_transit: {
+      in_transit: 0,
+      total: 0,
+      by_status: {},
+    },
+    finalized: {
+      delivered: 0,
+      cancelled_seller: 0,
+      cancelled_buyer: 0,
+      with_claims: 0,
+      total: 0,
+      by_status: {},
+    },
+  };
+
+  const addStatus = (bucket, status) => {
+    if (!status) return;
+    subCards[bucket].by_status[status] = (subCards[bucket].by_status[status] || 0) + 1;
+  };
+
+  for (const [tabKey, orders] of Object.entries(ordersByTab)) {
+    const sub = subCards[tabKey];
+    if (!sub) continue;
+    sub.total = orders.length;
+    for (const o of orders) {
+      const s = (o.status_text || "").toLowerCase();
+      addStatus(tabKey, o.status_text);
+      if (o.messages_unread) sub.with_unread_messages = (sub.with_unread_messages || 0) + 1;
+
+      if (tabKey === "today") {
+        if (s.includes("etiqueta pronta para impressão") || s.includes("etiqueta pronta")) {
+          sub.label_ready_to_print++;
+        } else if (s.includes("pronto para coleta")) {
+          sub.ready_for_pickup++;
+        }
+        if (s.includes("pronto") || s.includes("etiqueta pronta")) {
+          sub.ready_to_send++;
+        }
+      } else if (tabKey === "upcoming") {
+        if (s.includes("para entregar na coleta do dia")) {
+          sub.scheduled_pickup++;
+          // extrai data
+          const dateMatch = o.status_text?.match(/coleta do dia (\d+ de \w+)/i);
+          if (dateMatch) {
+            const d = dateMatch[1];
+            sub.by_pickup_date[d] = (sub.by_pickup_date[d] || 0) + 1;
+          }
+        } else if (s.includes("etiqueta pronta")) {
+          sub.label_ready_to_print++;
+        }
+      } else if (tabKey === "in_transit") {
+        sub.in_transit++;
+      } else if (tabKey === "finalized") {
+        if (s.includes("entregue")) {
+          sub.delivered++;
+        } else if (s.includes("não envie") || s.includes("cancelada. não")) {
+          sub.cancelled_seller++;
+        } else if (s.includes("cancelada pelo comprador") || s.includes("cancelado")) {
+          sub.cancelled_buyer++;
+        }
+        if (o.reputation_priority && o.reputation_priority !== "NORMAL") {
+          sub.with_claims++;
+        }
+      }
+    }
+  }
+
+  return subCards;
+}
+
+/**
+ * Scrape FASE 2: live snapshot normalizado.
+ * 1. Abre ML Seller Center
+ * 2. Clica em todos os 4 tabs pra capturar XHRs grandes de cada um
+ * 3. Extrai counters + pedidos normalizados + sub-cards agregados
+ * 4. Retorna JSON estruturado pro frontend
+ */
+export async function scrapeMlLiveSnapshot({ timeoutMs = 90_000 } = {}) {
+  // Reusa o scrape full com waitMs generoso pra ter tempo dos clicks
+  // dispararem todos os XHRs. SingleTab = null (queremos todos).
+  // SingleStore = 'outros' (pra nao duplicar store=all com store=outros).
+  const result = await scrapeMlSellerCenterFull({
+    timeoutMs,
+    singleTab: "today",
+    singleStore: "outros",
+    waitMs: 10_000,
+    fetchDirect: false,
+  });
+
+  if (!result.ok) {
+    return { ok: false, ...result };
+  }
+
+  // Junta todos os XHRs de todas as tab×store (redundancia por store)
+  const allXhrs = [];
+  for (const tabKey of Object.keys(result.tabs)) {
+    for (const storeKey of Object.keys(result.tabs[tabKey])) {
+      const cap = result.tabs[tabKey][storeKey];
+      if (cap?.xhr_responses) {
+        allXhrs.push(...cap.xhr_responses);
+      }
+    }
+  }
+
+  const counters = extractCountersFromXhrs(allXhrs);
+  const ordersByTab = extractOrdersByTab(allXhrs);
+  const subCards = aggregateSubCards(ordersByTab);
+
+  const snapshot = {
+    ok: true,
+    capturedAt: result.capturedAt,
+    counters: counters || { today: 0, upcoming: 0, in_transit: 0, finalized: 0 },
+    sub_cards: subCards,
+    orders: ordersByTab,
+    stats: {
+      total_orders: Object.values(ordersByTab).reduce((sum, o) => sum + o.length, 0),
+      tabs_with_data: Object.entries(ordersByTab)
+        .filter(([, o]) => o.length > 0)
+        .map(([k]) => k),
+      xhr_count: allXhrs.length,
+    },
+  };
+
+  // Cache 5 min
+  cachedLiveSnapshot = {
+    data: snapshot,
+    capturedAt: snapshot.capturedAt,
+    expiresAt: Date.now() + SCRAPER_CACHE_TTL_MS,
+  };
+
+  return snapshot;
+}
+
+/**
+ * Retorna o ultimo live snapshot bem-sucedido (cache). Stale=true se
+ * passou do TTL.
+ */
+export function getCachedLiveSnapshot() {
+  if (!cachedLiveSnapshot) return null;
+  if (cachedLiveSnapshot.expiresAt <= Date.now()) {
+    return { ...cachedLiveSnapshot, stale: true };
+  }
+  return cachedLiveSnapshot;
+}

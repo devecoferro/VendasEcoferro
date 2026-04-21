@@ -52,6 +52,7 @@ import mlOrderDocumentsHandler from "../api/ml/order-documents.js";
 import mlOrderDocumentsFileHandler from "../api/ml/order-documents-file.js";
 import mlPrivateSellerCenterSnapshotsHandler from "../api/ml/private-seller-center-snapshots.js";
 import mlPrivateSellerCenterComparisonHandler from "../api/ml/private-seller-center-comparison.js";
+import mlLiveSnapshotHandler from "../api/ml/live-snapshot.js";
 import nfeGenerateHandler from "../api/nfe/generate.js";
 import nfeDocumentHandler from "../api/nfe/document.js";
 import nfeFileHandler from "../api/nfe/file.js";
@@ -242,6 +243,7 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
 );
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
+app.get("/api/ml/live-snapshot", apiLimiter, (req, res) => mlLiveSnapshotHandler(req, res));
 app.get("/api/ml/conferencia", apiLimiter, (req, res) => mlConferenciaHandler(req, res));
 // Marcacao de etiquetas impressas (ReviewPage chama apos baixar PDF)
 app.post("/api/ml/labels/mark-printed", apiLimiter, (req, res) => mlLabelsHandler(req, res));
