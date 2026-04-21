@@ -39,7 +39,11 @@ import {
   MapPin,
   AlertTriangle,
 } from "lucide-react";
-import { exportStockListPdf } from "@/services/stockReportService";
+import {
+  exportStockListPdf,
+  type StockReportColumnOptions,
+} from "@/services/stockReportService";
+import { StockReportColumnsDialog } from "@/components/StockReportColumnsDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -87,6 +91,13 @@ export default function StockPage() {
   const [confirmDelete, setConfirmDelete] = useState<MLStockItem | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  // Dialog de seleção de colunas do relatório
+  const [columnsDialogOpen, setColumnsDialogOpen] = useState(false);
+  // Filtros "pendentes" — salvos quando user clica "Imprimir Lista"
+  // e consumidos quando confirma colunas no dialog.
+  const [pendingReportFilters, setPendingReportFilters] = useState<
+    Parameters<typeof exportStockListPdf>[1] | null
+  >(null);
 
   useEffect(() => {
     getMLConnectionStatus()
@@ -321,8 +332,11 @@ export default function StockPage() {
 
   // Handler vai ser chamado mais embaixo no componente (apos sortLabel/filtered
   // estarem definidos). Encapsulado em useCallback dentro do return-effect.
-  const handleExportPdf = useCallback(
-    async (
+  // Handler do botao "Imprimir Lista" — em vez de gerar PDF direto,
+  // abre o dialog de selecao de colunas. O dialog chama
+  // handleConfirmGenerateReport no final.
+  const handleOpenColumnsDialog = useCallback(
+    (
       filteredItems: MLStockItem[],
       reportFilters: Parameters<typeof exportStockListPdf>[1]
     ) => {
@@ -336,21 +350,37 @@ export default function StockPage() {
         );
         if (!ok) return;
       }
+      setPendingReportFilters(reportFilters);
+      setColumnsDialogOpen(true);
+    },
+    []
+  );
+
+  // Chamado pelo dialog quando user confirma colunas selecionadas.
+  // Efetivamente gera o PDF com as colunas escolhidas.
+  const handleConfirmGenerateReport = useCallback(
+    async (
+      filteredItems: MLStockItem[],
+      columns: StockReportColumnOptions
+    ) => {
+      if (!pendingReportFilters) return;
       setExportingPdf(true);
       try {
-        await exportStockListPdf(filteredItems, reportFilters, {
+        await exportStockListPdf(filteredItems, pendingReportFilters, {
           totalInBase: items.length,
+          columns,
         });
         toast.success(
           `PDF gerado com ${filteredItems.length} produto${filteredItems.length === 1 ? "" : "s"}.`
         );
+        setColumnsDialogOpen(false);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Erro ao gerar PDF.");
       } finally {
         setExportingPdf(false);
       }
     },
-    [items.length]
+    [items.length, pendingReportFilters]
   );
 
   const handleDelete = useCallback(async () => {
@@ -520,7 +550,7 @@ export default function StockPage() {
               size="sm"
               variant="outline"
               onClick={() =>
-                handleExportPdf(filtered, {
+                handleOpenColumnsDialog(filtered, {
                   search,
                   brand: brandFilter,
                   model: modelFilter,
@@ -1241,6 +1271,15 @@ export default function StockPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Dialog de selecao de colunas do relatorio de estoque */}
+        <StockReportColumnsDialog
+          open={columnsDialogOpen}
+          onOpenChange={setColumnsDialogOpen}
+          totalItems={filtered.length}
+          generating={exportingPdf}
+          onConfirm={(columns) => handleConfirmGenerateReport(filtered, columns)}
+        />
       </div>
     </AppLayout>
   );

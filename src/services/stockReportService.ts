@@ -29,6 +29,36 @@ export interface StockReportFilters {
   sortLabel: string;
 }
 
+/**
+ * Quais colunas OPCIONAIS incluir no relatório. "#" e "PRODUTO/SKU" são
+ * sempre incluídas (identificação mínima do produto). As demais podem
+ * ser desligadas pra gerar PDF mais enxuto.
+ *
+ * Quando todas as opcionais estão ativas (default), o layout é o mesmo
+ * da versão anterior. Quando alguma é desligada, as larguras das
+ * colunas restantes são redistribuídas proporcionalmente pra preencher
+ * a página A4 paisagem inteira.
+ */
+export interface StockReportColumnOptions {
+  image?: boolean;
+  location?: boolean;
+  available?: boolean;
+  sales?: boolean;
+  lastSale?: boolean;
+  price?: boolean;
+  status?: boolean;
+}
+
+export const DEFAULT_STOCK_REPORT_COLUMNS: Required<StockReportColumnOptions> = {
+  image: true,
+  location: true,
+  available: true,
+  sales: true,
+  lastSale: true,
+  price: true,
+  status: true,
+};
+
 // ─── Helpers de imagem (paralelo limitado, mesmo padrao do separation) ──
 
 /**
@@ -48,9 +78,19 @@ export interface StockReportFilters {
  * URLs same-origin (data: ou caminho do proprio dominio) sao usadas
  * diretamente sem retentar.
  */
-async function fetchAsDataUrl(url: string): Promise<string | null> {
+async function fetchAsDataUrl(
+  url: string,
+  timeoutMs = 8000
+): Promise<string | null> {
+  // Timeout via AbortController — evita que uma URL lenta trave o PDF inteiro
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { mode: "cors" });
+    const response = await fetch(url, {
+      mode: "cors",
+      credentials: "include",
+      signal: controller.signal,
+    });
     if (!response.ok) return null;
     const blob = await response.blob();
     if (!blob || blob.size === 0) return null;
@@ -58,7 +98,6 @@ async function fetchAsDataUrl(url: string): Promise<string | null> {
       const reader = new FileReader();
       reader.onloadend = () => {
         const result = reader.result as string;
-        // Sanity: tem que ser data:image/...
         if (result && result.startsWith("data:image/")) {
           resolve(result);
         } else {
@@ -70,6 +109,8 @@ async function fetchAsDataUrl(url: string): Promise<string | null> {
     });
   } catch {
     return null;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -88,19 +129,26 @@ async function loadImageAsDataUrl(url: string): Promise<string | null> {
     // URL invalida — tenta fetch direto mesmo assim
   }
 
-  // 1. Tenta fetch direto primeiro (cobre o caso do proxy nao estar
-  //    disponivel e algumas URLs com CORS aberto).
-  const direct = await fetchAsDataUrl(url);
-  if (direct) return direct;
-
-  // 2. Se direto falhou e e externa, tenta via proxy do backend.
+  // NOVA estrategia (2026-04-21): priorizar PROXY pra URLs externas.
+  // O fetch direto falhava na maioria das thumbnails do ML por CORS (sem
+  // Access-Control-Allow-Origin). Ir direto pro proxy do backend contorna
+  // isso e evita o delay do fetch direto falhando primeiro.
   if (isExternal) {
-    const proxyUrl = `/api/ml/image-proxy?url=${encodeURIComponent(url)}`;
+    // Normaliza http -> https (ML as vezes retorna http antigo)
+    const normalizedUrl = url.startsWith("http://")
+      ? url.replace("http://", "https://")
+      : url;
+    const proxyUrl = `/api/ml/image-proxy?url=${encodeURIComponent(normalizedUrl)}`;
     const viaProxy = await fetchAsDataUrl(proxyUrl);
     if (viaProxy) return viaProxy;
+    // Proxy falhou — fallback fetch direto (algumas URLs tem CORS aberto)
+    const direct = await fetchAsDataUrl(url);
+    if (direct) return direct;
+    return null;
   }
 
-  return null;
+  // URL same-origin (data: ou relativa) — fetch direto
+  return await fetchAsDataUrl(url);
 }
 
 function getImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" {
@@ -167,20 +215,110 @@ const PAGE_H = 210;
 const MARGIN = 8;
 const USABLE_W = PAGE_W - MARGIN * 2;
 
-// Colunas (somam 100% do USABLE_W). Imagem aumentou de 16mm pra 22mm
-// pra ficar visivel — a imagem do produto e referencia critica pra
-// quem usa o relatorio na separacao fisica.
-const COLS = {
-  index: { x: 0, w: 6, label: "#", align: "right" as const },
-  image: { x: 6, w: 22, label: "", align: "center" as const },
-  product: { x: 28, w: 89, label: "PRODUTO / SKU", align: "left" as const },
-  location: { x: 117, w: 30, label: "LOCALIZAÇÃO", align: "center" as const },
-  available: { x: 147, w: 18, label: "DISP.", align: "center" as const },
-  sales: { x: 165, w: 28, label: "VENDAS", align: "center" as const },
-  lastSale: { x: 193, w: 22, label: "ÚLTIMA", align: "center" as const },
-  price: { x: 215, w: 28, label: "PREÇO", align: "right" as const },
-  status: { x: 243, w: 38, label: "STATUS", align: "center" as const },
+// Larguras BASE das colunas (somam ao USABLE_W quando todas estão ativas).
+// Se alguma for removida, as restantes escalam proporcionalmente.
+const COL_WIDTHS_BASE = {
+  index: 6,
+  image: 22,
+  product: 89,
+  location: 30,
+  available: 18,
+  sales: 28,
+  lastSale: 22,
+  price: 28,
+  status: 38,
 };
+
+type ColumnKey = keyof typeof COL_WIDTHS_BASE;
+
+interface ColumnLayout {
+  x: number;
+  w: number;
+  label: string;
+  align: "left" | "right" | "center";
+}
+
+/**
+ * Monta o layout de colunas considerando quais estão ativas.
+ * Larguras das colunas fixas (# + produto) mantém proporção original;
+ * as opcionais redistribuem o espaço que sobrar.
+ */
+function buildColumnLayout(
+  columns: Required<StockReportColumnOptions>
+): Record<ColumnKey, ColumnLayout> {
+  const alwaysOn: ColumnKey[] = ["index", "product"];
+  const optional: Array<[ColumnKey, boolean]> = [
+    ["image", columns.image],
+    ["location", columns.location],
+    ["available", columns.available],
+    ["sales", columns.sales],
+    ["lastSale", columns.lastSale],
+    ["price", columns.price],
+    ["status", columns.status],
+  ];
+  const activeKeys = [...alwaysOn, ...optional.filter(([, on]) => on).map(([k]) => k)];
+
+  // Larguras "fixas" usam o valor base. Espaço remanescente vai pras
+  // demais colunas (image, location, available, etc) proporcionalmente.
+  const fixedWidth = activeKeys.reduce(
+    (sum, k) => sum + COL_WIDTHS_BASE[k],
+    0
+  );
+  const scale = USABLE_W / fixedWidth;
+
+  const labels: Record<ColumnKey, string> = {
+    index: "#",
+    image: "",
+    product: "PRODUTO / SKU",
+    location: "LOCALIZAÇÃO",
+    available: "DISP.",
+    sales: "VENDAS",
+    lastSale: "ÚLTIMA",
+    price: "PREÇO",
+    status: "STATUS",
+  };
+  const aligns: Record<ColumnKey, ColumnLayout["align"]> = {
+    index: "right",
+    image: "center",
+    product: "left",
+    location: "center",
+    available: "center",
+    sales: "center",
+    lastSale: "center",
+    price: "right",
+    status: "center",
+  };
+
+  const result = {} as Record<ColumnKey, ColumnLayout>;
+  let xCursor = 0;
+  const allKeys: ColumnKey[] = [
+    "index",
+    "image",
+    "product",
+    "location",
+    "available",
+    "sales",
+    "lastSale",
+    "price",
+    "status",
+  ];
+  for (const key of allKeys) {
+    const isActive = activeKeys.includes(key);
+    const w = isActive ? COL_WIDTHS_BASE[key] * scale : 0;
+    result[key] = {
+      x: xCursor,
+      w,
+      label: labels[key],
+      align: aligns[key],
+    };
+    if (isActive) xCursor += w;
+  }
+  return result;
+}
+
+/** Legacy default layout (todas colunas ativas) — usado se o caller não
+ *  passar `columns`. Mantém retrocompatibilidade. */
+const COLS = buildColumnLayout(DEFAULT_STOCK_REPORT_COLUMNS);
 
 const HEADER_H = 24;
 // Altura da linha aumentada de 16mm pra 22mm pra acomodar imagem maior
@@ -195,11 +333,18 @@ const IMG_SIZE = 18;
 export async function exportStockListPdf(
   items: MLStockItem[],
   filters: StockReportFilters,
-  meta: { totalInBase: number }
+  meta: { totalInBase: number; columns?: StockReportColumnOptions }
 ): Promise<void> {
   if (items.length === 0) {
     throw new Error("Nenhum produto pra imprimir — ajuste os filtros.");
   }
+
+  // Resolve quais colunas estão ativas (default = todas) e monta layout
+  const columnsResolved: Required<StockReportColumnOptions> = {
+    ...DEFAULT_STOCK_REPORT_COLUMNS,
+    ...(meta.columns || {}),
+  };
+  const layout = buildColumnLayout(columnsResolved);
 
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
 
@@ -293,7 +438,8 @@ export async function exportStockListPdf(
     doc.setFont("helvetica", "bold");
     doc.setTextColor(80, 80, 80);
 
-    for (const col of Object.values(COLS)) {
+    for (const col of Object.values(layout)) {
+      if (col.w <= 0) continue; // coluna desativada
       if (!col.label) continue;
       const baseX = MARGIN + col.x;
       let textX = baseX + 1;
@@ -338,19 +484,22 @@ export async function exportStockListPdf(
     doc.setTextColor(160, 160, 165);
     doc.text(
       String(i + 1),
-      MARGIN + COLS.index.x + COLS.index.w - 1,
+      MARGIN + layout.index.x + layout.index.w - 1,
       rowY + 12,
       { align: "right" }
     );
 
-    // ── Imagem (18mm centralizada na linha de 22mm = 2mm margem) ──
-    const imgX = MARGIN + COLS.image.x + (COLS.image.w - IMG_SIZE) / 2;
-    const imgY = rowY + (ROW_H - IMG_SIZE) / 2;
-    const imageData = item.thumbnail ? imageCache.get(item.thumbnail) : null;
-    if (imageData) {
-      drawContainedImage(doc, imageData, imgX, imgY, IMG_SIZE, IMG_SIZE);
-    } else {
-      drawPlaceholder(doc, imgX, imgY, IMG_SIZE, IMG_SIZE);
+    // ── Imagem (centralizada na coluna, aproveitando toda a largura) ──
+    if (layout.image.w > 0) {
+      const imgSize = Math.min(IMG_SIZE, layout.image.w - 2);
+      const imgX = MARGIN + layout.image.x + (layout.image.w - imgSize) / 2;
+      const imgY = rowY + (ROW_H - imgSize) / 2;
+      const imageData = item.thumbnail ? imageCache.get(item.thumbnail) : null;
+      if (imageData) {
+        drawContainedImage(doc, imageData, imgX, imgY, imgSize, imgSize);
+      } else {
+        drawPlaceholder(doc, imgX, imgY, imgSize, imgSize);
+      }
     }
 
     // ── Produto + SKU + item_id (3 linhas distribuidas no Y) ──
@@ -359,136 +508,147 @@ export async function exportStockListPdf(
     doc.setTextColor(30, 30, 30);
     const productLines = doc.splitTextToSize(
       item.title || "(sem título)",
-      COLS.product.w - 2
+      layout.product.w - 2
     );
-    doc.text(productLines.slice(0, 1), MARGIN + COLS.product.x + 1, rowY + 7);
+    doc.text(productLines.slice(0, 1), MARGIN + layout.product.x + 1, rowY + 7);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     if (item.sku) {
       doc.setTextColor(110, 110, 115);
-      doc.text(`SKU: ${item.sku}`, MARGIN + COLS.product.x + 1, rowY + 12);
+      doc.text(`SKU: ${item.sku}`, MARGIN + layout.product.x + 1, rowY + 12);
     } else {
       doc.setTextColor(200, 60, 60);
-      doc.text("⚠ SEM SKU", MARGIN + COLS.product.x + 1, rowY + 12);
+      doc.text("⚠ SEM SKU", MARGIN + layout.product.x + 1, rowY + 12);
     }
 
     doc.setTextColor(140, 140, 145);
     doc.setFontSize(6.5);
-    doc.text(item.item_id, MARGIN + COLS.product.x + 1, rowY + 17);
+    doc.text(item.item_id, MARGIN + layout.product.x + 1, rowY + 17);
 
     // ── Localizacao (centralizada vertical) ──
-    doc.setFontSize(7);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(80, 80, 90);
-    if (
-      item.location_corridor ||
-      item.location_shelf ||
-      item.location_level
-    ) {
-      const locText = [
-        item.location_corridor || "—",
-        item.location_shelf || "—",
-        item.location_level || "—",
-      ].join("·");
-      doc.text(
-        locText,
-        MARGIN + COLS.location.x + COLS.location.w / 2,
-        rowY + 12,
-        { align: "center" }
-      );
-    } else {
-      doc.setTextColor(180, 180, 185);
-      doc.text(
-        "—",
-        MARGIN + COLS.location.x + COLS.location.w / 2,
-        rowY + 12,
-        { align: "center" }
-      );
-    }
-
-    // ── Disponivel (numero grande centralizado) ──
-    const isOut = item.available_quantity === 0;
-    const isLow = item.available_quantity <= 3 && item.status === "active";
-    if (isOut) doc.setTextColor(200, 50, 50);
-    else if (isLow) doc.setTextColor(220, 130, 30);
-    else doc.setTextColor(40, 40, 45);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.text(
-      String(item.available_quantity),
-      MARGIN + COLS.available.x + COLS.available.w / 2,
-      rowY + 13,
-      { align: "center" }
-    );
-
-    // ── Vendas no periodo (qty grande + qtd pedidos pequena) ──
-    const salesQty = item.recent_sales_qty || 0;
-    const salesOrders = item.recent_sales_orders || 0;
-    if (salesQty > 0) {
-      doc.setTextColor(220, 90, 30);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text(
-        `${salesQty}`,
-        MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 11,
-        { align: "center" }
-      );
-      doc.setFont("helvetica", "normal");
+    if (layout.location.w > 0) {
       doc.setFontSize(7);
-      doc.setTextColor(140, 140, 145);
-      doc.text(
-        `${salesOrders} ped${salesOrders !== 1 ? "s" : ""}`,
-        MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 16,
-        { align: "center" }
-      );
-    } else {
-      doc.setTextColor(180, 180, 185);
       doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.text(
-        "—",
-        MARGIN + COLS.sales.x + COLS.sales.w / 2,
-        rowY + 12,
-        { align: "center" }
-      );
-      if (item.sold_quantity > 0) {
-        doc.setFontSize(6);
-        doc.setTextColor(170, 170, 175);
+      doc.setTextColor(80, 80, 90);
+      if (
+        item.location_corridor ||
+        item.location_shelf ||
+        item.location_level
+      ) {
+        const locText = [
+          item.location_corridor || "—",
+          item.location_shelf || "—",
+          item.location_level || "—",
+        ].join("·");
         doc.text(
-          `tot:${item.sold_quantity}`,
-          MARGIN + COLS.sales.x + COLS.sales.w / 2,
-          rowY + 17,
+          locText,
+          MARGIN + layout.location.x + layout.location.w / 2,
+          rowY + 12,
+          { align: "center" }
+        );
+      } else {
+        doc.setTextColor(180, 180, 185);
+        doc.text(
+          "—",
+          MARGIN + layout.location.x + layout.location.w / 2,
+          rowY + 12,
           { align: "center" }
         );
       }
     }
 
+    // ── Disponivel (numero grande centralizado) ──
+    if (layout.available.w > 0) {
+      const isOut = item.available_quantity === 0;
+      const isLow = item.available_quantity <= 3 && item.status === "active";
+      if (isOut) doc.setTextColor(200, 50, 50);
+      else if (isLow) doc.setTextColor(220, 130, 30);
+      else doc.setTextColor(40, 40, 45);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.text(
+        String(item.available_quantity),
+        MARGIN + layout.available.x + layout.available.w / 2,
+        rowY + 13,
+        { align: "center" }
+      );
+    }
+
+    // ── Vendas no periodo (qty grande + qtd pedidos pequena) ──
+    if (layout.sales.w > 0) {
+      const salesQty = item.recent_sales_qty || 0;
+      const salesOrders = item.recent_sales_orders || 0;
+      if (salesQty > 0) {
+        doc.setTextColor(220, 90, 30);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text(
+          `${salesQty}`,
+          MARGIN + layout.sales.x + layout.sales.w / 2,
+          rowY + 11,
+          { align: "center" }
+        );
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(140, 140, 145);
+        doc.text(
+          `${salesOrders} ped${salesOrders !== 1 ? "s" : ""}`,
+          MARGIN + layout.sales.x + layout.sales.w / 2,
+          rowY + 16,
+          { align: "center" }
+        );
+      } else {
+        doc.setTextColor(180, 180, 185);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.text(
+          "—",
+          MARGIN + layout.sales.x + layout.sales.w / 2,
+          rowY + 12,
+          { align: "center" }
+        );
+        if (item.sold_quantity > 0) {
+          doc.setFontSize(6);
+          doc.setTextColor(170, 170, 175);
+          doc.text(
+            `tot:${item.sold_quantity}`,
+            MARGIN + layout.sales.x + layout.sales.w / 2,
+            rowY + 17,
+            { align: "center" }
+          );
+        }
+      }
+    }
+
     // ── Ultima venda ──
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(item.last_sale_date ? 80 : 180, item.last_sale_date ? 80 : 180, item.last_sale_date ? 90 : 185);
-    doc.text(
-      item.last_sale_date ? formatDaysAgo(item.last_sale_date) : "—",
-      MARGIN + COLS.lastSale.x + COLS.lastSale.w / 2,
-      rowY + 13,
-      { align: "center" }
-    );
+    if (layout.lastSale.w > 0) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(item.last_sale_date ? 80 : 180, item.last_sale_date ? 80 : 180, item.last_sale_date ? 90 : 185);
+      doc.text(
+        item.last_sale_date ? formatDaysAgo(item.last_sale_date) : "—",
+        MARGIN + layout.lastSale.x + layout.lastSale.w / 2,
+        rowY + 13,
+        { align: "center" }
+      );
+    }
 
     // ── Preco ──
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8.5);
-    doc.setTextColor(40, 40, 45);
-    doc.text(
-      formatPrice(item.price),
-      MARGIN + COLS.price.x + COLS.price.w - 1,
-      rowY + 13,
-      { align: "right" }
-    );
+    if (layout.price.w > 0) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(40, 40, 45);
+      doc.text(
+        formatPrice(item.price),
+        MARGIN + layout.price.x + layout.price.w - 1,
+        rowY + 13,
+        { align: "right" }
+      );
+    }
 
     // ── Status (badge colorido pequeno) ──
+    if (layout.status.w > 0) {
     let statusBgR = 220,
       statusBgG = 220,
       statusBgB = 225;
@@ -508,7 +668,7 @@ export async function exportStockListPdf(
     }
     const badgeW = Math.min(28, Math.max(15, doc.getTextWidth(statusLabel) * 0.7 + 6));
     const badgeH = 5;
-    const badgeX = MARGIN + COLS.status.x + (COLS.status.w - badgeW) / 2;
+    const badgeX = MARGIN + layout.status.x + (layout.status.w - badgeW) / 2;
     const badgeY = rowY + (ROW_H - badgeH) / 2;
     doc.setFillColor(statusBgR, statusBgG, statusBgB);
     doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 1.5, 1.5, "F");
@@ -516,6 +676,7 @@ export async function exportStockListPdf(
     doc.setFont("helvetica", "bold");
     doc.setTextColor(statusFgR, statusFgG, statusFgB);
     doc.text(statusLabel, badgeX + badgeW / 2, badgeY + 3.4, { align: "center" });
+    } // fim if (layout.status.w > 0)
 
     rowOnPage++;
   }
