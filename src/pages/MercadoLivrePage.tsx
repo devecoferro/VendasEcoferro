@@ -38,6 +38,7 @@ import {
 import { useExtraction } from "@/contexts/ExtractionContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useMercadoLivreData } from "@/hooks/useMercadoLivreData";
+import { useMLLiveSnapshot } from "@/hooks/useMLLiveSnapshot";
 import {
   Check,
   CheckCircle2,
@@ -818,6 +819,17 @@ export default function MercadoLivrePage() {
     autoLoadAllPages: true,
   });
 
+  // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
+  // Carrega automaticamente no mount (pega do cache do backend, TTL 5min).
+  // Fonte de verdade #1 pros 4 chips principais — prioriza estes dados
+  // acima de ml_ui_chip_counts e ml_live_chip_counts.
+  const {
+    snapshot: liveSnapshot,
+    loading: liveSnapshotLoading,
+    error: liveSnapshotError,
+    refresh: refreshLiveSnapshot,
+  } = useMLLiveSnapshot({ enabled: true, pollingIntervalMs: 0 });
+
   const [connecting, setConnecting] = useState(false);
   const [shipmentFilter, setShipmentFilter] = useState<ShipmentBucket>("today");
   const [selectedDepositFilters, setSelectedDepositFilters] = useState<string[]>([]);
@@ -1567,9 +1579,21 @@ export default function MercadoLivrePage() {
     ) as Record<ShipmentBucket, number>;
 
     // Hierarquia de fontes pros chips (maior prioridade primeiro):
-    // 1. ml_ui_chip_counts — scraper headless do Seller Center UI (100% igual)
-    // 2. ml_live_chip_counts — nossa API ML (~95% alinhado)
-    // 3. localCounts — classificação interna do app (fallback final)
+    // 1. liveSnapshot.counters — Fase 2, scraper Playwright via clicks (100% 1:1 ML) ⭐
+    // 2. ml_ui_chip_counts — scraper headless antigo
+    // 3. ml_live_chip_counts — nossa API ML (~95% alinhado)
+    // 4. localCounts — classificação interna do app (fallback final)
+
+    // #1: Live snapshot (Fase 2) — fonte de verdade 1:1 com o Seller Center
+    if (liveSnapshot?.counters && typeof liveSnapshot.counters.today === "number") {
+      return {
+        today: liveSnapshot.counters.today,
+        upcoming: liveSnapshot.counters.upcoming,
+        in_transit: liveSnapshot.counters.in_transit,
+        finalized: liveSnapshot.counters.finalized,
+        cancelled: 0,
+      };
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const uiCounts = (dashboard as any)?.ml_ui_chip_counts as
@@ -1598,7 +1622,7 @@ export default function MercadoLivrePage() {
     }
 
     return localCounts;
-  }, [selectedDashboardDeposits, dashboard]);
+  }, [selectedDashboardDeposits, dashboard, liveSnapshot]);
 
   // IDs dos pedidos que compõem a lista abaixo do chip selecionado.
   //
@@ -2200,6 +2224,54 @@ export default function MercadoLivrePage() {
 
 
         <div className="rounded-[22px] border border-[#e6e6e6] bg-[#f3f3f3] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+          {/* ─── Indicador Fase 2: dados live do ML (se disponivel) ──── */}
+          {(liveSnapshot || liveSnapshotLoading || liveSnapshotError) && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-[12px]">
+              {liveSnapshot && !liveSnapshotError ? (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    ML ao vivo
+                  </span>
+                  <span className="text-[#666666]">
+                    {(() => {
+                      const capturedAt = new Date(liveSnapshot.captured_at);
+                      const diffMs = Date.now() - capturedAt.getTime();
+                      const diffMin = Math.max(0, Math.floor(diffMs / 60000));
+                      if (diffMin === 0) return "atualizado agora";
+                      if (diffMin === 1) return "atualizado há 1 min";
+                      if (diffMin < 60) return `atualizado há ${diffMin} min`;
+                      return `atualizado há ${Math.floor(diffMin / 60)}h ${diffMin % 60}min`;
+                    })()}
+                  </span>
+                  {liveSnapshot.stale && (
+                    <span className="text-amber-600">(cache expirado)</span>
+                  )}
+                </>
+              ) : liveSnapshotLoading ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                  Carregando dados do ML…
+                </span>
+              ) : liveSnapshotError ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  Fallback local (ML offline)
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshLiveSnapshot({ force: true });
+                }}
+                disabled={liveSnapshotLoading}
+                className="ml-auto inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-0.5 text-[12px] font-medium text-[#3483fa] ring-1 ring-inset ring-[#e6e6e6] transition hover:bg-[#eef4ff] disabled:cursor-not-allowed disabled:opacity-50"
+                title="Forçar scrape fresh do ML Seller Center (demora ~90s)"
+              >
+                ↻ Atualizar agora
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap gap-2">
               {SHIPMENT_FILTERS.map((filterOption) => {
