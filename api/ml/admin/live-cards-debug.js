@@ -66,17 +66,28 @@ function renderHtml(report, options) {
 
           // ── CLICKS ATTEMPTED (Plano C — simulacao de interacao) ──
           const clicksAttempted = capture.clicksAttempted || [];
+          const domDebug = clicksAttempted.find((a) => a._dom_debug)?._dom_debug || null;
+          const clickAttempts = clicksAttempted.filter((a) => !a._dom_debug);
           const clicksHtml = clicksAttempted.length > 0
             ? `<div style="background:#fef3c7;border:2px solid #f59e0b;padding:10px;border-radius:6px;margin:10px 0">
                  <strong>🖱️ CLICKS SIMULADOS (Plano C — forcar disparo de XHRs):</strong>
                  <ul style="margin:8px 0 0 20px;padding:0">
-                   ${clicksAttempted.map((a) => {
+                   ${clickAttempts.map((a) => {
                      const icon = a.clicked ? "✅" : "❌";
+                     const reason = a.reason ? ` (${escapeHtml(a.reason)})` : "";
                      const err = a.error ? ` — <span style="color:#b91c1c">${escapeHtml(a.error)}</span>` : "";
                      const tag = a.tagName ? ` <code>${escapeHtml(a.tagName.toLowerCase())}</code>` : "";
-                     return `<li>${icon} <strong>${escapeHtml(a.label)}</strong>${tag}${err}</li>`;
+                     const match = a.matchType ? ` <em style="color:#0891b2">[${escapeHtml(a.matchType)}]</em>` : "";
+                     const sample = a.textSample ? ` "${escapeHtml(a.textSample)}"` : "";
+                     return `<li>${icon} <strong>${escapeHtml(a.label)}</strong>${tag}${match}${reason}${err}${sample}</li>`;
                    }).join("")}
                  </ul>
+                 ${domDebug ? `
+                   <details style="margin-top:10px">
+                     <summary><strong>🔬 DOM Debug (clicks falharam — dump da estrutura):</strong></summary>
+                     <pre>${escapeHtml(JSON.stringify(domDebug, null, 2))}</pre>
+                   </details>
+                 ` : ""}
                </div>`
             : "";
 

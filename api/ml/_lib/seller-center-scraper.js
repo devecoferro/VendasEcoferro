@@ -530,43 +530,111 @@ async function captureTabStore(page, tabFilter, storeUrlParam, timeoutMs, waitMs
     // de dados serem chamados apos as configs dos microfrontends.
     await page.waitForTimeout(waitMs);
 
-    // ── PLANO C: simular interacao pra forcar disparo dos XHRs ──
+    // ── PLANO C v2: simular interacao pra forcar disparo dos XHRs ──
     // O JS do ML configura onRenderEvents em /operations-dashboard/tabs
-    // mas NAO dispara em browser headless (hidratacao incompleta ou
-    // anti-bot). Solucao: clicar explicitamente nos tabs pra acionar
-    // os events manualmente. O browser entao dispara os fetches reais
-    // com TODOS os headers/tokens corretos — e nosso interceptor
-    // captura.
+    // mas NAO dispara em browser headless. Solucao: clicar explicitamente
+    // nos tabs pra acionar os events manualmente.
+    //
+    // v2 melhorias:
+    //   - Detecta botoes por data-testid/aria-label alem de texto
+    //   - Captura sample do DOM pra debug quando nao acha nada
+    //   - Tenta clicar por indice (o 1o/2o/3o elemento <button> dentro do
+    //     tablist) caso os textos estejam vazios (skeleton loading)
     clicksAttempted = await page.evaluate(async () => {
       const attempts = [];
-      const labels = ["Envios de hoje", "Próximos dias", "Em trânsito", "Finalizadas"];
-      // Procura elementos clicaveis com esses textos
+      const labels = [
+        { label: "Envios de hoje", id: "TAB_TODAY" },
+        { label: "Próximos dias", id: "TAB_NEXT_DAYS" },
+        { label: "Em trânsito", id: "TAB_IN_THE_WAY" },
+        { label: "Finalizadas", id: "TAB_FINISHED" },
+      ];
+
+      // Strategy 1: busca por texto (includes, nao starts with — text pode ter "5" junto)
       const candidates = document.querySelectorAll(
-        'button, a, [role="tab"], [role="button"], div[onclick], li'
+        'button, a, [role="tab"], [role="button"], div[onclick], li, [data-testid]'
       );
-      for (const label of labels) {
+      for (const { label, id } of labels) {
+        let clicked = false;
         for (const el of candidates) {
+          // Match por atributos primeiro (mais robusto)
+          const testId = el.getAttribute("data-testid") || "";
+          const ariaLabel = el.getAttribute("aria-label") || "";
+          const dataId = el.getAttribute("data-id") || el.getAttribute("id") || "";
           const text = (el.textContent || "").trim();
-          // Match exato ou label seguido de numero
-          if (text === label || text.startsWith(label + " ") || text.match(new RegExp(`^${label}\\s*\\d+$`))) {
+          const matchedBy =
+            testId.includes(id) ||
+            dataId.includes(id) ||
+            ariaLabel.includes(label) ||
+            text === label ||
+            text.startsWith(label) ||
+            text.replace(/\s+/g, " ").includes(label);
+          if (matchedBy) {
             try {
               el.scrollIntoView({ block: "center" });
               el.click();
-              attempts.push({ label, clicked: true, tagName: el.tagName });
-              // Espera 300ms entre clicks pra nao sobrepor
-              await new Promise((r) => setTimeout(r, 300));
+              attempts.push({
+                label,
+                id,
+                clicked: true,
+                tagName: el.tagName,
+                matchType: testId.includes(id) ? "testid" :
+                  dataId.includes(id) ? "dataid" :
+                  ariaLabel.includes(label) ? "arialabel" : "text",
+                textSample: text.slice(0, 80),
+              });
+              clicked = true;
+              await new Promise((r) => setTimeout(r, 400));
             } catch (err) {
-              attempts.push({ label, clicked: false, error: String(err) });
+              attempts.push({ label, id, clicked: false, error: String(err) });
             }
             break;
           }
         }
+        if (!clicked) {
+          attempts.push({ label, id, clicked: false, reason: "not_found" });
+        }
       }
+
+      // Strategy 2: se NADA foi clicado, dump do DOM pra debug
+      if (!attempts.some((a) => a.clicked)) {
+        const dom_debug = {
+          total_buttons: document.querySelectorAll("button").length,
+          total_links: document.querySelectorAll("a").length,
+          total_testid: document.querySelectorAll("[data-testid]").length,
+          tablist_elements: Array.from(
+            document.querySelectorAll('[role="tablist"], [role="tab"]')
+          ).slice(0, 10).map((el) => ({
+            tag: el.tagName,
+            testId: el.getAttribute("data-testid"),
+            role: el.getAttribute("role"),
+            text: (el.textContent || "").trim().slice(0, 80),
+          })),
+          // Sample dos primeiros 20 testids visiveis
+          sample_testids: Array.from(document.querySelectorAll("[data-testid]"))
+            .slice(0, 20)
+            .map((el) => ({
+              testId: el.getAttribute("data-testid"),
+              text: (el.textContent || "").trim().slice(0, 40),
+            })),
+          // Elementos com classes que sugerem "segment" / "tab"
+          segment_like: Array.from(
+            document.querySelectorAll(
+              '[class*="segment"], [class*="tab"], [class*="filter-dashboard"]'
+            )
+          ).slice(0, 10).map((el) => ({
+            tag: el.tagName,
+            className: el.className?.toString?.().slice(0, 100),
+            text: (el.textContent || "").trim().slice(0, 80),
+          })),
+        };
+        attempts.push({ _dom_debug: dom_debug });
+      }
+
       return attempts;
     });
 
-    // Espera mais 8s pra os clicks dispararem os XHRs
-    if (clicksAttempted.some((a) => a.clicked)) {
+    // Espera mais 8s pra os clicks dispararem os XHRs (se algum click rolou)
+    if (Array.isArray(clicksAttempted) && clicksAttempted.some((a) => a.clicked)) {
       await page.waitForTimeout(8000);
     }
   } catch (err) {
