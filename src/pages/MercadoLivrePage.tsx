@@ -91,7 +91,6 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
-import { ColetasPanel } from "@/components/ColetasPanel";
 import { exportSalePdf } from "@/services/pdfExportService";
 import {
   mergeLabelPdfs,
@@ -125,6 +124,7 @@ import {
   canPrintMLShippingLabel,
   isOrderFulfillment,
   isOrderUnderReview,
+  hasEmittedInvoice,
   matchesOperationalSummaryRow,
   type DepositOptionPresentation,
   type FilterOptionDefinition,
@@ -843,8 +843,14 @@ export default function MercadoLivrePage() {
   // (o que falta imprimir hoje), "printed" so os que ja imprimiu (auditoria).
   // Nao interfere nos chips de shipment bucket nem nas contagens do dashboard —
   // so afeta a lista exibida e o contador "(X/Y selecionadas)".
+  // Filtro do pipeline NF × etiqueta — 4 estados alinhados com o fluxo
+  // operacional descrito no mockup de Coletas:
+  //   - all                 → não filtra
+  //   - sem_gerar_lo        → sem NF emitida (precisa gerar NF+etiqueta)
+  //   - nf_gerada           → NF emitida mas etiqueta ainda não impressa
+  //   - etiqueta_impressa   → NF + etiqueta ambas prontas (coleta OK)
   const [labelPrintFilter, setLabelPrintFilter] = useState<
-    "all" | "not_printed" | "printed"
+    "all" | "sem_gerar_lo" | "nf_gerada" | "etiqueta_impressa"
   >("all");
   const [markingLabelsPrinted, setMarkingLabelsPrinted] = useState(false);
 
@@ -1857,11 +1863,17 @@ export default function MercadoLivrePage() {
       });
     }
 
-    // Filtro de etiqueta impressa (mantido)
-    if (labelPrintFilter === "printed") {
-      result = result.filter((order) => Boolean(order.label_printed_at));
-    } else if (labelPrintFilter === "not_printed") {
-      result = result.filter((order) => !order.label_printed_at);
+    // Filtro de pipeline NF × etiqueta (3 estados do mockup de Coletas)
+    if (labelPrintFilter === "sem_gerar_lo") {
+      result = result.filter((order) => !hasEmittedInvoice(order));
+    } else if (labelPrintFilter === "nf_gerada") {
+      result = result.filter(
+        (order) => hasEmittedInvoice(order) && !order.label_printed_at
+      );
+    } else if (labelPrintFilter === "etiqueta_impressa") {
+      result = result.filter(
+        (order) => hasEmittedInvoice(order) && Boolean(order.label_printed_at)
+      );
     }
 
     return result;
@@ -1884,20 +1896,25 @@ export default function MercadoLivrePage() {
     setSelectedLiveStatusFilter(null);
   }, [shipmentFilter]);
 
-  // Contagens pros badges dos botoes de filtro — usam o conjunto ja filtrado
-  // (quickFilters + appliedFilters + search) mas SEM o filtro de etiqueta,
-  // para mostrar quantos cairiam em cada aba.
+  // Contagens pros badges dos 4 botoes de pipeline. Usam o conjunto ja
+  // filtrado (quickFilters + appliedFilters + search) mas SEM o filtro
+  // de pipeline, pra mostrar quantos cairiam em cada aba.
   const labelPrintCounts = useMemo(() => {
-    let printed = 0;
-    let notPrinted = 0;
+    let semGerarLo = 0;
+    let nfGerada = 0;
+    let etiquetaImpressa = 0;
     for (const order of filteredOperationalOrders) {
-      if (order.label_printed_at) printed++;
-      else notPrinted++;
+      const nfOk = hasEmittedInvoice(order);
+      const etiquetaOk = Boolean(order.label_printed_at);
+      if (!nfOk) semGerarLo++;
+      else if (!etiquetaOk) nfGerada++;
+      else etiquetaImpressa++;
     }
     return {
       all: filteredOperationalOrders.length,
-      printed,
-      not_printed: notPrinted,
+      sem_gerar_lo: semGerarLo,
+      nf_gerada: nfGerada,
+      etiqueta_impressa: etiquetaImpressa,
     };
   }, [filteredOperationalOrders]);
 
@@ -2268,8 +2285,6 @@ export default function MercadoLivrePage() {
             </div>
           </div>
         </div>
-
-        <ColetasPanel orders={orders} />
 
         <div className="space-y-6 pt-2">
         <div className="rounded-[22px] border border-[#e6e6e6] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
@@ -2703,26 +2718,31 @@ export default function MercadoLivrePage() {
           onSelectPickupGroup={setSelectedPickupGroup}
         />
 
-        {/* ─── Filtro de etiqueta impressa ──────────────────────────────
-            Tabs rapidas pra isolar pedidos pendentes de impressao vs.
-            auditoria dos ja impressos. Marcacao automatica acontece ao
-            baixar o PDF na tela de conferencia; esses tabs sao so VIEW.
+        {/* ─── Filtro de pipeline NF × etiqueta ─────────────────────────
+            4 estados do fluxo operacional do mockup de Coletas:
+              Todas → NFs SEM GERAR LO → NFs GERADAS → NFs e ETIQUETAS IMPRESSAS
+            Clique em cada botao filtra a lista pela categoria.
             Botoes ao lado permitem marcar/desmarcar manualmente quando
             o operador imprime fora do sistema. */}
         <div className="flex flex-col gap-2 rounded-2xl border border-[#e6e6e6] bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:px-4 sm:py-2.5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="inline-flex items-center rounded-full border border-[#e6e6e6] bg-[#fafafa] p-0.5">
+          <div className="inline-flex flex-wrap items-center rounded-full border border-[#e6e6e6] bg-[#fafafa] p-0.5 gap-0.5">
             {(
               [
                 { value: "all", label: "Todas", count: labelPrintCounts.all },
                 {
-                  value: "not_printed",
-                  label: "Sem etiqueta",
-                  count: labelPrintCounts.not_printed,
+                  value: "sem_gerar_lo",
+                  label: "NFs SEM GERAR LO",
+                  count: labelPrintCounts.sem_gerar_lo,
                 },
                 {
-                  value: "printed",
-                  label: "Impressas",
-                  count: labelPrintCounts.printed,
+                  value: "nf_gerada",
+                  label: "NFs GERADAS",
+                  count: labelPrintCounts.nf_gerada,
+                },
+                {
+                  value: "etiqueta_impressa",
+                  label: "NFs e ETIQUETAS IMPRESSAS",
+                  count: labelPrintCounts.etiqueta_impressa,
                 },
               ] as const
             ).map((option) => {
@@ -2734,26 +2754,33 @@ export default function MercadoLivrePage() {
                   onClick={() => setLabelPrintFilter(option.value)}
                   className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold transition ${
                     active
-                      ? option.value === "not_printed"
-                        ? "bg-[#ff6d1b] text-white shadow-[0_1px_3px_rgba(255,109,27,0.35)]"
-                        : option.value === "printed"
-                          ? "bg-[#22c55e] text-white shadow-[0_1px_3px_rgba(34,197,94,0.35)]"
-                          : "bg-[#3483fa] text-white shadow-[0_1px_3px_rgba(52,131,250,0.35)]"
+                      ? option.value === "sem_gerar_lo"
+                        ? "bg-[#f59e0b] text-white shadow-[0_1px_3px_rgba(245,158,11,0.35)]"
+                        : option.value === "nf_gerada"
+                          ? "bg-[#3483fa] text-white shadow-[0_1px_3px_rgba(52,131,250,0.35)]"
+                          : option.value === "etiqueta_impressa"
+                            ? "bg-[#22c55e] text-white shadow-[0_1px_3px_rgba(34,197,94,0.35)]"
+                            : "bg-[#555555] text-white shadow-[0_1px_3px_rgba(85,85,85,0.35)]"
                       : "text-[#555555] hover:bg-[#f0f0f0]"
                   }`}
                   title={
-                    option.value === "not_printed"
-                      ? "Pedidos sem etiqueta — fila de impressao"
-                      : option.value === "printed"
-                        ? "Pedidos com etiqueta ja impressa — auditoria"
-                        : "Mostrar todos os pedidos do bucket"
+                    option.value === "sem_gerar_lo"
+                      ? "Vendas que ainda nao tiveram Nota Fiscal gerada (local de origem — LO)"
+                      : option.value === "nf_gerada"
+                        ? "Vendas com NF emitida. Imprimir etiqueta move pra Impressas."
+                        : option.value === "etiqueta_impressa"
+                          ? "Vendas com NF gerada e etiquetas impressas — prontas pra coleta"
+                          : "Mostrar todos os pedidos do bucket"
                   }
                 >
-                  {option.value === "printed" && (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  {option.value === "sem_gerar_lo" && (
+                    <FileText className="h-3.5 w-3.5" />
                   )}
-                  {option.value === "not_printed" && (
+                  {option.value === "nf_gerada" && (
                     <Printer className="h-3.5 w-3.5" />
+                  )}
+                  {option.value === "etiqueta_impressa" && (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
                   )}
                   <span>{option.label}</span>
                   <span
@@ -2875,11 +2902,13 @@ export default function MercadoLivrePage() {
                   </span>
                 ) : (
                   <span className="ml-1.5 text-[13px] text-[#999999]">
-                    {labelPrintFilter === "not_printed"
-                      ? "(nenhum pedido sem etiqueta neste bucket)"
-                      : labelPrintFilter === "printed"
-                        ? "(nenhum pedido com etiqueta impressa neste bucket)"
-                        : "(0 neste bucket)"}
+                    {labelPrintFilter === "sem_gerar_lo"
+                      ? "(nenhum pedido sem NF neste bucket)"
+                      : labelPrintFilter === "nf_gerada"
+                        ? "(nenhum pedido com NF gerada neste bucket)"
+                        : labelPrintFilter === "etiqueta_impressa"
+                          ? "(nenhum pedido com etiqueta impressa neste bucket)"
+                          : "(0 neste bucket)"}
                   </span>
                 )}
               </div>
@@ -3037,15 +3066,17 @@ export default function MercadoLivrePage() {
               <>
                 <Search className="mx-auto mb-3 h-8 w-8 text-[#bdbdbd]" />
                 <p className="text-[16px] font-semibold text-[#333333]">
-                  {labelPrintFilter === "not_printed"
-                    ? "Nenhum pedido sem etiqueta impressa."
-                    : labelPrintFilter === "printed"
-                      ? "Nenhum pedido com etiqueta impressa."
-                      : "Nenhum pedido encontrado para os filtros aplicados."}
+                  {labelPrintFilter === "sem_gerar_lo"
+                    ? "Nenhum pedido sem NF para gerar."
+                    : labelPrintFilter === "nf_gerada"
+                      ? "Nenhum pedido com NF gerada pendente de etiqueta."
+                      : labelPrintFilter === "etiqueta_impressa"
+                        ? "Nenhum pedido com etiqueta impressa."
+                        : "Nenhum pedido encontrado para os filtros aplicados."}
                 </p>
             <p className="mt-1 text-[15px] text-[#666666]">
               {labelPrintFilter !== "all"
-                ? "Troque o filtro de etiqueta para 'Todas' ou ajuste os outros filtros."
+                ? "Troque o filtro do pipeline para 'Todas' ou ajuste os outros filtros."
                 : isOperationalListIncomplete
                   ? `A base ainda está carregando (${ordersPagination.loaded} de ${ordersPagination.total}). Se for um pedido recente, aguarde a próxima página ou clique em "Carregar mais agora".`
                   : "Ajuste a busca, remova filtros ativos ou troque o bucket operacional."}
