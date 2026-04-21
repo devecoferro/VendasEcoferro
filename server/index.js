@@ -872,53 +872,25 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
       }, 2 * 60 * 1000);
     }
 
-    // ─── ML UI Scraper (Seller Center headless) ─────────────────────
-    // A cada 5min, captura os chips diretamente da UI do ML Seller Center
-    // via Playwright headless. Requer storage state configurado em
-    // $DATA_DIR/playwright/ml-seller-center-state.json (setup manual 1x).
-    // Se state não existe ou expirou, loga warning e não bloqueia nada.
-    let mlScraperRunning = false;
-    const ML_SCRAPER_INTERVAL_MS = 5 * 60 * 1000;
-    log.info(`ML UI scraper iniciado (intervalo: ${ML_SCRAPER_INTERVAL_MS / 60000}min)`);
-    const runScraperOnce = async () => {
-      if (mlScraperRunning) return;
-      mlScraperRunning = true;
-      try {
-        const { scrapeMlSellerCenter, isScraperConfigured } = await import(
-          "../api/ml/_lib/seller-center-scraper.js"
-        );
-        if (!isScraperConfigured()) {
-          return; // setup inicial não feito; skip silencioso
-        }
-        const result = await scrapeMlSellerCenter();
-        if (result.ok) {
-          log.info(
-            `ML UI chips capturados: hoje=${result.counts.today} próximos=${result.counts.upcoming} trânsito=${result.counts.in_transit} finalizadas=${result.counts.finalized}`
-          );
-          // Invalida cache do dashboard pra refletir novos chips na próxima leitura
-          try {
-            const { invalidateDashboardCache } = await import("../api/ml/dashboard.js");
-            invalidateDashboardCache();
-          } catch {
-            // ignore
-          }
-        } else if (result.error === "session_expired") {
-          log.warn("ML UI scraper: session expirada — admin precisa re-login");
-        } else if (result.error !== "no_state" && result.error !== "playwright_missing") {
-          log.warn(`ML UI scraper falhou: ${result.error} - ${result.message}`);
-        }
-      } catch (err) {
-        log.error(
-          "ML UI scraper crashou",
-          err instanceof Error ? err : new Error(String(err))
-        );
-      } finally {
-        mlScraperRunning = false;
-      }
-    };
-    setInterval(runScraperOnce, ML_SCRAPER_INTERVAL_MS);
-    // Primeira execução 90s após boot
-    setTimeout(runScraperOnce, 90_000);
+    // ─── ML UI Scraper (Seller Center DOM — LEGADO, DESLIGADO) ──────
+    //
+    // Esta rotina chamava `scrapeMlSellerCenter` (DOM scraping de chips)
+    // a cada 5min. Foi SUBSTITUÍDA pelo live-snapshot (XHR interception)
+    // em `scrapeMlLiveSnapshot`, que é mais preciso e resiliente a
+    // mudanças de layout. A função DOM continuava rodando mas falhando
+    // com `dom_mismatch` (ML mudou estrutura) — só gerava ruído nos logs
+    // sem valor agregado.
+    //
+    // O live-snapshot é invocado sob demanda pelo endpoint
+    // `/api/ml/live-snapshot` (usado pelo frontend) e tem seu próprio
+    // auto-refresh em background via `maybeRefreshLiveSnapshotInBackground`.
+    //
+    // Função `scrapeMlSellerCenter` e `ml_ui_chip_counts` no payload
+    // ainda existem como fallback #2 no frontend (MercadoLivrePage.tsx),
+    // mas sem este cron populando o cache, `getUiChipCounts()` retorna
+    // null → frontend cai no fallback #3 (`ml_live_chip_counts`) ou #4.
+    //
+    // Remoção completa do código legado fica para cleanup futuro.
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
