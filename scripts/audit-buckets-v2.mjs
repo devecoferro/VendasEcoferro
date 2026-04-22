@@ -83,6 +83,9 @@ function getPrimaryBucket(raw) {
   const shippedOutSubstatuses = new Set(["picked_up", "dropped_off", "soon_deliver", "out_for_delivery"]);
   if (ss === "ready_to_ship" && shippedOutSubstatuses.has(sss)) return "in_transit";
 
+  // novo: pending (qualquer substatus) → today (shipment em criacao)
+  if (ss === "pending" && !isCancelled) return "today";
+
   const pd = parsePickupDate(raw);
   if (pd) {
     const today = new Date(); today.setHours(0, 0, 0, 0);

@@ -91,18 +91,18 @@ Depende da **pickup date** (se ≤ hoje → today, se > hoje → upcoming):
 | `ready_to_ship` | `packed` | `fulfillment` | `paid` | `today` | `upcoming` | `printed_ready_to_send` | Full já embalado — **2** |
 | `ready_to_ship` | `ready_to_pack` | `fulfillment` | `paid` | `today` | `upcoming` | `in_processing` | Full aguardando embalar — **1** |
 
-### PENDING — estado ambíguo (44 pedidos) ❓
+### PENDING — pedidos recém-pagos (44 pedidos) ✅ resolvido
 
-| ss | sss | lt | os | Bucket atual | Bucket ML real | Notas |
+| ss | sss | lt | os | Bucket | Sub-status | Notas |
 |---|---|---|---|---|---|---|
-| `pending` | `buffered` | `cross_docking` | `paid` | `upcoming` (fallback) | **?** | **Precisa validar no ML Seller Center** — podem ser pedidos aguardando confirmação de estoque/fulfillment — **44** |
+| `pending` | `buffered` | `cross_docking` | `paid` | **`today`** | `in_processing` | Pedido pago recentemente, ML está criando o shipment — **44** |
 
-**Hipóteses:**
-1. Order pago, mas shipment ainda não foi criado pelo ML → deveria ficar em "Próximos dias" (upcoming)
-2. Problema de estoque/disponibilidade → pode ser "Em atenção" ou "Pendente"
-3. Legado de pedidos antigos que nunca foram processados → não deveria aparecer
+**Análise (2026-04-22):** todos os 44 pedidos tinham `sale_date` = hoje, `pickup_date` = null, `tags` contendo `paid`. São pedidos recém-criados aguardando ML processar o shipment — devem aparecer em "Envios de hoje" como "Em processamento" até ganharem substatus específico (`ready_to_print`, etc).
 
-**Ação pendente:** pegar um desses 44 order_ids e conferir manualmente no ML Seller Center.
+Regra aplicada:
+```ts
+if (shipStatus === "pending" && !isCancelled) return "today";
+```
 
 ## Campos de `pickup_date` (prioridade no `parsePickupDate`)
 
@@ -143,16 +143,16 @@ Pode aparecer em QUALQUER bucket como pill independente.
 ### Reclamação/mediação
 Tag `claim` ou `mediation` → no bucket `finalized`, vira sub-status `claim_or_mediation` ("Para atender").
 
-## Métricas atuais (pós-fix 2026-04-22)
+## Métricas atuais (pós-fix 2026-04-22 round 3)
 
-Base: 1504 pedidos
+Base: 1512 pedidos
 
 | Bucket | Qtd | % |
 |---|---|---|
-| today | 3 | 0.2% |
-| upcoming | 147 | 9.8% |
-| in_transit | 184 | 12.2% |
-| finalized | 1170 | 77.8% |
+| today | 46 | 3.0% |
+| upcoming | 108 | 7.1% |
+| in_transit | 178 | 11.8% |
+| finalized | 1180 | 78.0% |
 
 ## Como re-auditar
 
@@ -179,3 +179,4 @@ ORDER BY n DESC;
 - **2026-04-22** — Engenharia reversa inicial. Documentou 27 combinações. Identificou 63 pedidos mal classificados (`ready_to_ship + picked_up/dropped_off` indo pra upcoming em vez de in_transit). Fix aplicado em `mlSubStatusClassifier.ts`.
 - **2026-04-22** — Adicionada regra `not_delivered + active_return_substatus → in_transit` pra alinhar com backend.
 - **2026-04-22** — `parsePickupDate` expandido pra 10 candidatos (inclui `shipping_option.estimated_schedule_limit`, `sla_snapshot.expected_date`, etc).
+- **2026-04-22 (round 3)** — `pending + any substatus` + paid → today (pedidos recém-pagos aguardando criação de shipment pelo ML). Resolve os 44 `pending|buffered` que estavam poluindo upcoming via fallback. Engenharia reversa via scraper ML (366 orders capturados) + análise direta dos raw_data.

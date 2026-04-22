@@ -248,6 +248,14 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
     }
   }
 
+  // Pedidos recem-pagos com shipment ainda nao criado (pending/buffered):
+  // o ML ainda ta processando a criacao do envio. No ML Seller Center,
+  // esses aparecem em 'Envios de hoje' como pedidos novos exigindo
+  // atencao. Engenharia reversa 2026-04-22.
+  if (shipStatus === "pending" && !isCancelled) {
+    return "today";
+  }
+
   // ENVIOS DE HOJE vs PROXIMOS DIAS: distingue pela data de coleta
   const date = parsePickupDate(order);
   if (date) {
@@ -328,6 +336,14 @@ export function getOrderSubstatus(
   // ── ENVIOS DE HOJE ───────────────────────────────────────
   if (bucket === "today") {
     if (isCancelled) return "cancelled_no_send";
+
+    // Pedido recem-pago, shipment ainda em criacao pelo ML
+    // (ship_status=pending). Aparece em 'Envios de hoje' como
+    // "Aguardando etiqueta / Em preparacao". Reusa in_processing
+    // semanticamente (esta sendo processado pelo sistema ML).
+    if (shipStatus === "pending") {
+      return "in_processing";
+    }
 
     // Devolucao chegando hoje — observado no mockup Ourinhos today
     // ("Chegada hoje"). Status in_return com data de chegada == hoje.
