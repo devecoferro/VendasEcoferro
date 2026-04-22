@@ -36,6 +36,14 @@ export interface MLOrder {
    * na MercadoLivrePage.
    */
   label_printed_at?: string | null;
+  /**
+   * Data da coleta agendada pelo ML (lead_time.estimated_schedule_limit.date).
+   * null = sem coleta agendada ainda (ML só agenda apos NF+etiqueta prontas).
+   * Formato ISO-8601 ("2026-04-23T03:00:00Z" ou similar). Usado pelo
+   * ColetasPanel pra agrupar orders por data real sem depender de regex
+   * no status_text do scraping.
+   */
+  pickup_scheduled_date?: string | null;
 }
 
 export interface MLOrderItem {

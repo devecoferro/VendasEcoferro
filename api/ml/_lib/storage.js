@@ -131,6 +131,10 @@ function mapOrder(row) {
     // foi impressa (null = nunca impressa). Usado pelos filtros
     // "Com etiqueta" / "Sem etiqueta" da MercadoLivrePage.
     label_printed_at: row.label_printed_at || null,
+    // Data de coleta agendada pelo ML (lead_time.estimated_schedule_limit).
+    // null = sem coleta agendada. Usado pelo ColetasPanel pra agrupar
+    // orders por data real sem depender de regex no scraping.
+    pickup_scheduled_date: row.pickup_scheduled_date || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -687,6 +691,7 @@ export function upsertOrders(records) {
         amount,
         order_status,
         shipping_id,
+        pickup_scheduled_date,
         raw_data,
         created_at,
         updated_at
@@ -706,6 +711,7 @@ export function upsertOrders(records) {
         @amount,
         @order_status,
         @shipping_id,
+        @pickup_scheduled_date,
         @raw_data,
         @created_at,
         @updated_at
@@ -725,6 +731,7 @@ export function upsertOrders(records) {
         amount = excluded.amount,
         order_status = excluded.order_status,
         shipping_id = excluded.shipping_id,
+        pickup_scheduled_date = excluded.pickup_scheduled_date,
         raw_data = excluded.raw_data,
         updated_at = excluded.updated_at
     `
@@ -743,6 +750,7 @@ export function upsertOrders(records) {
           row.amount == null || Number.isNaN(Number(row.amount))
             ? null
             : Number(row.amount),
+        pickup_scheduled_date: row.pickup_scheduled_date ?? null,
         raw_data: JSON.stringify(row.raw_data || {}),
         created_at: existing?.created_at || row.created_at || nowIso(),
         updated_at: row.updated_at || nowIso(),
