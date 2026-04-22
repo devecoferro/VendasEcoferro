@@ -222,39 +222,68 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       drawPlaceholder(doc, imageX, imageY, imageW, imageH);
     }
 
-    // Deposito abaixo da imagem — badge em negrito pra o operador
-    // distinguir FULL (Mercado Envios) vs Ourinhos na hora de separar.
-    // Cor varia: FULL=roxo ML, Ourinhos=verde Ecoferro, outros=cinza.
+    // Deposito no rodape da coluna esquerda — visual 1:1 com mockups do
+    // usuario (arquivos em imagens para alteracao/etiqueta*.png):
+    //
+    //   [ ML badge amarelo circular ] [ texto do deposito ]
+    //
+    // Variacoes:
+    //   FULL                 → badge amarelo "ML" + texto cinza thin "⚡ FULL"
+    //   Ourinhos/outros      → badge amarelo "ML" + texto preto bold UPPERCASE
+    //   Sem deposito         → badge amarelo "ML" + texto preto bold "Vendas sem depósito"
+    //
+    // Desenhado ANTES do texto lateral pra que centerX/textY abaixo nao
+    // sejam deslocados. A posicao Y e abaixo da imagem + QR venda, no
+    // rodape da celula — usa rowBottom referencia.
     if (sale.depositLabel) {
       const depositText = sale.depositLabel;
-      const depositFont = veryCompactRows ? 5 : compactRows ? 5.8 : 6.8;
-      const depositPadV = 0.8;
-      const badgeY = imageY + imageH - 0.2;
       const isFull = depositText.toUpperCase() === "FULL";
       const isWithoutDeposit =
         depositText.toLowerCase().includes("sem depósito") ||
         depositText.toLowerCase().includes("sem deposito");
 
-      // Fundo do badge
-      if (isFull) {
-        doc.setFillColor(99, 59, 192); // roxo ML Full
-      } else if (isWithoutDeposit) {
-        doc.setFillColor(156, 163, 175); // cinza
-      } else {
-        doc.setFillColor(5, 150, 105); // verde Ecoferro (Ourinhos etc)
-      }
-      doc.rect(imageX, badgeY, imageW, depositFont / 2 + depositPadV * 2, "F");
+      const badgeRadius = veryCompactRows ? 1.2 : compactRows ? 1.5 : 1.8;
+      const badgeFontSize = veryCompactRows ? 3.2 : compactRows ? 3.8 : 4.4;
+      const textFontSize = veryCompactRows ? 5 : compactRows ? 5.8 : 6.8;
 
-      // Texto do badge
+      // Posicao: rodape da coluna esquerda (alinhada com final da celula)
+      const rowBottomPad = compactRows ? 1.6 : 2.2;
+      const depositY = rowBottom - rowBottomPad;
+      const badgeX = imageX + badgeRadius + 0.2;
+
+      // ML badge amarelo (circulo)
+      doc.setFillColor(255, 224, 64); // amarelo ML (#FFE040)
+      doc.circle(badgeX, depositY, badgeRadius, "F");
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(depositFont);
-      doc.setTextColor(255, 255, 255);
-      doc.text(
-        depositText.toUpperCase(),
-        imageX + imageW / 2,
-        badgeY + depositFont / 2 + depositPadV * 0.6,
-        { align: "center", maxWidth: imageW - 1 }
-      );
+      doc.setFontSize(badgeFontSize);
+      doc.setTextColor(51, 51, 51); // cinza escuro
+      doc.text("ML", badgeX, depositY + badgeFontSize / 3, {
+        align: "center",
+      });
+
+      // Texto do deposito ao lado direito do badge
+      const textX = badgeX + badgeRadius + 1.2;
+      doc.setFontSize(textFontSize);
+      if (isFull) {
+        // FULL: texto cinza thin com raio antes
+        doc.setTextColor(120, 120, 120);
+        doc.setFont("helvetica", "normal");
+        doc.text(`⚡ FULL`, textX, depositY + textFontSize / 3);
+      } else if (isWithoutDeposit) {
+        doc.setTextColor(17, 24, 39);
+        doc.setFont("helvetica", "bold");
+        doc.text("Vendas sem depósito", textX, depositY + textFontSize / 3);
+      } else {
+        // Ourinhos / outros — UPPERCASE em preto bold
+        doc.setTextColor(17, 24, 39);
+        doc.setFont("helvetica", "bold");
+        doc.text(
+          depositText.toUpperCase(),
+          textX,
+          depositY + textFontSize / 3,
+          { maxWidth: LEFT_W - (textX - x0) - 2 }
+        );
+      }
     }
 
     // ─── LAYOUT SIMPLIFICADO + FONTES EM NEGRITO ───────────────────
