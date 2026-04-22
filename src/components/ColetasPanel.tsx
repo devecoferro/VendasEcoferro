@@ -3,12 +3,13 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Calendar, FileText, Printer, PackageCheck, Truck, Info, Warehouse } from "lucide-react";
-import { hasEmittedInvoice } from "@/services/mercadoLivreHelpers";
+import {
+  hasEmittedInvoice,
+  isOrderInvoicePending,
+  getShipmentSnapshot,
+} from "@/services/mercadoLivreHelpers";
+import { getOrderPrimaryBucket } from "@/services/mlSubStatusClassifier";
 import type { MLOrder } from "@/services/mercadoLivreService";
-import type {
-  MLLiveSnapshotResponse,
-  MLLiveSnapshotOrder,
-} from "@/services/mlLiveSnapshotService";
 
 // ─── Estados do pipeline (linhas da grid) ────────────────────────────
 type PipelineState = "sem_gerar_lo" | "nf_gerada" | "etiqueta_impressa";
@@ -28,13 +29,13 @@ interface PipelineStateConfigExt extends PipelineStateConfig {
 const PIPELINE_STATES: PipelineStateConfigExt[] = [
   {
     value: "sem_gerar_lo",
-    label: "NFs SEM GERAR",
+    label: "NFs SEM GERAR LO",
     icon: FileText,
     tone: "border-amber-300/70 bg-amber-50 text-amber-900 hover:bg-amber-100",
     description:
       "Visualiza todas as vendas que ainda não tiveram a Nota Fiscal gerada (local de origem — LO).",
     flowNote:
-      "Vendas elegíveis para gerar NFs e etiquetas de envio. Após gerar, migram para 'NFs GERADAS'.",
+      "Esse filtro apresenta as vendas elegíveis para serem geradas as NFs e Etiquetas de envio. Após gerar, migram para “NFs GERADAS”.",
   },
   {
     value: "nf_gerada",
@@ -44,7 +45,7 @@ const PIPELINE_STATES: PipelineStateConfigExt[] = [
     description:
       "Exibe as vendas que já tiveram a Nota Fiscal gerada. O número indica a quantidade de NFs geradas.",
     flowNote:
-      "Apresenta as NFs e etiquetas geradas. Após imprimir, migram para 'NFs e ETIQUETAS IMPRESSAS'.",
+      "Apresenta as NFs e Etiquetas Geradas. Se o usuário selecionar e clicar em imprimir, as vendas passam a fazer parte do filtro “NFs e ETIQUETAS IMPRESSAS”.",
   },
   {
     value: "etiqueta_impressa",
@@ -52,219 +53,101 @@ const PIPELINE_STATES: PipelineStateConfigExt[] = [
     icon: PackageCheck,
     tone: "border-emerald-300/70 bg-emerald-50 text-emerald-900 hover:bg-emerald-100",
     description:
-      "Exibe as vendas que já tiveram a NF gerada e as etiquetas impressas. Prontas para a coleta.",
+      "Exibe as vendas que já tiveram a NF gerada e as etiquetas impressas. O número indica a quantidade.",
     flowNote:
-      "Mostra as vendas que já tiveram a Nota Fiscal gerada e as etiquetas impressas.",
+      "Apresenta todas as vendas com NFs e Etiquetas Geradas e Impressas. Prontas para a coleta.",
   },
 ];
 
-// ─── Extração da data de coleta do order do snapshot ─────────────────
+// ─── Extração da data de coleta do MLOrder local ─────────────────────
 //
-// O ML Seller Center expressa a data de coleta de 2 formas no
-// status_text/description do order:
+// Antes: regex em snap.status_text ("coleta do dia 23 de abril") +
+// amostra de 50 pedidos do scraper. Isso subestimava 3-4x o total.
 //
-//   1. Explicit:  "Para entregar na coleta do dia 23 de abril"
-//   2. Relativa: "A coleta passará amanhã" / "A coleta passará hoje"
-//                (texto fica em description, não em status_text)
+// Agora: lê direto os campos estruturados do raw_data, sem regex:
+//   1. order.pickup_scheduled_date (campo enriquecido pela sync,
+//      vem de lead_time.estimated_schedule_limit.date do ML)
+//   2. shipment_snapshot.pickup_date
+//   3. shipment_snapshot.estimated_delivery_limit.date
 //
-// Também há status como "Pronto para coleta" / "Etiqueta pronta para
-// impressão" que NÃO carregam data — esses agrupamos em "Sem data
-// definida" pra ainda aparecerem no relatório (operador precisa
-// saber que existem mesmo sem previsão explícita).
+// Retorna a data como objeto Date, ou null se nenhum candidato
+// parseou com sucesso. Null = "Sem data definida" no painel.
 
-const PICKUP_DATE_EXPLICIT_RE = /coleta do dia (\d+ de \w+)/i;
-
-const MONTHS_PT: Record<string, string> = {
-  janeiro: "01", fevereiro: "02", marco: "03", março: "03", abril: "04",
-  maio: "05", junho: "06", julho: "07", agosto: "08",
-  setembro: "09", outubro: "10", novembro: "11", dezembro: "12",
-};
-
-function getTodayDayMonthLabel(offsetDays: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  const day = String(d.getDate());
-  const monthIdx = d.getMonth();
-  const monthNames = Object.keys(MONTHS_PT).filter(
-    (k) => !["março", "março"].includes(k)
-  );
-  // Gera lista padronizada em português (usa "março" sem pc-latin)
-  const ordered = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
-  void monthNames; // silencia lint
-  return `${day} de ${ordered[monthIdx]}`;
-}
-
-// Classificação do order em relação à data de coleta:
-//   - { label: X }  → data X (explícita ou derivada direto)
-//   - "pending"     → status operacional pendente (aguardando NF-e ou
-//                     etiqueta) — sem data agendada ainda. Vai ficar
-//                     alocado na PRÓXIMA data de coleta agendada.
-//   - null          → status nao identificavel (ignorar)
-type PickupClassification =
-  | { kind: "date"; label: string }
-  | { kind: "pending" }
-  | null;
-
-function classifyPickupFromSnapshot(
-  snapOrder: MLLiveSnapshotOrder
-): PickupClassification {
-  const text = `${snapOrder.status_text || ""} ${snapOrder.description || ""}`;
-
-  // 1. Data explícita ("coleta do dia 23 de abril")
-  const m = text.match(PICKUP_DATE_EXPLICIT_RE);
-  if (m) return { kind: "date", label: m[1].toLowerCase().replace("março", "março") };
-
-  // 2. Referências temporais na description
-  const lower = text.toLowerCase();
-  if (lower.includes("passará hoje") || lower.includes("passara hoje")) {
-    return { kind: "date", label: getTodayDayMonthLabel(0) };
+function parsePickupDate(order: MLOrder): Date | null {
+  const ship = getShipmentSnapshot(order);
+  const edl = ship.estimated_delivery_limit as
+    | { date?: string }
+    | string
+    | undefined;
+  const candidates: Array<string | undefined> = [
+    order.pickup_scheduled_date ?? undefined,
+    typeof ship.pickup_date === "string" ? ship.pickup_date : undefined,
+    typeof edl === "object" && edl ? edl.date : typeof edl === "string" ? edl : undefined,
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const d = new Date(c);
+    if (!Number.isNaN(d.getTime())) return d;
   }
-  if (lower.includes("passará amanhã") || lower.includes("passara amanha")) {
-    return { kind: "date", label: getTodayDayMonthLabel(1) };
-  }
-  if (lower.includes("próxima coleta") || lower.includes("proxima coleta")) {
-    return { kind: "date", label: getTodayDayMonthLabel(1) };
-  }
-
-  // 3. "Pronto para coleta" sem mais info → Hoje (coleta diária)
-  if (lower.includes("pronto para coleta")) {
-    return { kind: "date", label: getTodayDayMonthLabel(0) };
-  }
-
-  // 4. Status operacional PENDENTE — ainda não tem coleta agendada.
-  // O ML só agenda coleta quando a etiqueta está pronta E a NF-e está
-  // emitida. Enquanto isso, esses orders ficam "pending" e serão
-  // alocados na PRÓXIMA data de coleta agendada nos dados.
-  if (
-    lower.includes("etiqueta pronta para impressão") ||
-    lower.includes("etiqueta pronta para impressao") ||
-    lower.includes("pronta para emitir nf-e") ||
-    lower.includes("pronto para emitir nf-e") ||
-    lower.includes("pronta para emitir nfe") ||
-    lower.includes("pronto para emitir nfe")
-  ) {
-    return { kind: "pending" };
-  }
-
   return null;
 }
 
-// Dado um Set de labels de datas ja detectadas nos dados, retorna o
-// label da PRÓXIMA data de coleta (primeiro label > hoje). Se nenhum
-// label detectado > hoje, retorna amanhã (hoje+1) como fallback.
-function pickNextScheduledDate(availableLabels: string[]): string {
-  const todayLabel = getTodayDayMonthLabel(0);
-  const todayIdx = monthDayIndex(todayLabel);
-  const candidates = availableLabels
-    .map((l) => ({ label: l, idx: monthDayIndex(l) }))
-    .filter((c) => c.idx > todayIdx)
-    .sort((a, b) => a.idx - b.idx);
-  if (candidates.length > 0) return candidates[0].label;
-  return getTodayDayMonthLabel(1); // fallback: amanhã
+// Formata Date em DD/MM/YYYY usando fuso local America/Sao_Paulo.
+// O mockup do usuario usa esse formato exato ("Coleta 22/04/2026").
+function formatPickupDateLabel(d: Date): string {
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
 }
 
-// Converte "DD de mês" num indice ordenavel (month*100 + day) pra
-// comparacao simples. Nao considera virada de ano, mas e suficiente
-// pro horizonte de coletas (~7 dias).
-function monthDayIndex(label: string): number {
-  const [dayStr, monthStr] = label.split(" de ");
-  const day = parseInt(dayStr, 10) || 0;
-  const monthNum = parseInt(MONTHS_PT[monthStr?.toLowerCase() || ""] || "0", 10);
-  return monthNum * 100 + day;
-}
-
-function formatShort(label: string): string {
-  const parts = label.split(" de ");
-  if (parts.length !== 2) return label;
-  const day = parts[0].padStart(2, "0");
-  const monthKey = parts[1].toLowerCase();
-  const month = MONTHS_PT[monthKey] || MONTHS_PT[monthKey.replace("ç", "c")] || "??";
-  return `${day}/${month}`;
-}
-
+// Comparador de labels DD/MM/YYYY pra ordenar colunas da grid.
 function sortDateLabels(a: string, b: string): number {
-  const [dayA, monthA] = a.split(" de ");
-  const [dayB, monthB] = b.split(" de ");
-  const mA = MONTHS_PT[monthA?.toLowerCase() || ""] || "99";
-  const mB = MONTHS_PT[monthB?.toLowerCase() || ""] || "99";
-  const cmp = mA.localeCompare(mB);
-  if (cmp !== 0) return cmp;
-  return (parseInt(dayA, 10) || 0) - (parseInt(dayB, 10) || 0);
+  const [dA, mA, yA] = a.split("/").map(Number);
+  const [dB, mB, yB] = b.split("/").map(Number);
+  if (yA !== yB) return yA - yB;
+  if (mA !== mB) return mA - mB;
+  return dA - dB;
 }
 
-// Mapeia order para uma das 3 linhas do painel espelhando como o
-// ML Seller Center qualifica cada venda em "Próximos dias":
+// ─── Determina o estado do pipeline pra um MLOrder ────────────────────
 //
-//   ML Seller Center                     →   Painel (3 linhas)
-//   ──────────────────────────────────────────────────────────────
-//   "NF-e para gerenciar"                →   SEM GERAR LO
-//   (status_text: "Pronta para emitir NF-e de venda")
-//
-//   "Etiquetas para imprimir"            →   GERADAS
-//   "Em processamento"                   →   GERADAS
-//   "Por envio padrão"                   →   GERADAS
-//   (status_text: "Etiqueta pronta para impressão" e afins)
-//
-//   "Prontas para enviar"                →   IMPRESSAS
-//   (status_text: "Pronto para coleta" / "Para entregar na coleta
-//    do dia X") — o ML só move pra cá depois da etiqueta pronta
-//
-// Engenharia reversa feita ontem no seller-center-scraper.js
-// (aggregateSubCards) já categorizava nesses mesmos buckets.
-//
-// Override local: se `label_printed_at` foi marcado pelo nosso
-// sistema, forçamos "etiqueta_impressa" mesmo que o ML ainda não
-// tenha atualizado pro bucket "Prontas para enviar".
-function getPipelineState(
-  snap: MLLiveSnapshotOrder,
-  local: MLOrder | undefined
-): PipelineState {
-  // 1. Override local: nosso sistema já marcou etiqueta como impressa
-  if (local?.label_printed_at) return "etiqueta_impressa";
+// Prioridade:
+//   1. label_printed_at (nosso sistema marcou) → IMPRESSAS
+//   2. shipment_snapshot.substatus === "printed" (ML marcou) → IMPRESSAS
+//   3. NF pendente de emissao (isOrderInvoicePending)       → SEM GERAR LO
+//   4. NF ja emitida internamente (hasEmittedInvoice)       → GERADAS
+//   5. Fallback                                              → SEM GERAR LO
+function getPipelineStateFromOrder(order: MLOrder): PipelineState {
+  if (order.label_printed_at) return "etiqueta_impressa";
 
-  const s = (snap.status_text || "").toLowerCase();
+  const ship = getShipmentSnapshot(order);
+  const substatus = String(ship.substatus || "").toLowerCase();
+  if (substatus === "printed") return "etiqueta_impressa";
 
-  // 2. ML diz "Pronta para emitir NF-e" → SEM GERAR LO
-  if (
-    s.includes("pronta para emitir nf-e") ||
-    s.includes("pronto para emitir nf-e") ||
-    s.includes("pronta para emitir nfe") ||
-    s.includes("pronto para emitir nfe")
-  ) {
-    return "sem_gerar_lo";
-  }
+  if (isOrderInvoicePending(order)) return "sem_gerar_lo";
 
-  // 3. ML diz "Pronto para coleta" ou "Para entregar na coleta do dia X"
-  //    → bucket "Prontas para enviar" do ML = IMPRESSAS no nosso painel
-  if (
-    s.includes("pronto para coleta") ||
-    s.includes("para entregar na coleta")
-  ) {
-    return "etiqueta_impressa";
-  }
+  if (hasEmittedInvoice(order)) return "nf_gerada";
 
-  // 4. Tudo o mais em upcoming = tem NF mas falta etapa intermediária
-  //    ("Etiqueta pronta para impressão" / "Em processamento" /
-  //     "Por envio padrão") → GERADAS
-  return "nf_gerada";
+  return "sem_gerar_lo";
 }
 
 // ─── Componente ──────────────────────────────────────────────────────
 
 interface ColetasPanelProps {
-  /** Orders locais do DB (fonte da verdade pra estados NF/etiqueta). */
+  /**
+   * Orders locais do DB (ja filtrados por permissao/deposito pelo parent).
+   * E a FONTE DA VERDADE — o painel classifica cada order via
+   * getOrderPrimaryBucket + parsePickupDate + getPipelineStateFromOrder.
+   */
   orders: MLOrder[];
-  /** Snapshot ao-vivo do ML Seller Center, JÁ ESCOPADO pelo filtro de
-   * depósito da página (selectedDepositFilters no topo). Se null ou
-   * sem orders, o painel indica estado vazio. */
-  scopedLiveSnapshot: MLLiveSnapshotResponse | null;
-  /** Slot de toolbar renderizado no header (filtros rápidos: periodo,
+  /** Slot de toolbar renderizado no header (filtros rapidos: periodo,
    * ordenar, status, buscar, limpar). Fornecido pela MercadoLivrePage
    * pra manter o estado dos filtros centralizado. */
   toolbar?: React.ReactNode;
-  /** Callback quando user clica numa célula. MercadoLivrePage usa pra
+  /** Callback quando user clica numa celula. MercadoLivrePage usa pra
    * filtrar a lista de pedidos abaixo do painel pros order_ids
-   * daquela célula. Null = sem filtro de célula ativo. */
+   * daquela celula. Null = sem filtro de celula ativo. */
   onSelectCell?: (selection: {
     orderIds: string[];
     dateLabel: string;
@@ -274,7 +157,6 @@ interface ColetasPanelProps {
 
 export function ColetasPanel({
   orders,
-  scopedLiveSnapshot,
   toolbar,
   onSelectCell,
 }: ColetasPanelProps) {
@@ -282,86 +164,46 @@ export function ColetasPanel({
     dateLabel: string;
     state: PipelineState;
   } | null>(null);
-  const localByOrderId = useMemo(() => {
-    const map = new Map<string, MLOrder>();
-    for (const o of orders) {
-      if (o.order_id) map.set(String(o.order_id), o);
-    }
-    return map;
-  }, [orders]);
 
-  const { pickupDates, byDate } = useMemo(() => {
-    const byDate = new Map<
-      string,
-      Record<PipelineState, Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }>>
-    >();
-    // Une orders dos dois tabs do ML Seller Center:
-    //   - today: "Envios de hoje" (83 no ML Ourinhos) — orders que
-    //     precisam ser enviados HOJE (status_text: "Pronto para coleta",
-    //     "Prontas para enviar", "Venda cancelada. Nao envie" etc.)
-    //   - upcoming: "Proximos dias" (110 no ML Ourinhos) — orders com
-    //     coleta agendada pra depois de hoje
-    //
-    // Ambos passam pelo mesmo classifyPickupFromSnapshot. Orders
-    // "Pronto para coleta" sem data explicita caem em HOJE (getTodayDayMonthLabel(0)).
-    // Dedup por order_id+pack_id no final pra evitar se o ML retornar
-    // o mesmo pedido em ambos tabs (edge case raro).
-    const todayOrders = scopedLiveSnapshot?.orders?.today ?? [];
-    const upcomingOrders = scopedLiveSnapshot?.orders?.upcoming ?? [];
-    const seen = new Set<string>();
-    const upcoming: MLLiveSnapshotOrder[] = [];
-    for (const o of [...todayOrders, ...upcomingOrders]) {
-      const key = `${o.pack_id || ""}_${o.order_id || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      upcoming.push(o);
-    }
+  const { pickupDates, byDate, noDateCount, totalClassified } = useMemo(() => {
+    // Map: dateLabel (DD/MM/YYYY) → bucket de orders por estado
+    const byDate = new Map<string, Record<PipelineState, MLOrder[]>>();
+    let noDateCount = 0;
+    let totalClassified = 0;
 
-    // Passada 1: orders com data identificada (explícita ou derivada)
-    const pendingOrders: Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }> = [];
-    for (const snap of upcoming) {
-      const cls = classifyPickupFromSnapshot(snap);
-      const local = localByOrderId.get(String(snap.order_id));
-      if (!cls) continue;
-      if (cls.kind === "pending") {
-        pendingOrders.push({ snap, local });
+    for (const order of orders) {
+      // 1. So classifica orders em "today" ou "upcoming" — o resto
+      // (in_transit/finalized) NAO pertence ao painel de coleta.
+      const bucket = getOrderPrimaryBucket(order);
+      if (bucket !== "today" && bucket !== "upcoming") continue;
+
+      const date = parsePickupDate(order);
+      const state = getPipelineStateFromOrder(order);
+
+      if (!date) {
+        // Orders sem data de coleta identificavel — contam no rodape
+        // mas nao entram na grid (nao ha coluna onde encaixar).
+        noDateCount++;
         continue;
       }
-      const state = getPipelineState(snap, local);
-      if (!byDate.has(cls.label)) {
-        byDate.set(cls.label, {
-          sem_gerar_lo: [],
-          nf_gerada: [],
-          etiqueta_impressa: [],
-        });
-      }
-      byDate.get(cls.label)![state].push({ snap, local });
-    }
 
-    // Passada 2: aloca orders "pending" na PRÓXIMA data agendada.
-    // "Próxima" = menor data > hoje nos dados já coletados; fallback
-    // pra amanhã se não houver nenhuma data futura identificada.
-    if (pendingOrders.length > 0) {
-      const existingLabels = Array.from(byDate.keys());
-      const nextLabel = pickNextScheduledDate(existingLabels);
-      if (!byDate.has(nextLabel)) {
-        byDate.set(nextLabel, {
+      const label = formatPickupDateLabel(date);
+      if (!byDate.has(label)) {
+        byDate.set(label, {
           sem_gerar_lo: [],
           nf_gerada: [],
           etiqueta_impressa: [],
         });
       }
-      for (const entry of pendingOrders) {
-        const state = getPipelineState(entry.snap, entry.local);
-        byDate.get(nextLabel)![state].push(entry);
-      }
+      byDate.get(label)![state].push(order);
+      totalClassified++;
     }
 
     const pickupDates = Array.from(byDate.keys()).sort(sortDateLabels);
-    return { pickupDates, byDate };
-  }, [scopedLiveSnapshot, localByOrderId]);
+    return { pickupDates, byDate, noDateCount, totalClassified };
+  }, [orders]);
 
-  // Propaga seleção pro parent (MercadoLivrePage filtra lista principal)
+  // Propaga selecao pro parent (MercadoLivrePage filtra lista principal)
   useEffect(() => {
     if (!onSelectCell) return;
     if (!selectedCell) {
@@ -375,7 +217,7 @@ export function ColetasPanel({
     }
     const list = cells[selectedCell.state];
     const orderIds = list
-      .map((entry) => String(entry.snap.order_id))
+      .map((order) => String(order.order_id ?? order.id))
       .filter(Boolean);
     onSelectCell({
       orderIds,
@@ -383,42 +225,6 @@ export function ColetasPanel({
       state: selectedCell.state,
     });
   }, [selectedCell, byDate, onSelectCell]);
-
-  const snapshotUpcomingTotal =
-    (scopedLiveSnapshot?.orders?.today?.length ?? 0) +
-    (scopedLiveSnapshot?.orders?.upcoming?.length ?? 0);
-  const withoutPickupDate = snapshotUpcomingTotal - pickupDates.reduce(
-    (acc, d) =>
-      acc +
-      byDate.get(d)!.sem_gerar_lo.length +
-      byDate.get(d)!.nf_gerada.length +
-      byDate.get(d)!.etiqueta_impressa.length,
-    0
-  );
-
-  // ─── Extrapolação proporcional ao total real do ML ─────────────────
-  // O scraper pega só os 50 primeiros orders por tab (limitação do ML
-  // Seller Center — paginação client-side não funciona via offset).
-  // Mas counters.upcoming vem do brick segmented_actions e tem o
-  // total REAL (ex: 169). Pra o painel não subestimar drasticamente,
-  // extrapolamos proporcionalmente.
-  //
-  // Exemplo: amostra=50, total_ml=169 → ratio=3.38
-  //   Se amostra tem 15 "sem_gerar_lo" → extrapolado ≈ 51
-  // Soma today + upcoming pra bater com a amostra (que agora cobre os 2 tabs).
-  // Ex: Ourinhos hoje: today=83, upcoming=110 → total=193.
-  const mlTotalUpcoming =
-    (scopedLiveSnapshot?.counters?.today ?? 0) +
-    (scopedLiveSnapshot?.counters?.upcoming ?? 0);
-  const extrapolationRatio =
-    snapshotUpcomingTotal > 0 && mlTotalUpcoming > snapshotUpcomingTotal
-      ? mlTotalUpcoming / snapshotUpcomingTotal
-      : 1;
-  const extrapolate = (sampleCount: number): number =>
-    extrapolationRatio === 1
-      ? sampleCount
-      : Math.round(sampleCount * extrapolationRatio);
-  const isExtrapolating = extrapolationRatio > 1;
 
   return (
     <Card className="overflow-hidden">
@@ -438,100 +244,82 @@ export function ColetasPanel({
         </div>
 
         {pickupDates.length === 0 ? (
-            <div className="py-6 text-center text-sm text-muted-foreground">
-              {!scopedLiveSnapshot
-                ? "Aguardando snapshot do ML Seller Center..."
-                : snapshotUpcomingTotal === 0
-                  ? "Nenhum pedido em \"Próximos dias\" no filtro atual."
-                  : "Nenhum pedido desse filtro tem data de coleta identificável."}
+          <div className="py-6 text-center text-sm text-muted-foreground">
+            {orders.length === 0
+              ? "Aguardando pedidos..."
+              : totalClassified === 0 && noDateCount === 0
+                ? "Nenhum pedido elegível para coleta no filtro atual."
+                : "Nenhum pedido com data de coleta identificável."}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 text-xs flex-wrap">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Calendar className="h-3.5 w-3.5" />
+                Coletas: {pickupDates.join("  |  ")}
+              </div>
+              {noDateCount > 0 && (
+                <div className="text-muted-foreground">
+                  (+{noDateCount} sem data identificável)
+                </div>
+              )}
             </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-2 text-xs flex-wrap">
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Calendar className="h-3.5 w-3.5" />
-                  Coletas: {pickupDates.map(formatShort).join("  |  ")}
-                </div>
-                <div className="flex items-center gap-3 text-muted-foreground">
-                  {isExtrapolating && (
-                    <span
-                      title={`O scraper captura os primeiros ${snapshotUpcomingTotal} pedidos por tab. Os contadores acima são extrapolados proporcionalmente pro total real do ML (${mlTotalUpcoming}). Distribuição baseada na amostra.`}
-                      className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 px-2 py-0.5 font-medium"
-                    >
-                      amostra {snapshotUpcomingTotal}/{mlTotalUpcoming} · extrapolado ×{extrapolationRatio.toFixed(2)}
-                    </span>
-                  )}
-                  {withoutPickupDate > 0 && (
-                    <span>(+{withoutPickupDate} sem data identificável)</span>
-                  )}
-                </div>
-              </div>
 
-              <div
-                className="grid gap-3"
-                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
-              >
-                {pickupDates.slice(0, 6).map((date) => {
-                  const cells = byDate.get(date)!;
-                  return (
-                    <div key={date} className="rounded-md border bg-muted/20 overflow-hidden">
-                      <div className="bg-muted/60 py-2 px-3 text-sm font-semibold">
-                        Coleta {formatShort(date)}
-                      </div>
-                      <div className="p-2 space-y-2">
-                        {PIPELINE_STATES.map((state) => {
-                          const sampleCount = cells[state.value].length;
-                          const displayCount = extrapolate(sampleCount);
-                          const Icon = state.icon;
-                          const isSelected =
-                            selectedCell?.dateLabel === date &&
-                            selectedCell?.state === state.value;
-                          return (
-                            <button
-                              key={state.value}
-                              type="button"
-                              disabled={sampleCount === 0}
-                              onClick={() => {
-                                setSelectedCell(
-                                  isSelected
-                                    ? null
-                                    : { dateLabel: date, state: state.value }
-                                );
-                              }}
-                              className={cn(
-                                "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
-                                state.tone,
-                                isSelected && "ring-2 ring-primary ring-offset-1",
-                                sampleCount === 0 && "opacity-60 cursor-not-allowed"
-                              )}
-                              title={
-                                sampleCount === 0
-                                  ? "Sem pedidos nesta célula"
-                                  : isExtrapolating
-                                  ? `${sampleCount} na amostra · ~${displayCount} no ML total`
-                                  : undefined
-                              }
-                            >
-                              <span className="flex items-center gap-2">
-                                <Icon className="h-4 w-4" />
-                                {state.label}
-                              </span>
-                              <Badge variant="secondary">
-                                {displayCount}
-                                {isExtrapolating && sampleCount > 0 && (
-                                  <span className="ml-1 text-[9px] opacity-60">~</span>
-                                )}
-                              </Badge>
-                            </button>
-                          );
-                        })}
-                      </div>
+            <div
+              className="grid gap-3"
+              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
+            >
+              {pickupDates.slice(0, 6).map((date) => {
+                const cells = byDate.get(date)!;
+                return (
+                  <div key={date} className="rounded-md border bg-muted/20 overflow-hidden">
+                    <div className="bg-muted/60 py-2 px-3 text-sm font-semibold">
+                      Coleta {date}
                     </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
+                    <div className="p-2 space-y-2">
+                      {PIPELINE_STATES.map((state) => {
+                        const count = cells[state.value].length;
+                        const Icon = state.icon;
+                        const isSelected =
+                          selectedCell?.dateLabel === date &&
+                          selectedCell?.state === state.value;
+                        return (
+                          <button
+                            key={state.value}
+                            type="button"
+                            disabled={count === 0}
+                            onClick={() => {
+                              setSelectedCell(
+                                isSelected
+                                  ? null
+                                  : { dateLabel: date, state: state.value }
+                              );
+                            }}
+                            className={cn(
+                              "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
+                              state.tone,
+                              isSelected && "ring-2 ring-primary ring-offset-1",
+                              count === 0 && "opacity-60 cursor-not-allowed"
+                            )}
+                            title={
+                              count === 0 ? "Sem pedidos nesta célula" : undefined
+                            }
+                          >
+                            <span className="flex items-center gap-2">
+                              <Icon className="h-4 w-4" />
+                              {state.label}
+                            </span>
+                            <Badge variant="secondary">{count}</Badge>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         {/* ─── Sobre os estados (legenda conforme mockup) ──────────── */}
         <div className="mt-2 rounded-md border bg-muted/10 p-3 space-y-2">
@@ -588,7 +376,7 @@ export function ColetasPanel({
             </li>
           </ul>
         </div>
-        </CardContent>
+      </CardContent>
     </Card>
   );
 }

@@ -1577,6 +1577,17 @@ export default function MercadoLivrePage() {
   // sem incluí-lo no array de deps (evita TDZ por hoisting).
   permittedOrdersRef.current = permittedOrders;
 
+  // Orders escopados pelo filtro de deposito do topo (DepositFilterMenu),
+  // sem filtrar por bucket/shipmentFilter. Alimenta o ColetasPanel, que
+  // internamente reclassifica por bucket primario (today/upcoming) e
+  // por pipeline state (sem_gerar_lo / nf_gerada / etiqueta_impressa).
+  const coletasScopedOrders = useMemo(() => {
+    if (selectedDepositFilters.length === 0) return permittedOrders;
+    return permittedOrders.filter((order) =>
+      selectedDepositFilters.includes(getDepositInfo(order).key)
+    );
+  }, [permittedOrders, selectedDepositFilters]);
+
   const orderMap = useMemo(
     () => new Map(permittedOrders.map((order) => [order.id, order])),
     [permittedOrders]
@@ -2320,8 +2331,7 @@ export default function MercadoLivrePage() {
         )}
 
         <ColetasPanel
-          orders={orders}
-          scopedLiveSnapshot={scopedLiveSnapshot}
+          orders={coletasScopedOrders}
           onSelectCell={(sel) => {
             if (!sel || sel.orderIds.length === 0) {
               setCellFilterOrderIds(null);
