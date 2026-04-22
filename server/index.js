@@ -254,10 +254,12 @@ app.use((req, res, next) => {
 // Double-defense contra CSRF alem do SameSite=Strict do cookie. Bloqueia
 // POST/PUT/PATCH/DELETE em /api/* se Origin/Referer nao bater com a
 // whitelist. Webhook ML (/api/ml/notifications) e isento (auth propria).
+// Paths relativos ao mount /api (sem o prefixo /api — Express strippa
+// quando a middleware e montada com app.use("/api", ...)).
 const CSRF_EXEMPT_PATHS = new Set([
-  "/api/ml/notifications", // auth propria via secret
-  "/api/health",
-  "/api/health/dependencies",
+  "/ml/notifications", // auth propria via secret
+  "/health",
+  "/health/dependencies",
 ]);
 
 app.use("/api", (req, res, next) => {
