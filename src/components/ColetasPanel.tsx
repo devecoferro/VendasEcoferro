@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { Calendar, FileText, Printer, PackageCheck } from "lucide-react";
+import { Calendar, FileText, Printer, PackageCheck, Truck, Info, Warehouse } from "lucide-react";
 import { hasEmittedInvoice } from "@/services/mercadoLivreHelpers";
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type {
@@ -20,24 +20,41 @@ interface PipelineStateConfig {
   tone: string;
 }
 
-const PIPELINE_STATES: PipelineStateConfig[] = [
+interface PipelineStateConfigExt extends PipelineStateConfig {
+  description: string;
+  flowNote: string;
+}
+
+const PIPELINE_STATES: PipelineStateConfigExt[] = [
   {
     value: "sem_gerar_lo",
-    label: "NFs SEM GERAR LO",
+    label: "NFs SEM GERAR",
     icon: FileText,
     tone: "border-amber-300/70 bg-amber-50 text-amber-900 hover:bg-amber-100",
+    description:
+      "Visualiza todas as vendas que ainda não tiveram a Nota Fiscal gerada (local de origem — LO).",
+    flowNote:
+      "Vendas elegíveis para gerar NFs e etiquetas de envio. Após gerar, migram para 'NFs GERADAS'.",
   },
   {
     value: "nf_gerada",
     label: "NFs GERADAS",
     icon: Printer,
     tone: "border-blue-300/70 bg-blue-50 text-blue-900 hover:bg-blue-100",
+    description:
+      "Exibe as vendas que já tiveram a Nota Fiscal gerada. O número indica a quantidade de NFs geradas.",
+    flowNote:
+      "Apresenta as NFs e etiquetas geradas. Após imprimir, migram para 'NFs e ETIQUETAS IMPRESSAS'.",
   },
   {
     value: "etiqueta_impressa",
     label: "NFs e ETIQUETAS IMPRESSAS",
     icon: PackageCheck,
     tone: "border-emerald-300/70 bg-emerald-50 text-emerald-900 hover:bg-emerald-100",
+    description:
+      "Exibe as vendas que já tiveram a NF gerada e as etiquetas impressas. Prontas para a coleta.",
+    flowNote:
+      "Mostra as vendas que já tiveram a Nota Fiscal gerada e as etiquetas impressas.",
   },
 ];
 
@@ -412,6 +429,14 @@ export function ColetasPanel({
       )}
 
       <CardContent className={cn("space-y-4", toolbar ? "pt-0" : "pt-4")}>
+        {/* Titulo do bloco (destaque conforme especificacao-mockup) */}
+        <div className="flex items-center gap-2">
+          <Truck className="h-4 w-4 text-emerald-700" />
+          <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-900">
+            Coletas por Data
+          </h2>
+        </div>
+
         {pickupDates.length === 0 ? (
             <div className="py-6 text-center text-sm text-muted-foreground">
               {!scopedLiveSnapshot
@@ -505,9 +530,64 @@ export function ColetasPanel({
                   );
                 })}
               </div>
-
             </>
           )}
+
+        {/* ─── Sobre os estados (legenda conforme mockup) ──────────── */}
+        <div className="mt-2 rounded-md border bg-muted/10 p-3 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            <Info className="h-3.5 w-3.5" />
+            Sobre os estados
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            {PIPELINE_STATES.map((state) => {
+              const Icon = state.icon;
+              return (
+                <div
+                  key={state.value}
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-xs space-y-1",
+                    state.tone
+                  )}
+                >
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <Icon className="h-3.5 w-3.5" />
+                    {state.label}
+                  </div>
+                  <p className="text-[11px] opacity-90">{state.description}</p>
+                  <p className="text-[11px] opacity-75 italic">{state.flowNote}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ─── Sobre os depósitos (conforme mockup) ────────────────── */}
+        <div className="rounded-md border bg-muted/10 p-3 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            <Warehouse className="h-3.5 w-3.5" />
+            Sobre os depósitos
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Ao selecionar uma opção em <strong>&quot;Por depósito&quot;</strong> no
+            filtro de vendas do topo, o relatório considerará apenas as vendas
+            realizadas a partir do depósito escolhido.
+          </p>
+          <ul className="text-[11px] text-muted-foreground space-y-1 pl-4 list-disc">
+            <li>
+              <strong>Ourinhos Rua Dario Alonso:</strong> considera apenas as
+              vendas do depósito localizado na Rua Dario Alonso, Ourinhos.
+            </li>
+            <li>
+              <strong>Full:</strong> considera apenas as vendas do depósito Full
+              (Mercado Envios — estoque no ML).
+            </li>
+            <li>
+              <strong>Vendas sem depósito:</strong> pedidos sem depósito físico
+              associado.
+            </li>
+          </ul>
+        </div>
         </CardContent>
     </Card>
   );
