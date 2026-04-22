@@ -2330,6 +2330,127 @@ export default function MercadoLivrePage() {
           </div>
         )}
 
+        {/* ─── Bloco ML ao vivo + chips de bucket + sub-classificações ───
+            Restaura layout do mockup desmotraçãoprojetoideal.jpeg:
+            (1) indicador "● ML ao vivo — atualizado há Xs"
+            (2) 4 chips: Envios de hoje / Próximos dias / Em trânsito / Finalizadas
+            (3) Etiquetas imprimíveis indicator
+            (4) LiveSubCardsStrip (pills clicáveis de sub-status)
+            (5) SubClassificationsBar (cards por section/data/sub-status) */}
+        <div className="rounded-[22px] border border-[#e6e6e6] bg-[#f3f3f3] px-5 py-5 shadow-[0_1px_2px_rgba(0,0,0,0.05)] space-y-5">
+          {(liveSnapshot || liveSnapshotLoading || liveSnapshotError) && (
+            <div className="flex flex-wrap items-center gap-2 text-[12px]">
+              {liveSnapshot && !liveSnapshotError ? (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full bg-emerald-500 ${
+                        liveSnapshot.scrape_in_progress ? "animate-pulse" : ""
+                      }`}
+                    />
+                    ML ao vivo
+                  </span>
+                  <span className="text-[#666666]">
+                    {(() => {
+                      const capturedAt = new Date(liveSnapshot.captured_at);
+                      const diffSec = Math.max(
+                        0,
+                        Math.floor((Date.now() - capturedAt.getTime()) / 1000)
+                      );
+                      const diffMin = Math.floor(diffSec / 60);
+                      if (diffSec < 30) return "atualizado agora";
+                      if (diffSec < 60) return `atualizado há ${diffSec}s`;
+                      if (diffMin === 1) return "atualizado há 1 min";
+                      if (diffMin < 60) return `atualizado há ${diffMin} min`;
+                      return `atualizado há ${Math.floor(diffMin / 60)}h ${diffMin % 60}min`;
+                    })()}
+                  </span>
+                  <span className="text-[#888] text-[11px]">
+                    · atualizações a cada 30s
+                  </span>
+                </>
+              ) : liveSnapshotLoading ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+                  Carregando dados do ML…
+                </span>
+              ) : liveSnapshotError ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  Fallback local (ML offline)
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshLiveSnapshot({ force: true });
+                }}
+                disabled={liveSnapshotLoading}
+                className="ml-auto inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-0.5 text-[12px] font-medium text-[#3483fa] ring-1 ring-inset ring-[#e6e6e6] transition hover:bg-[#eef4ff] disabled:cursor-not-allowed disabled:opacity-50"
+                title="Forçar scrape fresh do ML Seller Center (demora ~90s)"
+              >
+                ↻ Atualizar agora
+              </button>
+            </div>
+          )}
+
+          {/* Chips de bucket + Etiquetas imprimíveis */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap gap-2">
+              {SHIPMENT_FILTERS.map((filterOption) => {
+                const active = shipmentFilter === filterOption.key;
+                const count = shipmentCounts[filterOption.key];
+                return (
+                  <button
+                    key={filterOption.key}
+                    type="button"
+                    onClick={() => handleShipmentBucketSelect(filterOption.key)}
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-[15px] font-semibold transition-colors ${
+                      active
+                        ? "bg-white text-[#333333] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+                        : "text-[#666666] hover:bg-white/70"
+                    }`}
+                  >
+                    <span>{filterOption.label}</span>
+                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#3483fa] px-1.5 py-0.5 text-xs font-bold text-white">
+                      {count ?? 0}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#e6e6e6] bg-white px-4 py-2 text-[15px] text-[#5a6d92] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+              <span className="font-medium">Etiquetas imprimíveis</span>
+              <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#3483fa] px-1.5 py-0.5 text-xs font-bold text-white">
+                {readyOrders.length}
+              </span>
+            </div>
+          </div>
+
+          {/* SUB-CLASSIFICAÇÃO AO VIVO (ML) — pills clicáveis */}
+          {scopedLiveSnapshot && (
+            <LiveSubCardsStrip
+              subCards={scopedLiveSnapshot.sub_cards}
+              bucket={shipmentFilter}
+              selectedFilter={selectedLiveStatusFilter}
+              onSelectFilter={setSelectedLiveStatusFilter}
+            />
+          )}
+
+          {/* Cards por data×sub-status (Coleta | Amanhã, Coleta | A partir
+              de 24 de abril, Devoluções, etc). Atende o pedido "colocasse
+              os outros dias" — SubClassificationsBar agrupa pickup_date
+              automaticamente pro bucket upcoming. */}
+          <SubClassificationsBar
+            orders={filteredOperationalOrders}
+            bucket={shipmentFilter}
+            selectedSubStatus={selectedSubStatus}
+            onSelectSubStatus={setSelectedSubStatus}
+            selectedPickupGroup={selectedPickupGroup}
+            onSelectPickupGroup={setSelectedPickupGroup}
+          />
+        </div>
+
         <ColetasPanel
           orders={coletasScopedOrders}
           onSelectCell={(sel) => {
