@@ -242,12 +242,14 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
         depositText.toLowerCase().includes("sem depósito") ||
         depositText.toLowerCase().includes("sem deposito");
 
-      const badgeRadius = veryCompactRows ? 1.2 : compactRows ? 1.5 : 1.8;
-      const badgeFontSize = veryCompactRows ? 3.2 : compactRows ? 3.8 : 4.4;
-      const textFontSize = veryCompactRows ? 5 : compactRows ? 5.8 : 6.8;
+      // +30% de fonte vs baseline — pedido do usuario pra ficar visivel
+      const badgeRadius = veryCompactRows ? 1.56 : compactRows ? 1.95 : 2.34;
+      const badgeFontSize = veryCompactRows ? 4.16 : compactRows ? 4.94 : 5.72;
+      const textFontSize = veryCompactRows ? 6.5 : compactRows ? 7.54 : 8.84;
 
-      // Posicao: rodape da coluna esquerda (alinhada com final da celula)
-      const rowBottomPad = compactRows ? 1.6 : 2.2;
+      // Posicao: rodape da coluna esquerda (alinhada com final da celula).
+      // Padding aumentado junto com a fonte pra nao colar no fim da celula.
+      const rowBottomPad = compactRows ? 2 : 2.6;
       const depositY = rowBottom - rowBottomPad;
       const badgeX = imageX + badgeRadius + 0.2;
 
