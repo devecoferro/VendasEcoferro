@@ -224,6 +224,23 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
     return "in_transit";
   }
 
+  // Engenharia reversa ML: pedidos com shipStatus=ready_to_ship mas
+  // substatus indicando que ja sairam fisicamente (picked_up = coletado
+  // pelo transportador, dropped_off = entregue no ponto ML) devem ir
+  // pra "Em transito", NAO "Proximos dias". O ML Seller Center considera
+  // esses "A caminho" mesmo com ship.status ainda em ready_to_ship.
+  if (shipStatus === "ready_to_ship") {
+    const shippedOutSubstatuses = new Set([
+      "picked_up",
+      "dropped_off",
+      "soon_deliver",
+      "out_for_delivery",
+    ]);
+    if (shippedOutSubstatuses.has(shipSubstatusLower)) {
+      return "in_transit";
+    }
+  }
+
   // ENVIOS DE HOJE vs PROXIMOS DIAS: distingue pela data de coleta
   const date = parsePickupDate(order);
   if (date) {
