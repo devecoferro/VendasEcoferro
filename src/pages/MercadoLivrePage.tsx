@@ -2451,114 +2451,107 @@ export default function MercadoLivrePage() {
           />
         </div>
 
-        <ColetasPanel
-          orders={coletasScopedOrders}
-          onSelectCell={(sel) => {
-            if (!sel || sel.orderIds.length === 0) {
-              setCellFilterOrderIds(null);
-              return;
-            }
-            setCellFilterOrderIds(new Set(sel.orderIds));
-          }}
-          toolbar={
-            <>
-              <Select
-                value={datePreset}
-                onValueChange={(value) => {
-                  const preset = value as DatePreset;
-                  setDatePreset(preset);
-                  const range = getDatePresetRange(preset);
-                  setDraftQuickFilters((current) => ({
-                    ...current,
-                    dateFrom: range.from,
-                    dateTo: range.to,
-                  }));
-                }}
-              >
-                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[150px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {DATE_PRESET_LABELS[p]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        {/* ColetasPanel removido conforme pedido (remover.png). Toolbar de
+            filtros (periodo/ordenar/status/Buscar/Limpar) realocada abaixo
+            em uma linha propria pra nao perder funcionalidade. */}
+        <div className="rounded-[18px] border border-[#e6e6e6] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              value={datePreset}
+              onValueChange={(value) => {
+                const preset = value as DatePreset;
+                setDatePreset(preset);
+                const range = getDatePresetRange(preset);
+                setDraftQuickFilters((current) => ({
+                  ...current,
+                  dateFrom: range.from,
+                  dateTo: range.to,
+                }));
+              }}
+            >
+              <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {DATE_PRESET_LABELS[p]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-              <Select
-                value={draftFilters.sort}
-                onValueChange={(value) =>
-                  setDraftFilters((current) => ({
-                    ...current,
-                    sort: value as MercadoLivreFilters["sort"],
-                  }))
-                }
-              >
-                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[180px]">
-                  <SelectValue placeholder="Ordenar" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(SORT_LABELS) as MercadoLivreFilters["sort"][]).map((s) => (
-                    <SelectItem key={s} value={s}>
-                      Ordenar: {SORT_LABELS[s]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <Select
+              value={draftFilters.sort}
+              onValueChange={(value) =>
+                setDraftFilters((current) => ({
+                  ...current,
+                  sort: value as MercadoLivreFilters["sort"],
+                }))
+              }
+            >
+              <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[180px]">
+                <SelectValue placeholder="Ordenar" />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(SORT_LABELS) as MercadoLivreFilters["sort"][]).map((s) => (
+                  <SelectItem key={s} value={s}>
+                    Ordenar: {SORT_LABELS[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-              <Select
-                value={draftQuickFilters.status}
-                onValueChange={(value) =>
-                  setDraftQuickFilters((current) => ({
-                    ...current,
-                    status: value as QuickSalesStatusFilter,
-                  }))
-                }
-              >
-                <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[140px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {QUICK_SALES_STATUS_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <Select
+              value={draftQuickFilters.status}
+              onValueChange={(value) =>
+                setDraftQuickFilters((current) => ({
+                  ...current,
+                  status: value as QuickSalesStatusFilter,
+                }))
+              }
+            >
+              <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {QUICK_SALES_STATUS_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-              <Button
-                type="button"
-                size="sm"
-                className="h-9 rounded-md bg-[#3483fa] px-4 text-[13px] font-semibold text-white hover:bg-[#2968c8]"
-                onClick={() => {
-                  setAppliedQuickFilters({ ...draftQuickFilters });
-                  setAppliedFilters(cloneFilters(draftFilters));
-                }}
-              >
-                Buscar
-              </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9 rounded-md bg-[#3483fa] px-4 text-[13px] font-semibold text-white hover:bg-[#2968c8]"
+              onClick={() => {
+                setAppliedQuickFilters({ ...draftQuickFilters });
+                setAppliedFilters(cloneFilters(draftFilters));
+              }}
+            >
+              Buscar
+            </Button>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-9 rounded-md border-[#e5e5e5] px-4 text-[13px] font-semibold"
-                onClick={() => {
-                  setDraftQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
-                  setAppliedQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
-                  setDraftFilters(createDefaultFilters());
-                  setAppliedFilters(createDefaultFilters());
-                  setDatePreset("all");
-                }}
-              >
-                Limpar
-              </Button>
-            </>
-          }
-        />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 rounded-md border-[#e5e5e5] px-4 text-[13px] font-semibold"
+              onClick={() => {
+                setDraftQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+                setAppliedQuickFilters(DEFAULT_QUICK_SALES_FILTERS);
+                setDraftFilters(createDefaultFilters());
+                setAppliedFilters(createDefaultFilters());
+                setDatePreset("all");
+              }}
+            >
+              Limpar
+            </Button>
+          </div>
+        </div>
 
         {quickFiltersSummaryText && (
           <div className="text-xs text-[#666666] px-1">{quickFiltersSummaryText}</div>
