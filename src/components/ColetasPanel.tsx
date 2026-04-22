@@ -73,21 +73,45 @@ const PIPELINE_STATES: PipelineStateConfigExt[] = [
 // Retorna a data como objeto Date, ou null se nenhum candidato
 // parseou com sucesso. Null = "Sem data definida" no painel.
 
+// Converte um valor qualquer (string ISO ou objeto {date}) em Date, ou null
+// se nao parsear. Centraliza a defesa contra os 2 formatos que o ML retorna.
+function coerceDate(v: unknown): Date | null {
+  if (!v) return null;
+  let s: string | undefined;
+  if (typeof v === "string") s = v;
+  else if (typeof v === "object" && v !== null && "date" in v) {
+    const d = (v as { date?: unknown }).date;
+    s = typeof d === "string" ? d : undefined;
+  }
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function parsePickupDate(order: MLOrder): Date | null {
   const ship = getShipmentSnapshot(order);
-  const edl = ship.estimated_delivery_limit as
-    | { date?: string }
-    | string
-    | undefined;
-  const candidates: Array<string | undefined> = [
-    order.pickup_scheduled_date ?? undefined,
-    typeof ship.pickup_date === "string" ? ship.pickup_date : undefined,
-    typeof edl === "object" && edl ? edl.date : typeof edl === "string" ? edl : undefined,
+  const raw = (order.raw_data ?? {}) as Record<string, unknown>;
+  const sla = (raw.sla_snapshot ?? {}) as Record<string, unknown>;
+  const shipOpt = (ship.shipping_option ?? {}) as Record<string, unknown>;
+  const lead = (ship.lead_time ?? {}) as Record<string, unknown>;
+
+  // Ordem de prioridade — do mais especifico (coleta) pro mais generico (SLA).
+  // A maioria dos orders ECOFERRO nao tem flex-delivery, entao o
+  // estimated_schedule_limit vem null. estimated_delivery_limit e o proxy
+  // usado em todo lugar pra coleta (documentado no sync.js:208).
+  const candidates: unknown[] = [
+    order.pickup_scheduled_date,
+    lead.estimated_schedule_limit,
+    lead.estimated_delivery_limit,
+    shipOpt.estimated_delivery_limit,
+    shipOpt.estimated_delivery_final,
+    sla.expected_date,
+    ship.pickup_date,
+    ship.estimated_delivery_limit, // formato antigo (pode ser object {date})
   ];
   for (const c of candidates) {
-    if (!c) continue;
-    const d = new Date(c);
-    if (!Number.isNaN(d.getTime())) return d;
+    const d = coerceDate(c);
+    if (d) return d;
   }
   return null;
 }
