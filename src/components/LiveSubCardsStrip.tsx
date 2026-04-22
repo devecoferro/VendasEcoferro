@@ -16,6 +16,12 @@
 import { useMemo } from "react";
 import type { MLLiveSnapshotSubCards } from "@/services/mlLiveSnapshotService";
 import type { ShipmentBucket } from "@/services/mercadoLivreHelpers";
+import type { MLOrder } from "@/services/mercadoLivreService";
+import {
+  getOrderPickupDateLabel,
+  getOrderSubstatus,
+  SUBSTATUS_LABELS,
+} from "@/services/mlSubStatusClassifier";
 import {
   Package,
   Truck,
@@ -51,6 +57,61 @@ export function matchesLiveStatusFilter(
   if (filter.type === "pickup_date") {
     return s.includes(`coleta do dia ${filter.value.toLowerCase()}`);
   }
+  return false;
+}
+
+// Matcher LOCAL — em vez de depender do status_text do scraper (sample
+// de 50 pedidos), classifica o MLOrder local via mlSubStatusClassifier
+// e bate contra o filtro da pill. Cobre os ~1000 pedidos da base.
+export function matchesLiveStatusFilterOnLocalOrder(
+  order: MLOrder,
+  filter: LiveStatusFilter,
+  bucket: ShipmentBucket
+): boolean {
+  // Pickup date filter — bate contra o label retornado pelo classifier
+  // ("Hoje" / "Amanhã" / "Quarta-feira" / "A partir de 22 de abril").
+  // filter.value vem do scraper no formato "22 de abril" (sem "A partir de").
+  if (filter.type === "pickup_date") {
+    const label = String(getOrderPickupDateLabel(order) || "").toLowerCase();
+    const v = filter.value.toLowerCase();
+    return (
+      label === v ||
+      label === `a partir de ${v}` ||
+      label.includes(v)
+    );
+  }
+
+  const substatus = getOrderSubstatus(order, bucket);
+  if (!substatus) return false;
+  const label = String(SUBSTATUS_LABELS[substatus] || "").toLowerCase();
+  const v = filter.value.toLowerCase();
+
+  // Mapping semantico das pills do ML → sub-status do classifier
+  if (filter.type === "includes") {
+    if (v.includes("etiqueta pronta")) {
+      return substatus === "ready_to_print" || substatus === "ready_to_send";
+    }
+    if (v.includes("pronto para coleta") || v.includes("pronto pra coleta")) {
+      return substatus === "ready_to_send" || substatus === "printed_ready_to_send";
+    }
+    if (v.includes("para entregar na coleta") || v.includes("coleta agendada")) {
+      return (
+        substatus === "printed_ready_to_send" ||
+        substatus === "standard_shipping" ||
+        substatus === "ready_to_print"
+      );
+    }
+    if (v.includes("mensagem")) return substatus === "with_unread_messages";
+    // Fallback: substring match no label do sub-status
+    return label.includes(v);
+  }
+
+  if (filter.type === "exact") {
+    // Match exato contra o label do sub-status (ex: "Canceladas. Não enviar")
+    if (label === v) return true;
+    return label.includes(v);
+  }
+
   return false;
 }
 

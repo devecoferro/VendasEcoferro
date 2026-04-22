@@ -4,6 +4,7 @@ import {
 } from "@/services/mlOAuth";
 import type { ProcessingResult } from "@/services/fileProcessor";
 import type { SaleItemData } from "@/types/sales";
+import { getDepositInfo } from "@/services/mercadoLivreHelpers";
 
 export interface MLConnection {
   id: string;
@@ -570,6 +571,16 @@ export function mapMLOrderToSaleData(order: MLOrder) {
   // Variação do primeiro item (se houver) → vai no topo do SaleData também
   const topVariation = groupedItems[0]?.variation || null;
 
+  // Deposit label pra etiqueta interna: "FULL" / "Ourinhos Rua Dario
+  // Alonso" / "Sem depósito" — deixa o operador distinguir visualmente
+  // o canal logistico na hora de separar/enviar.
+  const depositInfo = getDepositInfo(order);
+  const depositLabel = depositInfo.isFulfillment
+    ? "FULL"
+    : depositInfo.hasDeposit
+      ? depositInfo.label
+      : "Sem depósito";
+
   return {
     id: order.id,
     saleNumber: order.sale_number || order.order_id,
@@ -589,6 +600,7 @@ export function mapMLOrderToSaleData(order: MLOrder) {
     labelObservation: "",
     groupedItems,
     variation: topVariation,
+    depositLabel,
   };
 }
 

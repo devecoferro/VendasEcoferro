@@ -222,6 +222,41 @@ async function drawSaleCard(doc: jsPDF, sale: SaleData, x0: number, y0: number) 
       drawPlaceholder(doc, imageX, imageY, imageW, imageH);
     }
 
+    // Deposito abaixo da imagem — badge em negrito pra o operador
+    // distinguir FULL (Mercado Envios) vs Ourinhos na hora de separar.
+    // Cor varia: FULL=roxo ML, Ourinhos=verde Ecoferro, outros=cinza.
+    if (sale.depositLabel) {
+      const depositText = sale.depositLabel;
+      const depositFont = veryCompactRows ? 5 : compactRows ? 5.8 : 6.8;
+      const depositPadV = 0.8;
+      const badgeY = imageY + imageH - 0.2;
+      const isFull = depositText.toUpperCase() === "FULL";
+      const isWithoutDeposit =
+        depositText.toLowerCase().includes("sem depósito") ||
+        depositText.toLowerCase().includes("sem deposito");
+
+      // Fundo do badge
+      if (isFull) {
+        doc.setFillColor(99, 59, 192); // roxo ML Full
+      } else if (isWithoutDeposit) {
+        doc.setFillColor(156, 163, 175); // cinza
+      } else {
+        doc.setFillColor(5, 150, 105); // verde Ecoferro (Ourinhos etc)
+      }
+      doc.rect(imageX, badgeY, imageW, depositFont / 2 + depositPadV * 2, "F");
+
+      // Texto do badge
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(depositFont);
+      doc.setTextColor(255, 255, 255);
+      doc.text(
+        depositText.toUpperCase(),
+        imageX + imageW / 2,
+        badgeY + depositFont / 2 + depositPadV * 0.6,
+        { align: "center", maxWidth: imageW - 1 }
+      );
+    }
+
     // ─── LAYOUT SIMPLIFICADO + FONTES EM NEGRITO ───────────────────
     // Tudo em helvetica bold, com hierarquia por tamanho.
     // titleFont reduzido em 20% pra evitar que nomes longos (2 linhas)

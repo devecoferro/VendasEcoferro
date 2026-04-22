@@ -33,6 +33,15 @@ export interface SaleData {
   locationCorridor?: string | null;
   locationShelf?: string | null;
   locationLevel?: string | null;
+  /**
+   * Depósito de origem do pedido — mostrado em negrito abaixo da imagem
+   * na etiqueta interna Ecoferro pra o operador distinguir visualmente
+   * o canal logístico. Valores tipicos:
+   * - "FULL" (Mercado Envios — estoque no ML)
+   * - "Ourinhos Rua Dario Alonso"
+   * - "Sem depósito"
+   */
+  depositLabel?: string | null;
 }
 
 export interface DocumentRecord {

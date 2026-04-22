@@ -13,7 +13,7 @@ import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDo
 import { MLClassificationsGrid } from "@/components/MLClassificationsGrid";
 import {
   LiveSubCardsStrip,
-  matchesLiveStatusFilter,
+  matchesLiveStatusFilterOnLocalOrder,
   type LiveStatusFilter,
 } from "@/components/LiveSubCardsStrip";
 import {
@@ -1910,23 +1910,20 @@ export default function MercadoLivrePage() {
 
     // Filtro LIVE do ML (clique num pill do LiveSubCardsStrip — ex
     // "Etiqueta pronta 37", "Coleta 23 de abril 2", "A caminho 49").
-    // Filtra pelos pedidos do snapshot que batem com o filtro, e
-    // intersecta com os orders locais via pack_id/order_id.
-    if (selectedLiveStatusFilter && scopedLiveSnapshot?.orders?.[shipmentFilter]) {
-      const matchingIds = new Set<string>();
-      for (const snapOrder of scopedLiveSnapshot.orders[shipmentFilter]) {
-        if (matchesLiveStatusFilter(snapOrder.status_text, selectedLiveStatusFilter)) {
-          if (snapOrder.pack_id) matchingIds.add(String(snapOrder.pack_id));
-          if (snapOrder.order_id) matchingIds.add(String(snapOrder.order_id));
-        }
-      }
-      result = result.filter((order) => {
-        if (matchingIds.has(order.id)) return true;
-        if (order.order_id && matchingIds.has(order.order_id)) return true;
-        const packId = getOrderPackId(order);
-        if (packId && matchingIds.has(packId)) return true;
-        return false;
-      });
+    //
+    // ANTES: filtrava pelos 50 pedidos do snapshot do scraper via
+    //        status_text match, perdia a grande maioria dos pedidos.
+    // AGORA: usa matchesLiveStatusFilterOnLocalOrder que classifica
+    //        cada order local via mlSubStatusClassifier. Cobre os ~1000
+    //        pedidos da base e bate 1:1 com os sub-status do ML.
+    if (selectedLiveStatusFilter) {
+      result = result.filter((order) =>
+        matchesLiveStatusFilterOnLocalOrder(
+          order,
+          selectedLiveStatusFilter,
+          shipmentFilter
+        )
+      );
     }
 
     // Filtro de etiqueta impressa (mantido)
