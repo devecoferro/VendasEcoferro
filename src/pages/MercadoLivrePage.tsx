@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { OrderOperationalDocumentsDialog } from "@/components/OrderOperationalDocumentsDialog";
-import { SubClassificationsBar } from "@/components/SubClassificationsBar";
+import { MLClassificationsGrid } from "@/components/MLClassificationsGrid";
 import {
   LiveSubCardsStrip,
   matchesLiveStatusFilter,
@@ -2437,13 +2437,20 @@ export default function MercadoLivrePage() {
             />
           )}
 
-          {/* Cards por data×sub-status (Coleta | Amanhã, Coleta | A partir
-              de 24 de abril, Devoluções, etc). Atende o pedido "colocasse
-              os outros dias" — SubClassificationsBar agrupa pickup_date
-              automaticamente pro bucket upcoming. */}
-          <SubClassificationsBar
+          {/* Cards por (deposito × section × data × sub-status), 1:1 com
+              ML Seller Center. Titulos variam por deposito:
+              - Ourinhos today:  "PROGRAMADA Coleta"
+              - Full today:      "Full"
+              - Ourinhos upcoming: "Coleta | Amanhã", "Coleta | A partir
+                                   de 24 de abril"
+              - Qualquer bucket: "Devoluções", "Para retirar", "Encerradas"...
+              Agrupamento controlado por deposit (derivado do filtro do topo)
+              e pickupDate (upcoming). Atende "os outros dias" pedido pelo
+              usuario no chat. */}
+          <MLClassificationsGrid
             orders={filteredOperationalOrders}
             bucket={shipmentFilter}
+            deposit={liveSnapshotScope}
             selectedSubStatus={selectedSubStatus}
             onSelectSubStatus={setSelectedSubStatus}
             selectedPickupGroup={selectedPickupGroup}

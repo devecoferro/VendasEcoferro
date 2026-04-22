@@ -41,8 +41,10 @@ export type MLSubStatus =
   // Envios de hoje > Para enviar
   | "cancelled_no_send"      // Canceladas. Nao enviar
   | "ready_to_send"          // Prontas para enviar (today)
+  | "in_distribution_center" // No centro de distribuicao (Full today)
   // Envios de hoje > Devolucoes
   | "return_pending_review"  // Revisao pendente
+  | "return_arriving_today"  // Chegada hoje (devolucao chegando)
   // Proximos dias > Coleta
   | "invoice_pending"        // NF-e para gerenciar
   | "ready_to_print"         // Etiquetas para imprimir
@@ -56,6 +58,7 @@ export type MLSubStatus =
   | "waiting_buyer_pickup"   // Esperando retirada do comprador
   // Em trânsito > A caminho
   | "shipped_collection"     // Coleta
+  | "shipped_full"           // Full (ML fulfillment em transito)
   // Finalizadas > Para atender
   | "claim_or_mediation"     // Com reclamacao ou mediacao
   // Finalizadas > Encerradas
@@ -238,12 +241,21 @@ export function getOrderSubstatus(
     ) {
       return "waiting_buyer_pickup";
     }
+    // Full em transito: shipped com logistic_type=fulfillment
+    if (logisticType === "fulfillment") return "shipped_full";
     return "shipped_collection";
   }
 
   // ── ENVIOS DE HOJE ───────────────────────────────────────
   if (bucket === "today") {
     if (isCancelled) return "cancelled_no_send";
+
+    // Devolucao chegando hoje — observado no mockup Ourinhos today
+    // ("Chegada hoje"). Status in_return com data de chegada == hoje.
+    if (shipStatus === "in_return" && shipSubstatus === "return_arriving_today") {
+      return "return_arriving_today";
+    }
+
     // Devolucoes que precisam revisao do operador hoje
     if (
       shipStatus === "in_return" ||
@@ -252,6 +264,20 @@ export function getOrderSubstatus(
     ) {
       return "return_pending_review";
     }
+
+    // Full today: pedidos no centro de distribuicao do ML. Observado
+    // no mockup FULL.png — "No centro de distribuicao".
+    if (
+      logisticType === "fulfillment" &&
+      (shipStatus === "handling" ||
+        shipStatus === "ready_to_ship" ||
+        shipSubstatus === "in_distribution_center" ||
+        shipSubstatus === "in_warehouse" ||
+        shipSubstatus === "handling")
+    ) {
+      return "in_distribution_center";
+    }
+
     return "ready_to_send";
   }
 
@@ -460,7 +486,9 @@ export function getOrderStoreLabel(key: MLStoreKey): string {
 export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   cancelled_no_send: "Canceladas. Não enviar",
   ready_to_send: "Prontas para enviar",
+  in_distribution_center: "No centro de distribuição",
   return_pending_review: "Revisão pendente",
+  return_arriving_today: "Chegada hoje",
   invoice_pending: "NF-e para gerenciar",
   ready_to_print: "Etiquetas para imprimir",
   printed_ready_to_send: "Prontas para enviar",
@@ -470,6 +498,7 @@ export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   return_in_ml_review: "Em revisão pelo Mercado Livre",
   waiting_buyer_pickup: "Esperando retirada do comprador",
   shipped_collection: "Coleta",
+  shipped_full: "Full",
   claim_or_mediation: "Com reclamação ou mediação",
   delivered: "Entregues",
   not_delivered: "Não entregues",
@@ -521,7 +550,9 @@ export const SUBSTATUS_HELP_TEXT: Partial<Record<MLSubStatus, string>> = {
 export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   cancelled_no_send: "danger",
   ready_to_send: "warning",
+  in_distribution_center: "info",
   return_pending_review: "warning",
+  return_arriving_today: "warning",
   invoice_pending: "warning",
   ready_to_print: "warning",
   printed_ready_to_send: "warning",
@@ -531,6 +562,7 @@ export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   return_in_ml_review: "info",
   waiting_buyer_pickup: "warning",
   shipped_collection: "info",
+  shipped_full: "info",
   claim_or_mediation: "danger",
   delivered: "success",
   not_delivered: "danger",
@@ -539,3 +571,65 @@ export const SUBSTATUS_TONES: Record<MLSubStatus, SubStatusTone> = {
   returns_not_completed: "danger",
   with_unread_messages: "info",
 };
+
+// ─── Section title builder (pra MLClassificationsGrid) ─────────────────
+//
+// Constroi o titulo exato que o ML mostra no header de cada card, de
+// acordo com (bucket × deposit × section × pickupDate). Espelha os
+// mockups: "PROGRAMADA Coleta | 12h-14h" (Ourinhos today — mas sem
+// horario porque pickup_window nao esta na sync ainda), "Full"
+// (Full today), "Coleta | Amanhã" (Ourinhos upcoming), "Devoluções",
+// "Para retirar", "A caminho", "Encerradas", etc.
+//
+// Retorna { subtitle?, title }:
+//   - subtitle: linha pequena acima do titulo ("PROGRAMADA")
+//   - title: titulo principal do card
+export interface MLCardTitle {
+  subtitle?: string;
+  title: string;
+}
+
+export function getMLCardTitle(args: {
+  bucket: ShipmentBucket;
+  section: MLSection;
+  deposit: MLStoreKey;
+  pickupDateLabel?: string; // "Amanhã", "A partir de 24 de abril"...
+}): MLCardTitle {
+  const { bucket, section, deposit, pickupDateLabel } = args;
+
+  // Finalized — titulos neutros, sem variar por deposito
+  if (bucket === "finalized") {
+    if (section === "para_atender") return { title: "Para atender" };
+    return { title: "Encerradas" };
+  }
+
+  // In transit — "Para retirar" ou "A caminho"
+  if (bucket === "in_transit") {
+    if (section === "para_retirar") return { title: "Para retirar" };
+    return { title: "A caminho" };
+  }
+
+  // Today — varia por deposito
+  if (bucket === "today") {
+    if (section === "envios_devolucoes") return { title: "Devoluções" };
+    // Para enviar — subtitle PROGRAMADA em Ourinhos, "Full" direto em Full
+    if (deposit === "full") {
+      return { title: "Full" };
+    }
+    // Ourinhos/outros: "PROGRAMADA Coleta" (sem horario por enquanto)
+    return { subtitle: "PROGRAMADA", title: "Coleta" };
+  }
+
+  // Upcoming — varia por section + pickup date
+  if (bucket === "upcoming") {
+    if (section === "proximos_devolucoes") return { title: "Devoluções" };
+    // coleta_dia: "Coleta | <data>"
+    return {
+      title: pickupDateLabel
+        ? `Coleta | ${pickupDateLabel}`
+        : "Coleta",
+    };
+  }
+
+  return { title: SECTION_LABELS[section] };
+}
