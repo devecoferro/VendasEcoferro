@@ -936,6 +936,10 @@ export default function MercadoLivrePage() {
   // Pickup group (Hoje, Amanha, Quarta-feira, A partir de 23 de abril) usado
   // junto com o sub-status quando o card e do tipo "Coleta | <dia>".
   const [selectedPickupGroup, setSelectedPickupGroup] = useState<string | null>(null);
+  // Filtro por célula do ColetasPanel: quando user clica num card
+  // (ex: "NFs SEM GERAR LO · Coleta 23/04"), filtra a lista abaixo
+  // pros order_ids daquela célula. null = sem filtro de célula.
+  const [cellFilterOrderIds, setCellFilterOrderIds] = useState<Set<string> | null>(null);
   // Store (Mercado Envios Full vs outras lojas) — substitui visualmente o
   // filtro de "loja" do ML. Default "all" mostra tudo somado igual hoje.
   const [selectedStore, setSelectedStore] = useState<MLStoreKey | "all">("all");
@@ -1921,10 +1925,19 @@ export default function MercadoLivrePage() {
       result = result.filter((order) => !order.label_printed_at);
     }
 
+    // Filtro por célula do painel Coletas por Data (clique num card).
+    // Quando ativo, restringe a lista aos order_ids daquela célula.
+    if (cellFilterOrderIds && cellFilterOrderIds.size > 0) {
+      result = result.filter(
+        (order) => order.order_id && cellFilterOrderIds.has(String(order.order_id))
+      );
+    }
+
     return result;
   }, [
     filteredOperationalOrders,
     labelPrintFilter,
+    cellFilterOrderIds,
     selectedStore,
     selectedSubStatus,
     selectedPickupGroup,
@@ -2309,6 +2322,13 @@ export default function MercadoLivrePage() {
         <ColetasPanel
           orders={orders}
           scopedLiveSnapshot={scopedLiveSnapshot}
+          onSelectCell={(sel) => {
+            if (!sel || sel.orderIds.length === 0) {
+              setCellFilterOrderIds(null);
+              return;
+            }
+            setCellFilterOrderIds(new Set(sel.orderIds));
+          }}
           toolbar={
             <>
               <Select

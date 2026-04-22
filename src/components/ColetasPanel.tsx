@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -151,13 +151,27 @@ interface ColetasPanelProps {
    * vs total local). Não é mais fonte primária dos dados. */
   scopedLiveSnapshot: MLLiveSnapshotResponse | null;
   toolbar?: React.ReactNode;
+  /** Callback disparado quando user clica numa célula da grid.
+   * Passa { orderIds } com os IDs dos pedidos daquela data × estado, ou
+   * null quando a mesma célula é clicada de novo (toggle off).
+   * MercadoLivrePage usa pra filtrar a lista principal de pedidos abaixo. */
+  onSelectCell?: (selection: {
+    orderIds: string[];
+    dateKey: string;
+    state: "sem_gerar_lo" | "nf_gerada" | "etiqueta_impressa";
+  } | null) => void;
 }
 
 export function ColetasPanel({
   orders,
   scopedLiveSnapshot,
   toolbar,
+  onSelectCell,
 }: ColetasPanelProps) {
+  const [selectedCell, setSelectedCell] = useState<{
+    dateKey: string;
+    state: PipelineState;
+  } | null>(null);
   // ─── Filtro operacional: só pedidos que estão em "Proximos dias" ─
   // (equivalente ao chip "Próximos dias" do ML Seller Center).
   // Heurística mínima: tem pickup_scheduled_date futuro OU é
@@ -222,6 +236,29 @@ export function ColetasPanel({
     return { columns, byCol, withoutDate };
   }, [upcomingOrders]);
 
+  // ─── Dispara callback quando seleção muda ────────────────────────
+  // Passa os order_ids da célula selecionada pra MercadoLivrePage
+  // filtrar a lista principal de pedidos abaixo do painel.
+  useEffect(() => {
+    if (!onSelectCell) return;
+    if (!selectedCell) {
+      onSelectCell(null);
+      return;
+    }
+    const cells = byCol.get(selectedCell.dateKey);
+    if (!cells) {
+      onSelectCell(null);
+      return;
+    }
+    const list = cells[selectedCell.state];
+    const orderIds = list.map((o) => String(o.order_id));
+    onSelectCell({
+      orderIds,
+      dateKey: selectedCell.dateKey,
+      state: selectedCell.state,
+    });
+  }, [selectedCell, byCol, onSelectCell]);
+
   // ─── Validação cruzada com counters.upcoming do snapshot ─────────
   const mlTotalUpcoming = scopedLiveSnapshot?.counters?.upcoming ?? null;
   const localTotalUpcoming = upcomingOrders.length;
@@ -283,14 +320,29 @@ export function ColetasPanel({
                     </div>
                     <div className="p-2 space-y-2">
                       {PIPELINE_STATES.map((state) => {
-                        const count = cells[state.value].length;
+                        const cellOrders = cells[state.value];
+                        const count = cellOrders.length;
                         const Icon = state.icon;
+                        const isSelected =
+                          selectedCell?.dateKey === col.key &&
+                          selectedCell?.state === state.value;
                         return (
-                          <div
+                          <button
                             key={state.value}
+                            type="button"
+                            disabled={count === 0}
+                            onClick={() => {
+                              const next = isSelected
+                                ? null
+                                : { dateKey: col.key, state: state.value };
+                              setSelectedCell(next);
+                            }}
                             className={cn(
-                              "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium",
-                              state.tone
+                              "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
+                              state.tone,
+                              isSelected && "ring-2 ring-primary ring-offset-1",
+                              count === 0 &&
+                                "opacity-60 cursor-not-allowed hover:opacity-60"
                             )}
                           >
                             <span className="flex items-center gap-2">
@@ -298,7 +350,7 @@ export function ColetasPanel({
                               {state.label}
                             </span>
                             <Badge variant="secondary">{count}</Badge>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
