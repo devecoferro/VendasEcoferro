@@ -278,7 +278,27 @@ export function ColetasPanel({
       string,
       Record<PipelineState, Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }>>
     >();
-    const upcoming = scopedLiveSnapshot?.orders?.upcoming ?? [];
+    // Une orders dos dois tabs do ML Seller Center:
+    //   - today: "Envios de hoje" (83 no ML Ourinhos) — orders que
+    //     precisam ser enviados HOJE (status_text: "Pronto para coleta",
+    //     "Prontas para enviar", "Venda cancelada. Nao envie" etc.)
+    //   - upcoming: "Proximos dias" (110 no ML Ourinhos) — orders com
+    //     coleta agendada pra depois de hoje
+    //
+    // Ambos passam pelo mesmo classifyPickupFromSnapshot. Orders
+    // "Pronto para coleta" sem data explicita caem em HOJE (getTodayDayMonthLabel(0)).
+    // Dedup por order_id+pack_id no final pra evitar se o ML retornar
+    // o mesmo pedido em ambos tabs (edge case raro).
+    const todayOrders = scopedLiveSnapshot?.orders?.today ?? [];
+    const upcomingOrders = scopedLiveSnapshot?.orders?.upcoming ?? [];
+    const seen = new Set<string>();
+    const upcoming: MLLiveSnapshotOrder[] = [];
+    for (const o of [...todayOrders, ...upcomingOrders]) {
+      const key = `${o.pack_id || ""}_${o.order_id || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      upcoming.push(o);
+    }
 
     // Passada 1: orders com data identificada (explícita ou derivada)
     const pendingOrders: Array<{ snap: MLLiveSnapshotOrder; local: MLOrder | undefined }> = [];
@@ -347,7 +367,9 @@ export function ColetasPanel({
     });
   }, [selectedCell, byDate, onSelectCell]);
 
-  const snapshotUpcomingTotal = scopedLiveSnapshot?.orders?.upcoming?.length ?? 0;
+  const snapshotUpcomingTotal =
+    (scopedLiveSnapshot?.orders?.today?.length ?? 0) +
+    (scopedLiveSnapshot?.orders?.upcoming?.length ?? 0);
   const withoutPickupDate = snapshotUpcomingTotal - pickupDates.reduce(
     (acc, d) =>
       acc +
@@ -366,7 +388,11 @@ export function ColetasPanel({
   //
   // Exemplo: amostra=50, total_ml=169 → ratio=3.38
   //   Se amostra tem 15 "sem_gerar_lo" → extrapolado ≈ 51
-  const mlTotalUpcoming = scopedLiveSnapshot?.counters?.upcoming ?? 0;
+  // Soma today + upcoming pra bater com a amostra (que agora cobre os 2 tabs).
+  // Ex: Ourinhos hoje: today=83, upcoming=110 → total=193.
+  const mlTotalUpcoming =
+    (scopedLiveSnapshot?.counters?.today ?? 0) +
+    (scopedLiveSnapshot?.counters?.upcoming ?? 0);
   const extrapolationRatio =
     snapshotUpcomingTotal > 0 && mlTotalUpcoming > snapshotUpcomingTotal
       ? mlTotalUpcoming / snapshotUpcomingTotal
