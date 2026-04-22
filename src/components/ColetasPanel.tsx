@@ -265,58 +265,94 @@ export function ColetasPanel({
               )}
             </div>
 
-            <div
-              className="grid gap-3"
-              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}
-            >
-              {pickupDates.slice(0, 6).map((date) => {
-                const cells = byDate.get(date)!;
-                return (
-                  <div key={date} className="rounded-md border bg-muted/20 overflow-hidden">
-                    <div className="bg-muted/60 py-2 px-3 text-sm font-semibold">
-                      Coleta {date}
-                    </div>
-                    <div className="p-2 space-y-2">
-                      {PIPELINE_STATES.map((state) => {
-                        const count = cells[state.value].length;
-                        const Icon = state.icon;
-                        const isSelected =
-                          selectedCell?.dateLabel === date &&
-                          selectedCell?.state === state.value;
-                        return (
-                          <button
-                            key={state.value}
-                            type="button"
-                            disabled={count === 0}
-                            onClick={() => {
-                              setSelectedCell(
-                                isSelected
-                                  ? null
-                                  : { dateLabel: date, state: state.value }
-                              );
-                            }}
-                            className={cn(
-                              "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
-                              state.tone,
-                              isSelected && "ring-2 ring-primary ring-offset-1",
-                              count === 0 && "opacity-60 cursor-not-allowed"
-                            )}
-                            title={
-                              count === 0 ? "Sem pedidos nesta célula" : undefined
-                            }
-                          >
+            {/* Matriz linhas=estados × colunas=datas, layout 1:1 com o mockup.
+                Overflow-x-auto pra nao quebrar em telas estreitas. */}
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr>
+                    {/* Celula canto vazia sobre a coluna de labels */}
+                    <th className="p-2 text-left font-semibold text-muted-foreground w-[220px]">
+                      &nbsp;
+                    </th>
+                    {pickupDates.slice(0, 6).map((date) => (
+                      <th
+                        key={date}
+                        className="border bg-muted/60 p-2 text-center font-semibold"
+                      >
+                        Coleta {date}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {PIPELINE_STATES.map((state) => {
+                    const Icon = state.icon;
+                    const rowTotal = pickupDates.reduce(
+                      (acc, date) =>
+                        acc + (byDate.get(date)?.[state.value].length ?? 0),
+                      0
+                    );
+                    return (
+                      <tr key={state.value}>
+                        <td
+                          className={cn(
+                            "border px-3 py-2 font-medium align-middle",
+                            state.tone.replace(/hover:[^\s]+/g, "")
+                          )}
+                        >
+                          <span className="flex items-center justify-between gap-2">
                             <span className="flex items-center gap-2">
-                              <Icon className="h-4 w-4" />
+                              <Icon className="h-4 w-4 shrink-0" />
                               {state.label}
                             </span>
-                            <Badge variant="secondary">{count}</Badge>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+                            {rowTotal > 0 && (
+                              <Badge variant="secondary" className="shrink-0">
+                                {rowTotal}
+                              </Badge>
+                            )}
+                          </span>
+                        </td>
+                        {pickupDates.slice(0, 6).map((date) => {
+                          const count = byDate.get(date)?.[state.value].length ?? 0;
+                          const isSelected =
+                            selectedCell?.dateLabel === date &&
+                            selectedCell?.state === state.value;
+                          return (
+                            <td key={date} className="border p-1">
+                              <button
+                                type="button"
+                                disabled={count === 0}
+                                onClick={() => {
+                                  setSelectedCell(
+                                    isSelected
+                                      ? null
+                                      : { dateLabel: date, state: state.value }
+                                  );
+                                }}
+                                className={cn(
+                                  "w-full rounded-md border px-3 py-2 text-center text-sm font-semibold transition-colors",
+                                  count === 0
+                                    ? "border-dashed border-muted-foreground/20 bg-transparent text-muted-foreground/40 cursor-not-allowed"
+                                    : state.tone,
+                                  isSelected && "ring-2 ring-primary ring-offset-1"
+                                )}
+                                title={
+                                  count === 0
+                                    ? "Sem pedidos nesta célula"
+                                    : `${count} pedido(s) em ${state.label} pra coleta ${date}`
+                                }
+                              >
+                                {count === 0 ? "—" : count}
+                              </button>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </>
         )}
