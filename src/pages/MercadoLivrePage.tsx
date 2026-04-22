@@ -91,7 +91,8 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
 } from "@/services/mercadoLivreService";
-import { ColetasPanel } from "@/components/ColetasPanel";
+// ColetasPanel removido do render em commit b88cf61. Import tambem
+// removido (sprint 2.4 cleanup) — estava causando import morto.
 import { exportSalePdf } from "@/services/pdfExportService";
 import {
   mergeLabelPdfs,
@@ -1950,16 +1951,24 @@ export default function MercadoLivrePage() {
     selectedSubStatus,
     selectedPickupGroup,
     selectedLiveStatusFilter,
-    scopedLiveSnapshot,
     shipmentFilter,
+    // scopedLiveSnapshot removido do deps — nao e usado no body do memo
+    // e estava forcando recompute a cada poll de 30s em ~1000 orders.
+    // Auditoria qualidade sprint 1.3.
   ]);
 
   // Reset sub-status + pickup + filtro live quando trocar de bucket — eles
   // sao especificos do bucket atual e nao fazem sentido em outro.
+  // Sprint 2.4: tambem reseta cellFilterOrderIds (filtro de celula do
+  // ColetasPanel — componente removido, state nao tinha mais quem
+  // escrever nele, mas leitura no displayedOperationalOrders ainda
+  // poderia voltar a disparar). selectedStore NAO reseta intencional-
+  // mente: user pode querer manter "Full" enquanto navega entre abas.
   useEffect(() => {
     setSelectedSubStatus(null);
     setSelectedPickupGroup(null);
     setSelectedLiveStatusFilter(null);
+    setCellFilterOrderIds(null);
   }, [shipmentFilter]);
 
   // Contagens pros badges dos botoes de filtro de etiqueta — usam o

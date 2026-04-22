@@ -1,8 +1,45 @@
 import { runMercadoLivreSync, getConnectionBySellerId } from "./sync.js";
 import { syncClaims, syncReturns } from "./_lib/mirror-sync.js";
 import { refreshNfeFromNotification } from "../nfe/_lib/mercado-livre-faturador.js";
+import { logger } from "../_lib/logger.js";
+import { timingSafeEqual } from "node:crypto";
 
 const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments", "post_purchase", "invoices"]);
+
+// Secret compartilhado pra validar que o POST veio do ML e nao de um
+// atacante externo. Configurado no painel do ML como header customizado
+// ou query string na URL de notificacao. Auditoria de seg. (sprint 1.1).
+const WEBHOOK_SECRET = (process.env.ML_WEBHOOK_SECRET || "").trim();
+
+/**
+ * Valida o secret do webhook via:
+ *   1) Query string ?secret=xxx
+ *   2) Header x-ml-webhook-secret
+ *
+ * Se ML_WEBHOOK_SECRET nao estiver configurado, loga warning mas aceita
+ * (para nao quebrar producao durante rollout — admin configura env var
+ * e atualiza URL no painel ML dentro de uma janela).
+ */
+function isWebhookAuthorized(request) {
+  if (!WEBHOOK_SECRET) {
+    logger.warn({ route: "ml-notifications" }, "ML_WEBHOOK_SECRET nao configurado — webhook aberto");
+    return true;
+  }
+  const provided = String(
+    request.headers["x-ml-webhook-secret"] ||
+      request.query?.secret ||
+      ""
+  );
+  if (!provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(WEBHOOK_SECRET);
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
 
 function getPayload(request) {
   if (!request.body) return {};
@@ -40,6 +77,15 @@ export default async function handler(request, response) {
 
   if (request.method !== "POST") {
     return response.status(405).json({ status: "error", error: "Method not allowed" });
+  }
+
+  // Webhook auth — auditoria seg. sprint 1.1
+  if (!isWebhookAuthorized(request)) {
+    logger.warn(
+      { route: "ml-notifications", ip: request.ip },
+      "webhook rejeitado — secret invalido ou ausente"
+    );
+    return response.status(401).json({ status: "error", error: "unauthorized" });
   }
 
   const payload = getPayload(request);

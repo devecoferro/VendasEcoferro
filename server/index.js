@@ -201,6 +201,89 @@ app.use(compression({
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true, limit: "8mb" }));
 
+// ─── Security headers (sprint 3.1 — sem helmet, manual) ─────────────
+// CSP permissiva no inicio (unsafe-inline pra inline styles do Radix e
+// inline script do Vite); ajustar depois de rodar em prod. Outras
+// headers sao conservadoras.
+const APP_BASE_URL_SEC = String(process.env.APP_BASE_URL || "").trim();
+const ALLOWED_ORIGINS_SEC = new Set(
+  [APP_BASE_URL_SEC, "https://vendas.ecoferro.com.br"]
+    .filter(Boolean)
+    .map((u) => {
+      try {
+        const p = new URL(u);
+        return `${p.protocol}//${p.host}`;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean)
+);
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer-when-downgrade");
+  res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+  // HSTS so em producao HTTPS
+  if (APP_BASE_URL_SEC.startsWith("https://")) {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  // CSP — permissiva nas rotas /api (JSON), estrita nas rotas HTML.
+  // Radix + Vite precisam de unsafe-inline pra styles; scripts ficam same-origin.
+  if (!req.path.startsWith("/api")) {
+    res.setHeader(
+      "Content-Security-Policy",
+      [
+        "default-src 'self'",
+        "img-src 'self' data: https://http2.mlstatic.com https://*.mlstatic.com",
+        "style-src 'self' 'unsafe-inline'",
+        "script-src 'self'",
+        "connect-src 'self' https://api.mercadolibre.com",
+        "font-src 'self' data:",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join("; ")
+    );
+  }
+  next();
+});
+
+// ─── Origin/Referer check para rotas state-changing (sprint 2.2) ────
+// Double-defense contra CSRF alem do SameSite=Strict do cookie. Bloqueia
+// POST/PUT/PATCH/DELETE em /api/* se Origin/Referer nao bater com a
+// whitelist. Webhook ML (/api/ml/notifications) e isento (auth propria).
+const CSRF_EXEMPT_PATHS = new Set([
+  "/api/ml/notifications", // auth propria via secret
+  "/api/health",
+  "/api/health/dependencies",
+]);
+
+app.use("/api", (req, res, next) => {
+  const method = req.method.toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
+  if (CSRF_EXEMPT_PATHS.has(req.path)) return next();
+  // Em dev sem APP_BASE_URL configurado, nao bloqueia (só loga).
+  if (ALLOWED_ORIGINS_SEC.size === 0) return next();
+
+  const origin = String(req.headers.origin || "").trim();
+  const referer = String(req.headers.referer || "").trim();
+  let candidate = origin;
+  if (!candidate && referer) {
+    try {
+      const p = new URL(referer);
+      candidate = `${p.protocol}//${p.host}`;
+    } catch {
+      candidate = "";
+    }
+  }
+  if (!candidate || !ALLOWED_ORIGINS_SEC.has(candidate)) {
+    return res.status(403).json({ error: "origin_not_allowed" });
+  }
+  next();
+});
+
 // ─── Health ─────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true });
@@ -223,7 +306,10 @@ app.all("/api/ml/orders", apiLimiter, (req, res) => mlOrdersHandler(req, res));
 app.all("/api/ml/stores", apiLimiter, (req, res) => mlStoresHandler(req, res));
 app.all("/api/ml/sync", syncLimiter, (req, res) => mlSyncHandler(req, res));
 app.get("/api/ml/sync-events", apiLimiter, (req, res) => mlSyncEventsHandler(req, res));
-app.all("/api/ml/notifications", (req, res) => mlNotificationsHandler(req, res));
+// Webhook ML — rate-limited via syncLimiter (10/min/IP). Auth adicional
+// via ML_WEBHOOK_SECRET (query string ou header x-ml-webhook-secret) e
+// verificada dentro do handler. Auditoria seg. sprint 1.1.
+app.all("/api/ml/notifications", syncLimiter, (req, res) => mlNotificationsHandler(req, res));
 app.all("/api/ml/returns", apiLimiter, (req, res) => mlReturnsHandler(req, res));
 app.all("/api/ml/claims", apiLimiter, (req, res) => mlClaimsHandler(req, res));
 app.all("/api/ml/packs", apiLimiter, (req, res) => mlPacksHandler(req, res));

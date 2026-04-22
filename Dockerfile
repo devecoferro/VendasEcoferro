@@ -55,6 +55,15 @@ COPY --from=build /app/scripts ./scripts
 # As deps do sistema (libs do Chromium) ja vem instaladas via apt-get
 # acima. Entao quando o Chromium for baixado em runtime, ja vai rodar.
 
+# TODO sprint 3.1 (security hardening pendente): rodar como usuario
+# non-root. Bloqueador: o volume host /data/vendas-ecoferro-vps/data
+# precisa ser chown'ed pra uid 1000 antes, caso contrario SQLite falha
+# ao abrir. Plano de rollout:
+#   1) chown -R 1000:1000 /data/vendas-ecoferro-vps/data na VPS
+#   2) adicionar "RUN mkdir -p /app/data && chown -R node:node /app"
+#   3) adicionar "USER node"
+# Deve ir num deploy SEPARADO dos demais fixes pra isolar risco.
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 CMD ["node", "scripts/healthcheck-ping.mjs"]

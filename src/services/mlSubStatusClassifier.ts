@@ -89,7 +89,26 @@ interface ShipmentSnapshot {
   logistic_type?: string;
   estimated_delivery_limit?: { date?: string } | string;
   pickup_date?: string;
-  shipping_option?: { name?: string };
+  shipping_option?: {
+    name?: string;
+    estimated_schedule_limit?: { date?: string } | string;
+    estimated_delivery_limit?: { date?: string } | string;
+    estimated_delivery_final?: { date?: string } | string;
+  };
+  lead_time?: {
+    estimated_schedule_limit?: { date?: string } | string;
+    estimated_delivery_limit?: { date?: string } | string;
+  };
+  sla_snapshot?: { expected_date?: string };
+  status_history?: {
+    date_cancelled?: string;
+    date_not_delivered?: string;
+    date_returned?: string;
+    date_handling?: string;
+    date_ready_to_ship?: string;
+    date_shipped?: string;
+    date_delivered?: string;
+  };
   date_first_printed?: string;
   return_details?: { status?: string };
 }
@@ -155,11 +174,25 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
   const wasShipped = ["shipped", "delivered", "not_delivered"].includes(shipStatus);
 
   // FINALIZADAS — ja entregue, devolvido (status terminal de envio)
-  if (
-    shipStatus === "delivered" ||
-    shipStatus === "not_delivered" ||
-    shipStatus === "returned"
-  ) {
+  if (shipStatus === "delivered" || shipStatus === "returned") {
+    return "finalized";
+  }
+
+  // not_delivered pode ser (a) terminal (pacote perdido, sem retorno) ou
+  // (b) em transito de volta pro vendedor. O backend (dashboard.js:60-65)
+  // mantem substatuses ativos de retorno em in_transit. Alinhamos aqui.
+  // Sprint 2.3 — corrigir disagreement com backend.
+  const shipSubstatusLower = lower(ship.substatus);
+  const ACTIVE_RETURN_SUBSTATUSES = new Set([
+    "returning_to_sender",
+    "returning_to_hub",
+    "delayed",
+    "return_failed",
+  ]);
+  if (shipStatus === "not_delivered") {
+    if (ACTIVE_RETURN_SUBSTATUSES.has(shipSubstatusLower)) {
+      return "in_transit";
+    }
     return "finalized";
   }
 
@@ -434,19 +467,38 @@ const PT_MONTHS = [
   "dezembro",
 ];
 
+function coerceDateString(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && value !== null) {
+    const obj = value as { date?: string };
+    if (typeof obj.date === "string") return obj.date;
+  }
+  return null;
+}
+
 function parsePickupDate(order: MLOrder): Date | null {
   const ship = getShipment(order);
-  // Tenta varios campos comuns onde o ML guarda a data de coleta
-  const candidates = [
-    ship.pickup_date,
-    typeof ship.estimated_delivery_limit === "object"
-      ? ship.estimated_delivery_limit?.date
-      : ship.estimated_delivery_limit,
-    getRaw(order).pickup_date,
-    getRaw(order).shipping?.pickup_date,
+  const raw = getRaw(order);
+  // Why: antes so checavamos pickup_date e estimated_delivery_limit.
+  // O sync hibrido (commit 49b2175) enriquece via shipping_option.
+  // estimated_schedule_limit e lead_time.* — sem essas fontes, pedidos
+  // enriquecidos caiam em "Sem data definida" e eram classificados
+  // como upcoming por default.
+  const candidates: Array<string | null> = [
+    coerceDateString(ship.pickup_date),
+    coerceDateString(ship.estimated_delivery_limit),
+    coerceDateString(ship.shipping_option?.estimated_schedule_limit),
+    coerceDateString(ship.shipping_option?.estimated_delivery_limit),
+    coerceDateString(ship.shipping_option?.estimated_delivery_final),
+    coerceDateString(ship.lead_time?.estimated_schedule_limit),
+    coerceDateString(ship.lead_time?.estimated_delivery_limit),
+    coerceDateString(ship.sla_snapshot?.expected_date),
+    coerceDateString(raw.pickup_date),
+    coerceDateString(raw.shipping?.pickup_date),
   ];
   for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "string") continue;
+    if (!candidate) continue;
     const date = new Date(candidate);
     if (!Number.isNaN(date.getTime())) return date;
   }

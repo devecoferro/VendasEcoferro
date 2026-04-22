@@ -737,12 +737,14 @@ export function upsertOrders(records) {
     `
   );
 
+  // Perf sprint 1.4: o SELECT por linha dentro da transacao era N+1
+  // (10k roundtrips num full sync). Removido porque:
+  // (a) ON CONFLICT DO UPDATE acima NAO atualiza created_at, entao o
+  //     valor original e preservado no banco automaticamente;
+  // (b) o @created_at passado aqui so e usado no INSERT novo, quando
+  //     nao ha registro prexistente — row.created_at || nowIso() basta.
   const transaction = db.transaction((rows) => {
     for (const row of rows) {
-      const existing = db
-        .prepare(`SELECT created_at FROM ml_orders WHERE id = ? LIMIT 1`)
-        .get(row.id);
-
       stmt.run({
         ...row,
         quantity: Number(row.quantity || 0),
@@ -752,7 +754,7 @@ export function upsertOrders(records) {
             : Number(row.amount),
         pickup_scheduled_date: row.pickup_scheduled_date ?? null,
         raw_data: JSON.stringify(row.raw_data || {}),
-        created_at: existing?.created_at || row.created_at || nowIso(),
+        created_at: row.created_at || nowIso(),
         updated_at: row.updated_at || nowIso(),
       });
     }

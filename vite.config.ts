@@ -58,6 +58,25 @@ export default defineConfig(({ mode }) => ({
           if (normalizedId.includes("node_modules/@radix-ui")) {
             return "vendor-radix";
           }
+          // Sprint 3.2: splits adicionais pra reduzir vendor-misc (era 1.28MB).
+          // Lucide-react = icones, raro mudar, cacheavel separado.
+          if (normalizedId.includes("node_modules/lucide-react")) {
+            return "vendor-icons";
+          }
+          // Date-fns — grande (locale inclusive), mas estavel.
+          if (normalizedId.includes("node_modules/date-fns")) {
+            return "vendor-date";
+          }
+          // Zod + react-hook-form (forms + validacao) — usados juntos.
+          if (
+            normalizedId.includes("node_modules/zod") ||
+            normalizedId.includes("node_modules/react-hook-form") ||
+            normalizedId.includes("node_modules/@hookform")
+          ) {
+            return "vendor-forms";
+          }
+          // D3 — dep transitiva de recharts; pode ser grande. Nao separa
+          // completamente pra nao gerar circular dep, mas agrupa.
           // React, React DOM, scheduler, react-router — todos vão para vendor-misc.
           // Separar React em chunk próprio causava dependência circular
           // (vendor-react ↔ vendor-misc) porque react-dom depende de bibliotecas
