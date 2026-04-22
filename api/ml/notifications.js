@@ -1,8 +1,10 @@
 import { runMercadoLivreSync, getConnectionBySellerId } from "./sync.js";
 import { syncClaims, syncReturns } from "./_lib/mirror-sync.js";
 import { refreshNfeFromNotification } from "../nfe/_lib/mercado-livre-faturador.js";
-import { logger } from "../_lib/logger.js";
+import createLogger from "../_lib/logger.js";
 import { timingSafeEqual } from "node:crypto";
+
+const logger = createLogger("ml-notifications");
 
 const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments", "post_purchase", "invoices"]);
 
@@ -22,7 +24,7 @@ const WEBHOOK_SECRET = (process.env.ML_WEBHOOK_SECRET || "").trim();
  */
 function isWebhookAuthorized(request) {
   if (!WEBHOOK_SECRET) {
-    logger.warn({ route: "ml-notifications" }, "ML_WEBHOOK_SECRET nao configurado — webhook aberto");
+    logger.warn("ML_WEBHOOK_SECRET nao configurado — webhook aberto", { route: "ml-notifications" });
     return true;
   }
   const provided = String(
@@ -81,10 +83,10 @@ export default async function handler(request, response) {
 
   // Webhook auth — auditoria seg. sprint 1.1
   if (!isWebhookAuthorized(request)) {
-    logger.warn(
-      { route: "ml-notifications", ip: request.ip },
-      "webhook rejeitado — secret invalido ou ausente"
-    );
+    logger.warn("webhook rejeitado — secret invalido ou ausente", {
+      route: "ml-notifications",
+      ip: request.ip,
+    });
     return response.status(401).json({ status: "error", error: "unauthorized" });
   }
 

@@ -11,7 +11,9 @@ import {
   upsertConnection,
 } from "./_lib/storage.js";
 import { refreshMercadoLivreToken } from "./_lib/mercado-livre.js";
-import { logger } from "../_lib/logger.js";
+import createLogger from "../_lib/logger.js";
+
+const logger = createLogger("ml-auth");
 
 // ─── OAuth state store (sprint 2.1 — security audit) ─────────────────
 // Bind server-side state <-> profile + redirect_uri, pra evitar que
@@ -145,10 +147,10 @@ export default async function handler(request, response) {
       // Sprint 2.1: redirect_uri whitelist — recusa origins nao
       // permitidos pra evitar desvio do code OAuth pra atacante.
       if (!isRedirectUriAllowed(redirect_uri)) {
-        logger.warn(
-          { redirect_uri, route: "ml-auth/get_auth_url" },
-          "redirect_uri rejeitado (fora da whitelist)"
-        );
+        logger.warn("redirect_uri rejeitado (fora da whitelist)", {
+          redirect_uri,
+          route: "ml-auth/get_auth_url",
+        });
         return response.status(400).json({ error: "redirect_uri not allowed" });
       }
 
@@ -191,10 +193,10 @@ export default async function handler(request, response) {
       }
       const stateEntry = consumeOauthState(state);
       if (!stateEntry) {
-        logger.warn(
-          { state_prefix: state.slice(0, 8), route: "ml-auth/exchange_code" },
-          "state invalido, expirado, ou reutilizado"
-        );
+        logger.warn("state invalido, expirado, ou reutilizado", {
+          state_prefix: state.slice(0, 8),
+          route: "ml-auth/exchange_code",
+        });
         return response.status(400).json({ error: "invalid or expired state" });
       }
       if (stateEntry.redirectUri !== redirect_uri) {
@@ -224,10 +226,11 @@ export default async function handler(request, response) {
         // Sprint 2.1: nao retornar `details` bruto pro cliente —
         // pode conter metadata util pra atacante. Logar server-side.
         const details = await tokenResponse.text().catch(() => "");
-        logger.warn(
-          { status: tokenResponse.status, details, route: "ml-auth/exchange_code" },
-          "token exchange failed"
-        );
+        logger.warn("token exchange failed", {
+          status: tokenResponse.status,
+          details,
+          route: "ml-auth/exchange_code",
+        });
         return response.status(tokenResponse.status).json({
           error: "Token exchange failed",
         });
