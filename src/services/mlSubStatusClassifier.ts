@@ -112,6 +112,28 @@ function hasTag(order: MLOrder, tag: string): boolean {
   return tags.some((t) => lower(t) === lower(tag));
 }
 
+/**
+ * Detecta se o order tem mensagens não lidas do comprador.
+ *
+ * Why: o ML Seller Center mostra um pill "Msg. não lidas" em várias abas;
+ * antes o classifier não retornava `with_unread_messages` em bucket nenhum,
+ * então o filtro trazia 0 pedidos. A tag oficial da API é
+ * `messages_with_unread_messages` — verificamos ela + fallbacks
+ * (`messages_unread`) pra cobrir dados antigos/scraper snapshots.
+ */
+export function orderHasUnreadMessages(order: MLOrder): boolean {
+  if (hasTag(order, "messages_with_unread_messages")) return true;
+  if (hasTag(order, "unread_messages")) return true;
+  const raw = getRaw(order) as OrderRawData & {
+    messages_unread?: boolean;
+    messenger?: { messages_unread?: boolean; new_messages_amount?: number };
+  };
+  if (raw.messages_unread === true) return true;
+  if (raw.messenger?.messages_unread === true) return true;
+  if ((raw.messenger?.new_messages_amount || 0) > 0) return true;
+  return false;
+}
+
 // ─── Bucket primario (determina em qual aba o order aparece) ────────────
 
 /**
@@ -276,6 +298,15 @@ export function getOrderSubstatus(
         shipSubstatus === "handling")
     ) {
       return "in_distribution_center";
+    }
+
+    // Ainda precisa imprimir etiqueta — vira pill "Etiqueta pronta" do ML.
+    // Antes, o today sempre caia em ready_to_send; o pill "Etiqueta pronta"
+    // e "Pronto pra coleta" filtravam o mesmo conjunto. Agora dividimos:
+    //   ready_to_print   → nao imprimiu etiqueta ainda
+    //   ready_to_send    → etiqueta ja impressa, falta dar saida na coleta
+    if (shipSubstatus === "ready_to_print") {
+      return "ready_to_print";
     }
 
     return "ready_to_send";

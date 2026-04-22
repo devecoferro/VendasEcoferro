@@ -71,13 +71,14 @@ interface SectionCard {
 // Ordem dos sub-status dentro de cada card — match com ML Seller Center.
 // Sub-status nao listados aparecem no final por ordem de contagem.
 const SUBSTATUS_DISPLAY_ORDER: MLSubStatus[] = [
-  // Today > Para enviar
+  // Today > Para enviar — ordem espelha o ML Seller Center:
+  // Canceladas, Etiqueta pra imprimir, Prontas pra enviar, No CD
   "cancelled_no_send",
+  "ready_to_print",
   "ready_to_send",
   "in_distribution_center",
   // Upcoming > Coleta
   "invoice_pending",
-  "ready_to_print",
   "printed_ready_to_send",
   "in_processing",
   "standard_shipping",

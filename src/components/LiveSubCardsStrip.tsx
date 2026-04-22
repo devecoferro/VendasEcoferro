@@ -20,7 +20,9 @@ import type { MLOrder } from "@/services/mercadoLivreService";
 import {
   getOrderPickupDateLabel,
   getOrderSubstatus,
+  orderHasUnreadMessages,
   SUBSTATUS_LABELS,
+  type MLSubStatus,
 } from "@/services/mlSubStatusClassifier";
 import {
   Package,
@@ -60,6 +62,113 @@ export function matchesLiveStatusFilter(
   return false;
 }
 
+/**
+ * Tabela de sinônimos ML → sub-status do classifier.
+ *
+ * Why: o scraper do Seller Center pode devolver status com wording sutil-
+ * mente diferente do nosso SUBSTATUS_LABELS (plural/singular, sinônimos).
+ * Antes, o matcher exact fazia `label === value` e quebrava em TODO pill
+ * fallback do by_status — resultando em 0 pedidos filtrados quando o
+ * usuário clicava (ex: "Processando no CD", "Cancelada. Não enviar").
+ *
+ * How to apply: o matcher exact procura primeiro nessa tabela; se bater,
+ * compara contra o sub-status retornado pelo classifier. Se não, cai no
+ * fallback antigo (substring no SUBSTATUS_LABELS).
+ */
+const ML_LABEL_SYNONYMS: Array<{ match: string[]; substatus: MLSubStatus }> = [
+  {
+    match: ["cancelada. não enviar", "canceladas. não enviar", "não enviar", "nao enviar"],
+    substatus: "cancelled_no_send",
+  },
+  {
+    match: [
+      "processando no cd",
+      "processando cd",
+      "no centro de distribuição",
+      "no centro de distribuicao",
+      "no cd",
+    ],
+    substatus: "in_distribution_center",
+  },
+  {
+    match: ["etiqueta pronta para impressão", "etiqueta pronta"],
+    substatus: "ready_to_print",
+  },
+  {
+    match: ["pronto para coleta", "pronto pra coleta", "prontas para enviar"],
+    substatus: "ready_to_send",
+  },
+  {
+    match: ["revisão pendente", "revisao pendente", "em revisão", "em revisao"],
+    substatus: "return_pending_review",
+  },
+  {
+    match: ["chegada hoje"],
+    substatus: "return_arriving_today",
+  },
+  {
+    match: ["nf-e para gerenciar", "nfe para gerenciar"],
+    substatus: "invoice_pending",
+  },
+  {
+    match: ["em processamento"],
+    substatus: "in_processing",
+  },
+  {
+    match: ["por envio padrão", "por envio padrao", "envio padrão", "envio padrao"],
+    substatus: "standard_shipping",
+  },
+  {
+    match: ["para entregar na coleta", "coleta agendada"],
+    substatus: "printed_ready_to_send",
+  },
+  {
+    match: [
+      "esperando retirada do comprador",
+      "no ponto de retirada",
+      "no ponto de envio",
+      "aguardando retirada",
+    ],
+    substatus: "waiting_buyer_pickup",
+  },
+  {
+    match: ["a caminho"],
+    substatus: "shipped_collection",
+  },
+  {
+    match: ["entregue", "entregues"],
+    substatus: "delivered",
+  },
+  {
+    match: ["não entregue", "nao entregue", "não entregues", "nao entregues"],
+    substatus: "not_delivered",
+  },
+  {
+    match: ["cancelada pelo comprador", "canceladas"],
+    substatus: "cancelled_final",
+  },
+  {
+    match: ["com reclamação", "com reclamacao", "reclamação", "reclamacao", "mediação", "mediacao"],
+    substatus: "claim_or_mediation",
+  },
+  {
+    match: ["devoluções concluídas", "devolucoes concluidas"],
+    substatus: "returns_completed",
+  },
+  {
+    match: ["devoluções não concluídas", "devolucoes nao concluidas"],
+    substatus: "returns_not_completed",
+  },
+];
+
+function resolveSynonym(value: string): MLSubStatus | null {
+  const v = value.toLowerCase().trim();
+  for (const entry of ML_LABEL_SYNONYMS) {
+    if (entry.match.some((m) => v === m || v.includes(m))) return entry.substatus;
+  }
+  return null;
+}
+
 // Matcher LOCAL — em vez de depender do status_text do scraper (sample
 // de 50 pedidos), classifica o MLOrder local via mlSubStatusClassifier
 // e bate contra o filtro da pill. Cobre os ~1000 pedidos da base.
@@ -81,15 +190,24 @@ export function matchesLiveStatusFilterOnLocalOrder(
     );
   }
 
+  const v = filter.value.toLowerCase();
+
+  // Pill "Msg. não lidas" é cross-bucket — não depende do sub-status
+  // primário do order. Verifica tag ML diretamente.
+  if (filter.type === "includes" && v.includes("mensagem")) {
+    return orderHasUnreadMessages(order);
+  }
+
   const substatus = getOrderSubstatus(order, bucket);
   if (!substatus) return false;
   const label = String(SUBSTATUS_LABELS[substatus] || "").toLowerCase();
-  const v = filter.value.toLowerCase();
 
   // Mapping semantico das pills do ML → sub-status do classifier
   if (filter.type === "includes") {
     if (v.includes("etiqueta pronta")) {
-      return substatus === "ready_to_print" || substatus === "ready_to_send";
+      // Depois da correção, today também distingue ready_to_print de
+      // ready_to_send. Pill "Etiqueta pronta" filtra só o que falta imprimir.
+      return substatus === "ready_to_print";
     }
     if (v.includes("pronto para coleta") || v.includes("pronto pra coleta")) {
       return substatus === "ready_to_send" || substatus === "printed_ready_to_send";
@@ -97,17 +215,20 @@ export function matchesLiveStatusFilterOnLocalOrder(
     if (v.includes("para entregar na coleta") || v.includes("coleta agendada")) {
       return (
         substatus === "printed_ready_to_send" ||
-        substatus === "standard_shipping" ||
-        substatus === "ready_to_print"
+        substatus === "standard_shipping"
       );
     }
-    if (v.includes("mensagem")) return substatus === "with_unread_messages";
-    // Fallback: substring match no label do sub-status
+    // Fallback: tenta sinônimos primeiro, depois substring
+    const synonym = resolveSynonym(filter.value);
+    if (synonym) return substatus === synonym;
     return label.includes(v);
   }
 
   if (filter.type === "exact") {
-    // Match exato contra o label do sub-status (ex: "Canceladas. Não enviar")
+    // Primeiro tenta sinônimos (cobre wording divergente do scraper)
+    const synonym = resolveSynonym(filter.value);
+    if (synonym) return substatus === synonym;
+    // Fallback: match exato contra o label do sub-status
     if (label === v) return true;
     return label.includes(v);
   }
