@@ -201,12 +201,16 @@ async function getShipmentSnapshot(accessToken, shippingId, cache) {
         estimated_delivery_limit: p?.shipping_option?.estimated_delivery_limit?.date ?? null,
         estimated_delivery_final: p?.shipping_option?.estimated_delivery_final?.date ?? null,
       },
-      // lead_time.estimated_schedule_limit.date = data oficial da coleta
-      // agendada pelo ML. Usado pelo ColetasPanel pra agrupar por data
-      // (Amanhã / A partir de X) sem depender de regex no scraping.
+      // Datas do shipping_option usadas pelo ColetasPanel pra agrupar
+      // orders por data (Amanhã / A partir de X).
+      // - estimated_schedule_limit: data agendada de COLETA pelo ML
+      //   (null pra sellers que não usam flex-delivery — caso desta conta)
+      // - estimated_delivery_limit: data limite de ENTREGA ao comprador
+      //   (populado em 100% dos orders ready_to_ship — usado como
+      //    fallback/proxy pra coleta; a coleta acontece uns 2-3 dias antes)
       lead_time: {
-        estimated_schedule_limit: p?.lead_time?.estimated_schedule_limit?.date ?? null,
-        estimated_delivery_limit: p?.lead_time?.estimated_delivery_limit?.date ?? null,
+        estimated_schedule_limit: p?.shipping_option?.estimated_schedule_limit?.date ?? null,
+        estimated_delivery_limit: p?.shipping_option?.estimated_delivery_limit?.date ?? null,
       },
     };
   });
@@ -591,7 +595,9 @@ export async function runMercadoLivreSync({
               order_status: order.status || null,
               shipping_id: shippingId,
               pickup_scheduled_date:
-                shipmentSnapshot?.lead_time?.estimated_schedule_limit ?? null,
+                shipmentSnapshot?.lead_time?.estimated_schedule_limit ??
+                shipmentSnapshot?.lead_time?.estimated_delivery_limit ??
+                null,
               raw_data: {
                 ...order,
                 order_item_index: itemIndex,
@@ -1046,7 +1052,9 @@ export async function refreshMLOrdersByIds({ connectionId, orderIds }) {
                 order_status: order.status || null,
                 shipping_id: shippingId,
                 pickup_scheduled_date:
-                  shipmentSnapshot?.lead_time?.estimated_schedule_limit ?? null,
+                  shipmentSnapshot?.lead_time?.estimated_schedule_limit ??
+                  shipmentSnapshot?.lead_time?.estimated_delivery_limit ??
+                  null,
                 raw_data: {
                   ...order,
                   order_item_index: itemIndex,
