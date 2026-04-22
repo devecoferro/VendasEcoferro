@@ -215,6 +215,13 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
     return "today";
   }
 
+  // Regra de negocio EcoFerro (CLAUDE.md): pacote no ponto de retirada
+  // = finalizado pro vendedor (o comprador que retira). Mesmo o ML UI
+  // mostrando em 'Em transito', o workflow da EcoFerro encerra aqui.
+  if (shipStatus === "shipped" && shipSubstatusLower === "waiting_for_withdrawal") {
+    return "finalized";
+  }
+
   // EM TRANSITO: ja foi expedido ou aguardando retirada
   if (
     shipStatus === "shipped" ||

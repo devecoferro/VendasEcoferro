@@ -74,6 +74,9 @@ function getPrimaryBucket(raw) {
     }
     return "today";
   }
+  // business rule: shipped+waiting_for_withdrawal = finalized
+  if (ss === "shipped" && sss === "waiting_for_withdrawal") return "finalized";
+
   if (ss === "shipped" || ss === "in_transit" || ss === "ready_for_pickup") return "in_transit";
 
   // novo: ready_to_ship + substatus "ja saiu" → in_transit
