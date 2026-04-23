@@ -353,22 +353,10 @@ describe("alinhamento ML — cancelled/shipped HOJE", () => {
       ).toBe("today");
     });
 
-    it("cross-docking: cancelled ONTEM ainda vai pra today (janela 24-36h)", () => {
-      // ML mostra cancelados de ontem em "Envios de hoje" — janela
-      // observada empiricamente de 1-2 dias. Apos isso vai pra finalized.
+    it("cross-docking: cancelled ONTEM vai pra finalized", () => {
       const order = buildOrderWithHistory(
         { orderStatus: "cancelled" },
         { date_cancelled: YESTERDAY_ISO }
-      );
-      expect(
-        __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
-      ).toBe("today");
-    });
-
-    it("cross-docking: cancelled HA 3 DIAS vai pra finalized", () => {
-      const order = buildOrderWithHistory(
-        { orderStatus: "cancelled" },
-        { date_cancelled: "2026-04-20T15:00:00.000-03:00" }
       );
       expect(
         __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
