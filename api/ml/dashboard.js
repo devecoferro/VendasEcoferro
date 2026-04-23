@@ -165,6 +165,19 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
+// Alinhamento ML: cancelados recentes aparecem em "Envios de hoje" com
+// label "Venda cancelada. Nao envie." Janela observada empiricamente:
+// hoje OU ontem (~24-36h). Mais antigos vao pra "Finalizadas".
+function isRecentCancellationForTodayBucket(cancelDateKey, todayKey) {
+  if (!cancelDateKey || !todayKey) return false;
+  if (cancelDateKey === todayKey) return true;
+  const d1 = new Date(cancelDateKey + "T12:00:00Z").getTime();
+  const d2 = new Date(todayKey + "T12:00:00Z").getTime();
+  if (Number.isNaN(d1) || Number.isNaN(d2)) return false;
+  const diffDays = (d2 - d1) / 86400000;
+  return diffDays >= 0 && diffDays <= 1;
+}
+
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
@@ -512,14 +525,18 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
-  // ALINHAMENTO ML (2026-04-23): cancelados de HOJE aparecem na aba "Envios
-  // de hoje" do Seller Center com label "Venda cancelada. Não envie." pra
-  // alertar o operador. Cancelados antigos vao pra "Finalizadas".
+  // ALINHAMENTO ML (2026-04-23 3a auditoria): cancelados RECENTES (hoje ou
+  // ontem) aparecem na aba "Envios de hoje" do Seller Center com label
+  // "Venda cancelada. Nao envie." pra alertar o operador. O ML parece usar
+  // janela de ~24-36h, entao cobrimos hoje+ontem (max 48h em calendar).
+  // Cancelados mais antigos vao pra "Finalizadas".
   const rawOrderStatus = normalizeState(
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return isRecentCancellationForTodayBucket(dates.finalExceptionDateKey, todayKey)
+      ? "today"
+      : "finalized";
   }
 
   // shipping.status=pending: pedido pago aguardando processamento.
@@ -636,7 +653,7 @@ function classifyCrossDockingOrder(order, todayKey) {
   // Cancelled via shipment.status: mesmo tratamento do bloco inicial —
   // cancelados de HOJE vao pra "Envios de hoje" (alerta), resto pra finalized.
   if (status === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return isRecentCancellationForTodayBucket(dates.finalExceptionDateKey, todayKey) ? "today" : "finalized";
   }
 
   // Devolvidas ficam em Finalizadas (pos-venda concluido).
@@ -670,7 +687,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return isRecentCancellationForTodayBucket(dates.finalExceptionDateKey, todayKey) ? "today" : "finalized";
   }
 
   // shipping.status=pending: pedido pago aguardando processamento.
@@ -692,11 +709,16 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // ALINHAMENTO ML (2026-04-23 2a auditoria):
-    // - in_hub: pacote no hub → "Em trânsito" (mesmo tratamento de cross-dock)
-    // - in_packing_list: pacote sendo empacotado no hub → "Em trânsito"
-    if (substatus === "in_hub" || substatus === "in_packing_list") {
+    // ALINHAMENTO ML (2026-04-23 3a auditoria):
+    // - in_hub: pacote no hub do carrier → "Em trânsito"
+    // - in_packing_list no FULFILLMENT: ML mostra em "Envios de hoje" com
+    //   labels "Processando CD" / "Vamos enviar dia X" — nao em transit.
+    //   (Diferente do cross-dock que vai pra in_transit.)
+    if (substatus === "in_hub") {
       return "in_transit";
+    }
+    if (substatus === "in_packing_list") {
+      return "today";
     }
 
     // invoice_pending continua em upcoming (aguarda acao do vendedor).
@@ -769,7 +791,7 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
   // Cancelled via shipment.status: cancelados de HOJE vao pra "Envios de
   // hoje" (alerta), resto pra finalized. Mesmo tratamento do bloco inicial.
   if (status === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return isRecentCancellationForTodayBucket(dates.finalExceptionDateKey, todayKey) ? "today" : "finalized";
   }
 
   if (status === "returned") {
