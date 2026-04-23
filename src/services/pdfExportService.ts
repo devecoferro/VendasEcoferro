@@ -20,12 +20,37 @@ const CENTER_W = CARD_W - LEFT_W - RIGHT_W;
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
 let ecoferroLogoDataUrlPromise: Promise<string | null> | null = null;
 
+// Hosts ML que o backend /api/ml/image-proxy aceita (ver api/ml/image-proxy.js).
+// Sem proxy, fetch direto no browser falha por CORS restrito no CDN do ML.
+const ML_IMAGE_HOSTS = ["mlstatic.com", "mercadolibre.com", "mercadolivre.com.br"];
+
+function needsImageProxy(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return ML_IMAGE_HOSTS.some(
+      (h) => hostname === h || hostname.endsWith("." + h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   if (!url) return null;
   if (url.startsWith("data:")) return url;
 
+  // Imagens ML: roteia pelo backend pra evitar CORS no CDN.
+  // Outros domínios (ex. /ecoferro-logo.png local): fetch direto.
+  const fetchUrl = needsImageProxy(url)
+    ? `/api/ml/image-proxy?url=${encodeURIComponent(url)}`
+    : url;
+
   try {
-    const response = await fetch(url, { mode: "cors" });
+    const response = await fetch(fetchUrl, {
+      mode: needsImageProxy(url) ? "same-origin" : "cors",
+      credentials: needsImageProxy(url) ? "include" : "omit",
+    });
+    if (!response.ok) return null;
     const blob = await response.blob();
 
     return await new Promise((resolve) => {

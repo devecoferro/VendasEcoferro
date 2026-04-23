@@ -3,6 +3,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -98,6 +99,10 @@ export default function StockPage() {
   const [pendingReportFilters, setPendingReportFilters] = useState<
     Parameters<typeof exportStockListPdf>[1] | null
   >(null);
+  // Seleção de produtos pra imprimir só um subset no PDF.
+  // Vazio = imprime todos os filtrados (comportamento anterior).
+  // Com IDs = imprime só os selecionados.
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     getMLConnectionStatus()
@@ -549,8 +554,16 @@ export default function StockPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() =>
-                handleOpenColumnsDialog(filtered, {
+              onClick={() => {
+                // Se há itens selecionados via checkbox (e visíveis no filtro
+                // atual), imprime SÓ eles. Caso contrário, imprime todos os
+                // filtrados (comportamento antigo).
+                const selectedVisible = filtered.filter((i) =>
+                  selectedItemIds.has(i.item_id)
+                );
+                const itemsToExport =
+                  selectedVisible.length > 0 ? selectedVisible : filtered;
+                handleOpenColumnsDialog(itemsToExport, {
                   search,
                   brand: brandFilter,
                   model: modelFilter,
@@ -561,15 +574,22 @@ export default function StockPage() {
                   salesPeriodLabel,
                   salesPeriodShort: salesPeriodShortLabel,
                   sortLabel: `${sortKey} ${sortDir === "asc" ? "↑" : "↓"}`,
-                })
-              }
+                });
+              }}
               disabled={exportingPdf || filtered.length === 0}
               className="gap-1.5"
-              title={
-                filtered.length === 0
-                  ? "Nenhum produto pra imprimir — ajuste os filtros"
-                  : `Imprimir lista de ${filtered.length} produto(s) com os filtros atuais`
-              }
+              title={(() => {
+                if (filtered.length === 0) {
+                  return "Nenhum produto pra imprimir — ajuste os filtros";
+                }
+                const selectedVisibleCount = filtered.filter((i) =>
+                  selectedItemIds.has(i.item_id)
+                ).length;
+                if (selectedVisibleCount > 0) {
+                  return `Imprimir ${selectedVisibleCount} produto(s) selecionado(s)`;
+                }
+                return `Imprimir lista de ${filtered.length} produto(s) com os filtros atuais`;
+              })()}
             >
               {exportingPdf ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -577,11 +597,20 @@ export default function StockPage() {
                 <Printer className="h-4 w-4" />
               )}
               Imprimir Lista
-              {filtered.length > 0 && filtered.length < items.length && (
-                <span className="ml-1 text-[10px] opacity-70">
-                  ({filtered.length})
-                </span>
-              )}
+              {(() => {
+                const selectedVisibleCount = filtered.filter((i) =>
+                  selectedItemIds.has(i.item_id)
+                ).length;
+                const showCount =
+                  selectedVisibleCount > 0 ||
+                  (filtered.length > 0 && filtered.length < items.length);
+                if (!showCount) return null;
+                return (
+                  <span className="ml-1 text-[10px] opacity-70">
+                    ({selectedVisibleCount > 0 ? selectedVisibleCount : filtered.length})
+                  </span>
+                );
+              })()}
             </Button>
             <Button
               size="sm"
@@ -956,7 +985,8 @@ export default function StockPage() {
                   numero "solto" longe do cabecalho. As escondidas em
                   breakpoints menores (md/lg) liberam espaco pras visiveis. */}
               <colgroup>
-                <col className="w-[28%]" />
+                <col className="w-[4%]" />
+                <col className="w-[24%]" />
                 <col className="w-[10%]" />
                 <col className="w-[11%]" />
                 <col className="w-[7%]" />
@@ -968,6 +998,42 @@ export default function StockPage() {
               </colgroup>
               <thead className="border-b bg-muted/40">
                 <tr>
+                  <th className="px-2 py-3 text-center text-xs">
+                    {(() => {
+                      const allFilteredSelected =
+                        filtered.length > 0 &&
+                        filtered.every((i) => selectedItemIds.has(i.item_id));
+                      const someFilteredSelected =
+                        !allFilteredSelected &&
+                        filtered.some((i) => selectedItemIds.has(i.item_id));
+                      return (
+                        <Checkbox
+                          checked={
+                            allFilteredSelected
+                              ? true
+                              : someFilteredSelected
+                                ? "indeterminate"
+                                : false
+                          }
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedItemIds(
+                                new Set(filtered.map((i) => i.item_id))
+                              );
+                            } else {
+                              setSelectedItemIds(new Set());
+                            }
+                          }}
+                          aria-label="Selecionar todos filtrados"
+                          title={
+                            allFilteredSelected
+                              ? "Desmarcar todos"
+                              : "Selecionar todos filtrados"
+                          }
+                        />
+                      );
+                    })()}
+                  </th>
                   <th className="px-2 py-3 text-left text-xs">
                     <SortBtn label="Produto" col="title" />
                   </th>
@@ -1019,11 +1085,26 @@ export default function StockPage() {
                 {filtered.map((item) => {
                   const isLow = item.available_quantity <= 3 && item.status === "active";
                   const isOut = item.available_quantity === 0;
+                  const isSelected = selectedItemIds.has(item.item_id);
                   return (
                     <tr
                       key={item.item_id}
-                      className="hover:bg-muted/30 transition-colors"
+                      className={`transition-colors ${isSelected ? "bg-primary/5" : "hover:bg-muted/30"}`}
                     >
+                      <td className="px-2 py-2 text-center">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={(checked) => {
+                            setSelectedItemIds((prev) => {
+                              const next = new Set(prev);
+                              if (checked) next.add(item.item_id);
+                              else next.delete(item.item_id);
+                              return next;
+                            });
+                          }}
+                          aria-label={`Selecionar ${item.title ?? item.item_id}`}
+                        />
+                      </td>
                       <td className="px-2 py-2">
                         <div className="flex items-center gap-2">
                           {item.thumbnail ? (

@@ -1800,8 +1800,15 @@ export default function MercadoLivrePage() {
         const intersected = new Set<string>(
           [...snapshotIds].filter((id) => localScope.has(id))
         );
-        if (intersected.size === 0 && localScope.size > 0) {
-          return localScope;
+        if (intersected.size === 0) {
+          // Intersecção 0 (snapshot não bate com classificação local).
+          // Se localScope tem dados, usa ele (pedidos já sincronizados no DB).
+          // Senão, usa snapshotIds diretamente — o backend já filtrou pelo
+          // escopo (ourinhos/full/without_deposit), então é seguro. Sem
+          // esse segundo fallback, clicar Ourinhos+hoje mostra lista vazia
+          // quando dashboard.deposits[ourinhos].order_ids_by_bucket.today
+          // está vazio mas o snapshot LIVE diz que há pedidos.
+          return localScope.size > 0 ? localScope : snapshotIds;
         }
         return intersected;
       }
@@ -1833,6 +1840,28 @@ export default function MercadoLivrePage() {
     return localScope;
   }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, scopedLiveSnapshot]);
 
+  // IDs que o snapshot LIVE do ML classificou em OUTROS buckets (≠ shipmentFilter).
+  // Usado pra SUBTRAIR do bucket atual quando o ML UI scraper já moveu o pedido.
+  // Cenário coberto (descoberto em 2026-04-23, pedido 2000016018511684):
+  //   - DB local: substatus=in_packing_list → classifier manda pra today
+  //   - ML API /orders/search: idem (API retorna estado stale)
+  //   - ML UI scraper: pedido em "A caminho" (in_transit)
+  // Sem isso, o app mostrava o pedido em today mesmo com o ML já tratando
+  // como in_transit, gerando confusão operacional.
+  const orderIdsInOtherSnapshotBuckets = useMemo(() => {
+    const out = new Set<string>();
+    if (!scopedLiveSnapshot?.orders) return out;
+    for (const [bucket, orders] of Object.entries(scopedLiveSnapshot.orders)) {
+      if (bucket === shipmentFilter) continue;
+      if (!Array.isArray(orders)) continue;
+      for (const o of orders) {
+        if (o.pack_id) out.add(String(o.pack_id));
+        if (o.order_id) out.add(String(o.order_id));
+      }
+    }
+    return out;
+  }, [scopedLiveSnapshot, shipmentFilter]);
+
   const bucketOrders = useMemo(() => {
     if (operationalOrderIds.size === 0) return [];
 
@@ -1847,13 +1876,20 @@ export default function MercadoLivrePage() {
     // externo do ML, ou pack_id). Assim cobrimos IDs vindos do live
     // snapshot (que usa pack_id) e do dashboard antigo (que usa .id).
     return depositScopedOrders.filter((order) => {
+      // Se o snapshot já classificou esse pedido em OUTRO bucket, tira
+      // daqui — o scraper da UI é mais fresh que nosso DB local.
+      const packId = getOrderPackId(order);
+      if (orderIdsInOtherSnapshotBuckets.size > 0) {
+        if (order.order_id && orderIdsInOtherSnapshotBuckets.has(order.order_id)) return false;
+        if (packId && orderIdsInOtherSnapshotBuckets.has(packId)) return false;
+      }
+
       if (operationalOrderIds.has(order.id)) return true;
       if (order.order_id && operationalOrderIds.has(order.order_id)) return true;
-      const packId = getOrderPackId(order);
       if (packId && operationalOrderIds.has(packId)) return true;
       return false;
     });
-  }, [operationalOrderIds, permittedOrders, selectedDepositFilters]);
+  }, [operationalOrderIds, permittedOrders, selectedDepositFilters, orderIdsInOtherSnapshotBuckets]);
 
   const focusedOperationalOrders = useMemo(() => {
     if (!operationalFocus) {
@@ -2475,11 +2511,15 @@ export default function MercadoLivrePage() {
                 const preset = value as DatePreset;
                 setDatePreset(preset);
                 const range = getDatePresetRange(preset);
-                setDraftQuickFilters((current) => ({
-                  ...current,
-                  dateFrom: range.from,
-                  dateTo: range.to,
-                }));
+                setDraftQuickFilters((current) => {
+                  const next = {
+                    ...current,
+                    dateFrom: range.from,
+                    dateTo: range.to,
+                  };
+                  setAppliedQuickFilters(next);
+                  return next;
+                });
               }}
             >
               <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[150px]">
@@ -2497,10 +2537,14 @@ export default function MercadoLivrePage() {
             <Select
               value={draftFilters.sort}
               onValueChange={(value) =>
-                setDraftFilters((current) => ({
-                  ...current,
-                  sort: value as MercadoLivreFilters["sort"],
-                }))
+                setDraftFilters((current) => {
+                  const next = {
+                    ...current,
+                    sort: value as MercadoLivreFilters["sort"],
+                  };
+                  setAppliedFilters(cloneFilters(next));
+                  return next;
+                })
               }
             >
               <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[180px]">
@@ -2518,10 +2562,14 @@ export default function MercadoLivrePage() {
             <Select
               value={draftQuickFilters.status}
               onValueChange={(value) =>
-                setDraftQuickFilters((current) => ({
-                  ...current,
-                  status: value as QuickSalesStatusFilter,
-                }))
+                setDraftQuickFilters((current) => {
+                  const next = {
+                    ...current,
+                    status: value as QuickSalesStatusFilter,
+                  };
+                  setAppliedQuickFilters(next);
+                  return next;
+                })
               }
             >
               <SelectTrigger className="h-9 rounded-md border-[#e5e5e5] text-[13px] w-[140px]">

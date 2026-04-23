@@ -611,7 +611,7 @@ export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   ready_to_send: "Prontas para enviar",
   in_distribution_center: "No centro de distribuição",
   return_pending_review: "Revisão pendente",
-  return_arriving_today: "Chegada hoje",
+  return_arriving_today: "Chegarão hoje",
   invoice_pending: "NF-e para gerenciar",
   ready_to_print: "Etiquetas para imprimir",
   printed_ready_to_send: "Prontas para enviar",
@@ -735,12 +735,16 @@ export function getMLCardTitle(args: {
   // Today — varia por deposito
   if (bucket === "today") {
     if (section === "envios_devolucoes") return { title: "Devoluções" };
-    // Para enviar — subtitle PROGRAMADA em Ourinhos, "Full" direto em Full
+    // Full today: ML renderiza tag="EM ANDAMENTO" + label="Full" (CARD_FULL)
+    // Verificado via bricks.json de full/today (2026-04-23).
     if (deposit === "full") {
-      return { title: "Full" };
+      return { subtitle: "EM ANDAMENTO", title: "Full" };
     }
-    // Ourinhos/outros: "PROGRAMADA Coleta" (sem horario por enquanto)
-    return { subtitle: "PROGRAMADA", title: "Coleta" };
+    // Ourinhos/outros: "PROGRAMADA Coleta | 12 h - 14 h" — formato IDÊNTICO
+    // ao ML Seller Center (verificado via engenharia reversa do payload
+    // dashboard_operations_card: tag="PROGRAMADA", label="Coleta | 12 h - 14 h").
+    // Espaços ao redor do "h" são parte do padrão ML — não remover.
+    return { subtitle: "PROGRAMADA", title: "Coleta | 12 h - 14 h" };
   }
 
   // Upcoming — varia por section + pickup date
