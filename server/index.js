@@ -71,6 +71,7 @@ import mlAdminInstallChromiumHandler from "../api/ml/admin/install-chromium.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import adminAuditLogHandler from "../api/admin/audit-log.js";
 import adminHealthHandler from "../api/admin/health.js";
+import errorLogHandler from "../api/error-log.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
@@ -190,6 +191,19 @@ const syncLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: "Sync muito frequente. Aguarde." },
+});
+
+// S5: limiter dedicado pro image-proxy — PDFs com 50+ produtos podem
+// fazer 50+ requests do proxy rapidamente (antes do cache popular).
+// Gente legítima precisa mais que 120/min do apiLimiter generico.
+// Bots maliciosos que tentem usar o proxy pra exfiltrar/flood: 300 rpm
+// é piso que ainda limita mas permite uso real.
+const imageProxyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Image proxy rate limit excedido." },
 });
 
 // Gzip compression — reduz o tamanho dos assets JS/CSS em ~70%, acelerando o carregamento
@@ -361,9 +375,10 @@ app.all("/api/ml/admin/upload-scraper-state", apiLimiter, (req, res) => mlAdminU
 app.all("/api/ml/admin/install-chromium", apiLimiter, (req, res) => mlAdminInstallChromiumHandler(req, res));
 // Proxy de imagens do ML — usado pelo PDF do estoque (jspdf precisa do
 // byte da imagem, e fetch direto bate em CORS). Whitelist de hosts no handler.
-app.get("/api/ml/image-proxy", apiLimiter, (req, res) => mlImageProxyHandler(req, res));
+app.get("/api/ml/image-proxy", imageProxyLimiter, (req, res) => mlImageProxyHandler(req, res));
 app.get("/api/admin/audit-log", apiLimiter, (req, res) => adminAuditLogHandler(req, res));
 app.get("/api/admin/health", apiLimiter, (req, res) => adminHealthHandler(req, res));
+app.post("/api/error-log", apiLimiter, (req, res) => errorLogHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));

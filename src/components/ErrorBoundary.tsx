@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { logError } from "@/services/errorLogService";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -22,6 +23,14 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error("[ErrorBoundary]", error.message, errorInfo.componentStack);
+    // M5: envia pro backend pra rastrear crashes silenciosos
+    void logError({
+      source: "react-error-boundary",
+      level: "error",
+      message: error.message,
+      stack: error.stack || String(errorInfo.componentStack || ""),
+      meta: { componentStack: errorInfo.componentStack },
+    });
   }
 
   handleRetry = () => {

@@ -4,6 +4,7 @@ import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { getConnectionById } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
+import { validate, StockUpdateSchema } from "../_lib/validation.js";
 
 const STOCK_PAGE_LIMIT = 100;
 const STOCK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -583,13 +584,14 @@ export default async function mlStockHandler(req, res) {
       if (!itemId) return res.status(400).json({ error: "item_id obrigatório" });
 
       const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-      const allowed = ["sku", "title", "location_corridor", "location_shelf", "location_level", "location_notes"];
-      const updates = {};
-      for (const k of allowed) {
-        if (k in body) updates[k] = body[k] === "" ? null : body[k];
+      const validated = validate(StockUpdateSchema, body);
+      if (!validated.ok) {
+        return res.status(400).json({ error: `Input inválido: ${validated.error}` });
       }
-      if (Object.keys(updates).length === 0) {
-        return res.status(400).json({ error: "Nenhum campo válido para atualizar" });
+      // Normaliza "" → null (zod aceita string vazia mas semântica é null)
+      const updates = {};
+      for (const [k, v] of Object.entries(validated.value)) {
+        updates[k] = v === "" ? null : v;
       }
 
       const setClauses = Object.keys(updates).map((k) => `${k} = @${k}`).join(", ");

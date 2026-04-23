@@ -17,6 +17,7 @@
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { setOrdersLabelPrinted } from "./_lib/storage.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
+import { validate, LabelsMarkSchema } from "../_lib/validation.js";
 
 function normalizeOrderIds(input) {
   if (!Array.isArray(input)) return [];
@@ -61,19 +62,14 @@ export default async function handler(request, response) {
   }
 
   const body = request.body || {};
-  const orderIds = normalizeOrderIds(body.order_ids || body.orderIds || []);
-
-  if (orderIds.length === 0) {
+  const rawIds = body.order_ids || body.orderIds || [];
+  // Normaliza antes de validar pra zod aceitar ids com espaco/vazios
+  const orderIds = normalizeOrderIds(rawIds);
+  const validated = validate(LabelsMarkSchema, { order_ids: orderIds });
+  if (!validated.ok) {
     return response.status(400).json({
       success: false,
-      error: "Nenhum order_id valido foi enviado.",
-    });
-  }
-
-  if (orderIds.length > 1000) {
-    return response.status(400).json({
-      success: false,
-      error: "Limite de 1000 pedidos por chamada.",
+      error: validated.error,
     });
   }
 

@@ -2,6 +2,7 @@ import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { generateNfe } from "./_lib/mercado-livre-faturador.js";
 import { onNfeEmitted, onNfeFailed } from "../_lib/obsidian-sync.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
+import { validate, NFeGenerateSchema } from "../_lib/validation.js";
 
 function parseBody(request) {
   if (!request.body) return {};
@@ -26,7 +27,11 @@ export default async function handler(request, response) {
     }
 
     const body = parseBody(request);
-    orderId = body.order_id || body.orderId;
+    const validated = validate(NFeGenerateSchema, body);
+    if (!validated.ok) {
+      return response.status(400).json({ error: `Input inválido: ${validated.error}` });
+    }
+    orderId = validated.value.order_id || validated.value.orderId;
     const payload = await generateNfe(orderId);
     onNfeEmitted(orderId, payload?.nfe_number || payload?.chave || "—").catch(() => {});
     recordAuditLog({
