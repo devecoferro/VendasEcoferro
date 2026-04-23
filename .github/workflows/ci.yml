@@ -33,8 +33,11 @@ jobs:
 
       - name: npm audit (production deps)
         # --audit-level=high: só falha em high ou critical.
-        # Deps transitivas com vulnerabilidades moderadas não bloqueiam merge
-        # (ver docs/ — esperando upgrades major de jspdf/vite/jsdom).
+        # Deps transitivas com vulnerabilidades moderadas não bloqueiam merge.
+        # TODO: upgrade jspdf 2.5.2 → 4.x (breaking: import { jsPDF } vs
+        # default import). Pendente de teste manual de geracao de PDFs
+        # (etiqueta interna, separacao, estoque). Risco operacional alto
+        # sem QA do PDF em browser real.
         run: npm audit --omit=dev --audit-level=high
         continue-on-error: true
 
