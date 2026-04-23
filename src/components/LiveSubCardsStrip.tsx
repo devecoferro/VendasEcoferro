@@ -75,6 +75,23 @@ export function matchesLiveStatusFilter(
  * compara contra o sub-status retornado pelo classifier. Se não, cai no
  * fallback antigo (substring no SUBSTATUS_LABELS).
  */
+/**
+ * Status que NAO devem aparecer como pill — sao artefatos do scraper
+ * ML (labels que aparecem no DOM mas nao correspondem a classificacoes
+ * validas do Seller Center). Comparacao case-insensitive/trim.
+ *
+ * Historico:
+ *   - 2026-04-23: "Envio reagendado" (usuario reportou que ML nao tem
+ *     essa classificacao — aparecia no bucket in_transit como ruido).
+ */
+const STATUS_BLACKLIST = new Set<string>([
+  "envio reagendado",
+]);
+
+function isBlacklistedStatus(status: string): boolean {
+  return STATUS_BLACKLIST.has(String(status || "").toLowerCase().trim());
+}
+
 const ML_LABEL_SYNONYMS: Array<{ match: string[]; substatus: MLSubStatus }> = [
   {
     match: ["cancelada. não enviar", "canceladas. não enviar", "não enviar", "nao enviar"],
@@ -355,6 +372,7 @@ export function LiveSubCardsStrip({
       ]);
       for (const [status, count] of Object.entries(t.by_status || {})) {
         if (knownStatuses.has(status)) continue;
+        if (isBlacklistedStatus(status)) continue;
         if (count > 0) {
           const truncated = status.length > 35 ? status.slice(0, 32) + "…" : status;
           list.push({
@@ -433,6 +451,7 @@ export function LiveSubCardsStrip({
       const i = subCards.in_transit;
       const list: SubCardItem[] = [];
       for (const [status, count] of Object.entries(i.by_status || {})) {
+        if (isBlacklistedStatus(status)) continue;
         if (count > 0) {
           list.push({
             label: status,
