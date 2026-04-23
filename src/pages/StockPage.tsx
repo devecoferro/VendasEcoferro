@@ -20,6 +20,7 @@ import {
   deleteMLStockItem,
   type MLStockItem,
   type StockSalesPeriod,
+  type StockCustomRange,
 } from "@/services/mercadoLivreService";
 import {
   AlertCircle,
@@ -85,6 +86,16 @@ export default function StockPage() {
   // Default 30d = visao de demanda do mes (evita janela muito curta com
   // ruido e muito longa que nao reflete demanda atual).
   const [salesPeriod, setSalesPeriod] = useState<StockSalesPeriod>("30d");
+  // Range manual — só ativo quando salesPeriod === "custom".
+  // Default: últimos 30 dias (fica preenchido quando usuário seleciona custom).
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const thirtyDaysAgoIso = new Date(Date.now() - 30 * 86400000)
+    .toISOString()
+    .slice(0, 10);
+  const [customRange, setCustomRange] = useState<StockCustomRange>({
+    from: thirtyDaysAgoIso,
+    to: todayIso,
+  });
   // Filtro "so itens com venda no periodo": ajuda a identificar rapido
   // o que realmente esta saindo, escondendo anuncios parados.
   const [onlyWithRecentSales, setOnlyWithRecentSales] = useState(false);
@@ -114,11 +125,18 @@ export default function StockPage() {
   }, []);
 
   const loadStock = useCallback(
-    async (id: string, period: StockSalesPeriod) => {
+    async (
+      id: string,
+      period: StockSalesPeriod,
+      range: StockCustomRange
+    ) => {
       setLoading(true);
       setError(null);
       try {
-        const result = await getMLStock(id, { salesPeriod: period });
+        const result = await getMLStock(id, {
+          salesPeriod: period,
+          customRange: period === "custom" ? range : undefined,
+        });
         setItems(result.items);
         setStale(result.stale);
       } catch (e) {
@@ -130,12 +148,18 @@ export default function StockPage() {
     []
   );
 
-  // Recarrega estoque sempre que conexao ou periodo de vendas mudar.
-  // O periodo e processado no backend (cruzamento com ml_orders), entao
-  // cada troca precisa de novo request.
+  // Recarrega estoque quando muda conexao, periodo, ou range customizado
+  // (quando salesPeriod === "custom"). Pra evitar refetch a cada keystroke
+  // na data, só dispara quando o range está completo e válido.
   useEffect(() => {
-    if (connectionId) loadStock(connectionId, salesPeriod);
-  }, [connectionId, loadStock, salesPeriod]);
+    if (!connectionId) return;
+    if (salesPeriod === "custom") {
+      const fromValid = /^\d{4}-\d{2}-\d{2}$/.test(customRange.from);
+      const toValid = /^\d{4}-\d{2}-\d{2}$/.test(customRange.to);
+      if (!fromValid || !toValid || customRange.from > customRange.to) return;
+    }
+    loadStock(connectionId, salesPeriod, customRange);
+  }, [connectionId, loadStock, salesPeriod, customRange]);
 
   const handleSync = useCallback(async () => {
     if (!connectionId) return;
@@ -143,13 +167,13 @@ export default function StockPage() {
     setError(null);
     try {
       await syncMLStock(connectionId);
-      await loadStock(connectionId, salesPeriod);
+      await loadStock(connectionId, salesPeriod, customRange);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao sincronizar estoque.");
     } finally {
       setSyncing(false);
     }
-  }, [connectionId, loadStock, salesPeriod]);
+  }, [connectionId, loadStock, salesPeriod, customRange]);
 
   const handlePublishToSite = useCallback(async () => {
     setPublishingToSite(true);
@@ -411,6 +435,13 @@ export default function StockPage() {
 
   const lowStockCount = stockStats.lowStock;
 
+  // Formata YYYY-MM-DD → DD/MM/YYYY pra exibir labels em PT-BR.
+  const formatIsoDate = (iso: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const [y, m, d] = iso.split("-");
+    return `${d}/${m}/${y}`;
+  };
+
   // Label humano do periodo, usado em tooltips e no cabecalho da coluna.
   // Mantem uma fonte unica — trocar o enum e o label aqui e basta.
   const salesPeriodLabel = useMemo(() => {
@@ -423,8 +454,10 @@ export default function StockPage() {
         return "nos últimos 90 dias";
       case "all":
         return "em todo o período";
+      case "custom":
+        return `de ${formatIsoDate(customRange.from)} a ${formatIsoDate(customRange.to)}`;
     }
-  }, [salesPeriod]);
+  }, [salesPeriod, customRange]);
 
   const salesPeriodShortLabel = useMemo(() => {
     switch (salesPeriod) {
@@ -436,8 +469,10 @@ export default function StockPage() {
         return "90d";
       case "all":
         return "Total";
+      case "custom":
+        return `${formatIsoDate(customRange.from)}–${formatIsoDate(customRange.to)}`;
     }
-  }, [salesPeriod]);
+  }, [salesPeriod, customRange]);
 
   // Formata "ha 3 dias" / "ontem" / "hoje" para exibir em vez de data crua.
   // Usa dia inteiro em America/Sao_Paulo porque e como o operador pensa.
@@ -774,19 +809,54 @@ export default function StockPage() {
                 backend pra preencher recent_sales_qty/last_sale_date de
                 cada item. Trocar o period recarrega a lista porque os
                 agregados sao calculados no SQL. */}
-            <div className="hidden sm:flex items-center gap-1.5">
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-              <Select value={salesPeriod} onValueChange={(v) => setSalesPeriod(v as StockSalesPeriod)}>
-                <SelectTrigger className="h-10 w-[170px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7d">Vendas últimos 7 dias</SelectItem>
-                  <SelectItem value="30d">Vendas últimos 30 dias</SelectItem>
-                  <SelectItem value="90d">Vendas últimos 90 dias</SelectItem>
-                  <SelectItem value="all">Vendas totais</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="hidden sm:flex flex-col gap-1.5">
+              <div className="flex items-center gap-1.5">
+                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                <Select
+                  value={salesPeriod}
+                  onValueChange={(v) => setSalesPeriod(v as StockSalesPeriod)}
+                >
+                  <SelectTrigger className="h-10 w-[170px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="7d">Vendas últimos 7 dias</SelectItem>
+                    <SelectItem value="30d">Vendas últimos 30 dias</SelectItem>
+                    <SelectItem value="90d">Vendas últimos 90 dias</SelectItem>
+                    <SelectItem value="all">Vendas totais</SelectItem>
+                    <SelectItem value="custom">Data manual…</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* Inputs de data manual — aparecem só quando "custom" está
+                  selecionado. Debounce natural: o effect do loadStock só
+                  dispara quando from <= to e formatos válidos. */}
+              {salesPeriod === "custom" && (
+                <div className="flex items-center gap-1.5 ml-6">
+                  <Input
+                    type="date"
+                    value={customRange.from}
+                    max={customRange.to}
+                    onChange={(e) =>
+                      setCustomRange((r) => ({ ...r, from: e.target.value }))
+                    }
+                    className="h-8 w-[140px] text-xs"
+                    title="Data inicial"
+                  />
+                  <span className="text-xs text-muted-foreground">até</span>
+                  <Input
+                    type="date"
+                    value={customRange.to}
+                    min={customRange.from}
+                    max={todayIso}
+                    onChange={(e) =>
+                      setCustomRange((r) => ({ ...r, to: e.target.value }))
+                    }
+                    className="h-8 w-[140px] text-xs"
+                    title="Data final"
+                  />
+                </div>
+              )}
             </div>
 
             <Button

@@ -389,10 +389,16 @@ function getStockFromDb(connectionId) {
  * @returns {{ bySku: Map<string, {orders: number, qty: number, lastSale: string|null}>,
  *             byItemId: Map<string, {orders: number, qty: number, lastSale: string|null}> }}
  */
-function getSalesAggregatesByKey(connectionId, periodDays) {
+function getSalesAggregatesByKey(connectionId, periodDays, customRange = null) {
   const params = [String(connectionId)];
   let dateFilter = "";
-  if (Number.isFinite(periodDays) && periodDays > 0) {
+  if (customRange && customRange.from && customRange.to) {
+    // Faixa manual — inclui o dia inteiro do end (até 23:59:59.999Z)
+    const fromIso = new Date(customRange.from + "T00:00:00.000Z").toISOString();
+    const toIso = new Date(customRange.to + "T23:59:59.999Z").toISOString();
+    dateFilter = "AND sale_date >= ? AND sale_date <= ?";
+    params.push(fromIso, toIso);
+  } else if (Number.isFinite(periodDays) && periodDays > 0) {
     const cutoff = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
     dateFilter = "AND sale_date >= ?";
     params.push(cutoff);
@@ -616,11 +622,28 @@ export default async function mlStockHandler(req, res) {
   const rawItems = getStockFromDb(connectionId);
   const items = rawItems.map(normalizeStockItem);
 
-  // Enriquece com contagem de vendas recentes (7d/30d/90d/all).
-  // Default 30d — janela curta o suficiente pra refletir demanda atual
-  // mas longa o suficiente pra ser significativa.
-  const salesPeriodDays = parseSalesPeriodDays(req.query.sales_period);
-  const salesAggregates = getSalesAggregatesByKey(connectionId, salesPeriodDays);
+  // Enriquece com contagem de vendas recentes (7d/30d/90d/all/custom).
+  // Default 30d. Custom aceita start_date=YYYY-MM-DD&end_date=YYYY-MM-DD.
+  const salesPeriodRaw = req.query.sales_period;
+  const isCustom =
+    String(salesPeriodRaw || "").toLowerCase() === "custom";
+  const customRange = isCustom
+    ? {
+        from: String(req.query.start_date || "").slice(0, 10),
+        to: String(req.query.end_date || "").slice(0, 10),
+      }
+    : null;
+  const customValid =
+    customRange &&
+    /^\d{4}-\d{2}-\d{2}$/.test(customRange.from) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(customRange.to) &&
+    customRange.from <= customRange.to;
+  const salesPeriodDays = isCustom ? null : parseSalesPeriodDays(salesPeriodRaw);
+  const salesAggregates = getSalesAggregatesByKey(
+    connectionId,
+    salesPeriodDays,
+    customValid ? customRange : null
+  );
   enrichItemsWithSales(items, salesAggregates);
 
   if (isCacheStale && rawItems.length > 0) {
@@ -633,7 +656,12 @@ export default async function mlStockHandler(req, res) {
   return res.json({
     items,
     stale: isCacheStale && rawItems.length > 0,
-    sales_period: salesPeriodDays === null ? "all" : `${salesPeriodDays}d`,
+    sales_period: customValid
+      ? "custom"
+      : salesPeriodDays === null
+        ? "all"
+        : `${salesPeriodDays}d`,
     sales_period_days: salesPeriodDays,
+    sales_period_range: customValid ? customRange : null,
   });
 }

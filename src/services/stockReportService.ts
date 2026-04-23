@@ -377,9 +377,62 @@ export async function exportStockListPdf(
     minute: "2-digit",
   });
 
+  // ── Agrupa items por marca, ordenadas por total de vendas (desc) ──
+  // Cada marca vira uma "seção" no PDF com um header destacado antes dos
+  // itens. Marcas sem nome vão pra "(sem marca)" no final.
+  const itemsByBrand = new Map<string, MLStockItem[]>();
+  for (const it of items) {
+    const brandRaw = (it.brand || "").trim();
+    const brandKey = brandRaw || "(sem marca)";
+    if (!itemsByBrand.has(brandKey)) itemsByBrand.set(brandKey, []);
+    itemsByBrand.get(brandKey)!.push(it);
+  }
+  const brandMetrics = new Map<
+    string,
+    { totalSales: number; totalAvail: number; count: number }
+  >();
+  for (const [brand, brandItems] of itemsByBrand) {
+    brandMetrics.set(brand, {
+      totalSales: brandItems.reduce((s, i) => s + (i.recent_sales_qty || 0), 0),
+      totalAvail: brandItems.reduce((s, i) => s + (i.available_quantity || 0), 0),
+      count: brandItems.length,
+    });
+  }
+  const brandsSorted = [...itemsByBrand.keys()].sort((a, b) => {
+    // "(sem marca)" sempre no final
+    if (a === "(sem marca)") return 1;
+    if (b === "(sem marca)") return -1;
+    const sa = brandMetrics.get(a)?.totalSales || 0;
+    const sb = brandMetrics.get(b)?.totalSales || 0;
+    if (sa !== sb) return sb - sa; // desc
+    return a.localeCompare(b, "pt-BR");
+  });
+
+  // Sequência final de renderização: brand_header + items. Cada entrada
+  // consome 1 "slot" do ROWS_PER_PAGE pra simplificar paginação.
+  type RenderEntry =
+    | { type: "brand"; brand: string; count: number; totalSales: number; totalAvail: number }
+    | { type: "item"; item: MLStockItem; index: number };
+  const renderSequence: RenderEntry[] = [];
+  let globalIndex = 0;
+  for (const brand of brandsSorted) {
+    const m = brandMetrics.get(brand)!;
+    renderSequence.push({
+      type: "brand",
+      brand,
+      count: m.count,
+      totalSales: m.totalSales,
+      totalAvail: m.totalAvail,
+    });
+    for (const item of itemsByBrand.get(brand)!) {
+      globalIndex++;
+      renderSequence.push({ type: "item", item, index: globalIndex });
+    }
+  }
+
   let currentPage = 0;
   let rowOnPage = 0;
-  const totalPages = Math.ceil(items.length / ROWS_PER_PAGE);
+  const totalPages = Math.ceil(renderSequence.length / ROWS_PER_PAGE);
 
   function startPage() {
     if (currentPage > 0) doc.addPage();
@@ -459,13 +512,48 @@ export async function exportStockListPdf(
 
   startPage();
 
-  for (let i = 0; i < items.length; i++) {
+  for (const entry of renderSequence) {
     if (rowOnPage >= ROWS_PER_PAGE) {
       startPage();
     }
 
-    const item = items[i];
     const rowY = MARGIN + HEADER_H + COL_HEADER_H + 4 + rowOnPage * ROW_H;
+
+    // ── Brand header: banner com nome da marca + métricas ──
+    if (entry.type === "brand") {
+      doc.setFillColor(235, 242, 255);
+      doc.rect(MARGIN, rowY, USABLE_W, ROW_H, "F");
+      doc.setDrawColor(100, 140, 220);
+      doc.setLineWidth(0.4);
+      doc.line(MARGIN, rowY, MARGIN + USABLE_W, rowY);
+      doc.line(MARGIN, rowY + ROW_H, MARGIN + USABLE_W, rowY + ROW_H);
+
+      doc.setFontSize(13);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(30, 60, 120);
+      doc.text(entry.brand.toUpperCase(), MARGIN + 4, rowY + 9);
+
+      doc.setFontSize(8);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(60, 80, 120);
+      const statsText = `${entry.count} produto${entry.count === 1 ? "" : "s"}  ·  ${entry.totalAvail} em estoque  ·  ${entry.totalSales} vendida${entry.totalSales === 1 ? "" : "s"} ${filters.salesPeriodShort}`;
+      const statsW = doc.getTextWidth(statsText);
+      doc.text(statsText, MARGIN + USABLE_W - statsW - 4, rowY + 9);
+
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 120, 150);
+      doc.text(
+        `Ordenada por vendas ${filters.salesPeriodLabel}`,
+        MARGIN + 4,
+        rowY + 16
+      );
+
+      doc.setTextColor(0, 0, 0);
+      rowOnPage++;
+      continue;
+    }
+
+    const { item, index: i } = entry;
 
     // Linha separadora suave
     if (rowOnPage > 0) {
@@ -483,7 +571,7 @@ export async function exportStockListPdf(
     doc.setFont("helvetica", "normal");
     doc.setTextColor(160, 160, 165);
     doc.text(
-      String(i + 1),
+      String(i),
       MARGIN + layout.index.x + layout.index.w - 1,
       rowY + 12,
       { align: "right" }

@@ -1141,7 +1141,12 @@ export interface MLStockItem {
   last_sale_date?: string | null;
 }
 
-export type StockSalesPeriod = "7d" | "30d" | "90d" | "all";
+export type StockSalesPeriod = "7d" | "30d" | "90d" | "all" | "custom";
+
+export interface StockCustomRange {
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD
+}
 
 export async function updateMLStockItem(
   connectionId: string,
@@ -1202,18 +1207,31 @@ export async function getStockLocations(
 
 export async function getMLStock(
   connectionId: string,
-  options: { salesPeriod?: StockSalesPeriod } = {}
-): Promise<{ items: MLStockItem[]; stale: boolean; salesPeriod: StockSalesPeriod }> {
+  options: {
+    salesPeriod?: StockSalesPeriod;
+    customRange?: StockCustomRange;
+  } = {}
+): Promise<{
+  items: MLStockItem[];
+  stale: boolean;
+  salesPeriod: StockSalesPeriod;
+  customRange: StockCustomRange | null;
+}> {
   const salesPeriod = options.salesPeriod || "30d";
   const params = new URLSearchParams({
     connection_id: connectionId,
     sales_period: salesPeriod,
   });
+  if (salesPeriod === "custom" && options.customRange) {
+    params.set("start_date", options.customRange.from);
+    params.set("end_date", options.customRange.to);
+  }
 
   const { response, data } = await fetchJsonWithTimeout<{
     items?: MLStockItem[];
     stale?: boolean;
     sales_period?: string;
+    sales_period_range?: StockCustomRange | null;
     error?: string;
   }>(
     `/api/ml/stock?${params.toString()}`,
@@ -1230,6 +1248,7 @@ export async function getMLStock(
     items: Array.isArray(data?.items) ? data.items : [],
     stale: Boolean(data?.stale),
     salesPeriod: (data?.sales_period as StockSalesPeriod) || salesPeriod,
+    customRange: data?.sales_period_range ?? null,
   };
 }
 
