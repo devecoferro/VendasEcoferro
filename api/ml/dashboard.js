@@ -2,6 +2,7 @@ import { db } from "../_lib/db.js";
 import { getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import { isBrazilianBusinessDay } from "../_lib/business-days.js";
 import {
   getMirrorEntityStatusBreakdown,
   getSellerCenterMirrorOverview,
@@ -1972,6 +1973,20 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       );
     }
 
+    // ML nao coleta em sab/dom/feriado nacional. Move IDs de today → upcoming
+    // nos dias sem coleta, antes de retornar. Aplicado AQUI no fim pra nao
+    // tocar em cada ramo da classificacao interna (que sao muitos).
+    // buckets e result.order_ids_by_bucket sao a mesma referencia — basta
+    // mutar buckets e atualizar counts.
+    if (!isBrazilianBusinessDay(todayKey)) {
+      for (const id of buckets.today) {
+        buckets.upcoming.add(id);
+      }
+      buckets.today.clear();
+      result.counts.today = 0;
+      result.counts.upcoming = buckets.upcoming.size;
+    }
+
     liveChipDetailedCache.set(cacheKey, {
       data: result,
       expiresAt: Date.now() + ML_LIVE_DETAILED_CACHE_TTL_MS,
@@ -2093,10 +2108,17 @@ export async function buildDashboardPayload(options = {}) {
       const deposit = depositsMap.get(depositInfo.key);
       deposit._orders.push(order);
 
-      const bucket =
+      let bucket =
         depositInfo.logisticType === "fulfillment"
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
+
+      // ML nao coleta em sab/dom/feriado nacional. Nesses dias o bucket
+      // "Envios de hoje" fica vazio — pedidos que iriam pra today ficam
+      // em upcoming ate o proximo dia util.
+      if (bucket === "today" && !isBrazilianBusinessDay(todayKey)) {
+        bucket = "upcoming";
+      }
 
       // Finalizadas: mostra APENAS finalizações de HOJE (alinhado com ML UI).
       // Observação real: ML chip "Finalizadas" mostra 10 enquanto tabela
