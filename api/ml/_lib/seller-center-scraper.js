@@ -101,6 +101,10 @@ async function acquireWarmBrowser() {
       : true);
 
   if (!isAlive) {
+    const chromium = await loadPlaywright();
+    if (!chromium) {
+      throw new Error("playwright not available — chromium.launch aborted");
+    }
     warmBrowser = await chromium.launch({
       headless: true,
       args: WARM_BROWSER_LAUNCH_ARGS,
