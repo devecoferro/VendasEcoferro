@@ -54,33 +54,32 @@ describe("classifyCrossDockingOrder", () => {
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("today");
   });
 
-  it("keeps in_hub orders in upcoming (aligned with ML Seller Center)", () => {
-    // ALINHAMENTO COM ML: in_hub (pedido no hub do transportador) fica em
-    // "Próximos dias" no ML Seller Center, mesmo com SLA vencido. O pedido
-    // já saiu da responsabilidade do vendedor, não precisa de ação imediata.
-    // Antes o teste esperava "in_transit" (comportamento divergente do ML).
+  it("in_hub orders go to in_transit (2a auditoria 2026-04-23)", () => {
+    // ALINHAMENTO ML (2a auditoria com scraper completo): in_hub (pedido
+    // no hub do transportador, ja saiu do vendedor) aparece em "Em trânsito"
+    // no Seller Center com label "A caminho". Antes classificavamos em
+    // upcoming baseado em amostra parcial; scraper completo mostra in_transit.
     const order = buildOrder({
       shipmentSubstatus: "in_hub",
       expectedDate: "2026-04-02T00:00:00.000-03:00",
     });
 
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe(
-      "upcoming"
+      "in_transit"
     );
   });
 
-  it("in_packing_list goes to today (aligned with ML UI — coleta diária)", () => {
-    // ML Seller Center conta pedidos com substatus operacionais pendentes
-    // em "Envios de hoje" independente de SLA — a coleta do dia vai passar,
-    // vendedor precisa agir. Observado em comparação real: 58 pedidos em
-    // ready_to_print/in_packing_list ficavam em upcoming no app mas ML
-    // classificava como today. Sem SLA explícito, presumir "today".
+  it("in_packing_list goes to in_transit (2a auditoria 2026-04-23)", () => {
+    // ALINHAMENTO ML (2a auditoria): in_packing_list (pacote ja com o
+    // carrier sendo empacotado) aparece em "Em trânsito" com "A caminho".
+    // Antes classificavamos em today assumindo que o vendedor precisava
+    // agir — mas o pacote ja saiu, operador nao tem mais acao a fazer.
     const order = buildOrder({
       shipmentSubstatus: "in_packing_list",
       expectedDate: "2026-04-10T00:00:00.000-03:00",
     });
 
-    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("today");
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-06")).toBe("in_transit");
   });
 });
 
@@ -222,11 +221,9 @@ describe("isOrderForCollection", () => {
 // Regressões específicas descobertas em 2026-04-23 via engenharia reversa
 // do ML Seller Center (ver docs/ml-bricks-reverse-engineered.md).
 describe("classifyCrossDockingOrder — regressoes 2026-04-23", () => {
-  it("pedido 2000016018511684: in_packing_list + paid → today (SLA vencido)", () => {
-    // Cenario real: nosso DB tem substatus=in_packing_list, ML UI ja moveu
-    // pra "A caminho" mas a API dele ainda retorna in_packing_list. O
-    // classifier LOCAL acerta em mandar pra today (regra linha 566-570
-    // do dashboard.js), e o fix do snapshot subtrai do bucket no frontend.
+  it("pedido 2000016018511684: in_packing_list + paid → in_transit (2a auditoria)", () => {
+    // ALINHAMENTO ML (2a auditoria 2026-04-23): in_packing_list → in_transit
+    // (ML UI mostra "A caminho"). Antes estava em today — nao era correto.
     const order = buildOrder({
       orderStatus: "paid",
       shipmentStatus: "ready_to_ship",
@@ -234,7 +231,7 @@ describe("classifyCrossDockingOrder — regressoes 2026-04-23", () => {
       expectedDate: "2026-04-22T23:59:59.000-03:00",
     });
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
-      .toBe("today");
+      .toBe("in_transit");
   });
 
   it("picked_up vai pra in_transit (nao today)", () => {
@@ -381,28 +378,31 @@ describe("alinhamento ML — cancelled/shipped HOJE", () => {
     });
   });
 
-  describe("shipped sem substatus HOJE → bucket today (label 'A caminho')", () => {
-    it("cross-docking: shipped/null despachado HOJE vai pra today", () => {
+  describe("shipped sem substatus recente → in_transit (label 'A caminho')", () => {
+    // 2a auditoria corrigiu: ML coloca shipped/null em "Em trânsito", nao
+    // em "Envios de hoje". Janela de 3 dias pra filtrar stale (mesma
+    // regra usada pra SHIPPED_IN_TRANSIT_SUBSTATUSES).
+    it("cross-docking: shipped/null despachado HOJE vai pra in_transit", () => {
       const order = buildOrderWithHistory(
         { orderStatus: "paid", shipmentStatus: "shipped", shipmentSubstatus: "" },
         { date_shipped: TODAY_ISO }
       );
       expect(
         __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
-      ).toBe("today");
+      ).toBe("in_transit");
     });
 
-    it("cross-docking: shipped/null despachado ONTEM volta a nao contar (null)", () => {
+    it("cross-docking: shipped/null despachado ONTEM ainda vai pra in_transit (dentro da janela 3d)", () => {
       const order = buildOrderWithHistory(
         { orderStatus: "paid", shipmentStatus: "shipped", shipmentSubstatus: "" },
         { date_shipped: YESTERDAY_ISO }
       );
       expect(
         __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
-      ).toBeNull();
+      ).toBe("in_transit");
     });
 
-    it("fulfillment: shipped/null despachado HOJE vai pra today", () => {
+    it("fulfillment: shipped/null despachado HOJE vai pra in_transit", () => {
       const order = buildOrderWithHistory(
         {
           orderStatus: "paid",
@@ -415,7 +415,7 @@ describe("alinhamento ML — cancelled/shipped HOJE", () => {
       );
       expect(
         __dashboardTestables.classifyFulfillmentOrder(order, TODAY, null)
-      ).toBe("today");
+      ).toBe("in_transit");
     });
   });
 });

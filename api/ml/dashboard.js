@@ -547,27 +547,25 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Substatuses que SEMPRE vão pra "Próximos dias" (esperando algo externo):
-    // - in_hub: pedido já saiu, está no hub do transportador
-    // - in_warehouse: pedido no armazém ML (Full)
-    // - invoice_pending: aguardando NF-e do vendedor
-    if (
-      substatus === "in_hub" ||
-      substatus === "in_warehouse" ||
-      substatus === "invoice_pending"
-    ) {
+    // ALINHAMENTO ML (2026-04-23, segunda auditoria com Nav 2 funcionando):
+    // - in_hub: pedido no hub do transportador → ML mostra em "Em trânsito"
+    //   com label "A caminho" (pacote ja saiu do vendedor, esta se movendo).
+    // - in_packing_list: ML mostra em "Em trânsito" com "A caminho" (pacote
+    //   ja esta com o carrier, sendo empacotado no hub).
+    if (substatus === "in_hub" || substatus === "in_packing_list") {
+      return "in_transit";
+    }
+
+    // in_warehouse (Full) e invoice_pending continuam em upcoming —
+    // in_warehouse cross-docking eh raro (geralmente é fulfillment, tratado
+    // na outra funcao). invoice_pending aguarda NF-e do vendedor.
+    if (substatus === "in_warehouse" || substatus === "invoice_pending") {
       return "upcoming";
     }
 
-    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
-    // (coleta do dia passa, precisa imprimir/separar antes).
-    // Observado em comparação real: 58 pedidos com ready_to_print sem SLA
-    // ficavam em upcoming no app mas today no ML. Sem SLA explícito,
-    // presumir "today" (coleta diária).
-    if (
-      substatus === "ready_to_print" ||
-      substatus === "in_packing_list"
-    ) {
+    // ready_to_print: ML UI conta em "Envios de hoje" (precisa imprimir
+    // antes da coleta do dia).
+    if (substatus === "ready_to_print") {
       return "today";
     }
 
@@ -586,6 +584,13 @@ function classifyCrossDockingOrder(order, todayKey) {
   // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
   // (fetchMLLiveChipBucketsDetailed linha 1753).
   if (status === "shipped") {
+    // ALINHAMENTO ML (2026-04-23 2a auditoria): waiting_for_withdrawal
+    // → "Em trânsito" (no ponto de retirada, aguardando comprador pegar).
+    // Antes estava em "upcoming" por suposicao. ML UI coloca no mesmo card
+    // de in_transit com label "No ponto de retirada".
+    if (substatus === "waiting_for_withdrawal") {
+      return "in_transit";
+    }
     if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
       return "upcoming";
     }
@@ -596,13 +601,17 @@ function classifyCrossDockingOrder(order, todayKey) {
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
-    // ALINHAMENTO ML (2026-04-23): shipped sem substatus despachados HOJE
-    // aparecem em "Envios de hoje" com label "A caminho" no Seller Center
-    // (pra operador ver progresso). shipped antigos sem substatus sao
-    // stale — ignorar. Nota: normalizeState("") → "none", entao comparamos
-    // explicitamente com "none".
-    if ((!substatus || substatus === "none") && dates.shippedDateKey === todayKey) {
-      return "today";
+    // ALINHAMENTO ML (2026-04-23 2a auditoria): shipped sem substatus
+    // aparecem em "Em trânsito" com label "A caminho" no Seller Center.
+    // Correcao: audit anterior com Nav 2 quebrado viu esses em today, mas
+    // com scraper completo estao em in_transit. Janela de 3 dias pra evitar
+    // pedidos stale.
+    if ((!substatus || substatus === "none") && dates.shippedDateKey) {
+      const shippedAge =
+        (new Date(todayKey + "T12:00:00-03:00").getTime() -
+          new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
+        86400000;
+      return shippedAge <= 2 ? "in_transit" : null;
     }
     return null;
   }
@@ -683,21 +692,30 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // Sempre "Próximos dias" (esperando algo externo/NF-e)
-    if (
-      substatus === "in_hub" ||
-      substatus === "invoice_pending" ||
-      substatus === "in_warehouse"
-    ) {
+    // ALINHAMENTO ML (2026-04-23 2a auditoria):
+    // - in_hub: pacote no hub → "Em trânsito" (mesmo tratamento de cross-dock)
+    // - in_packing_list: pacote sendo empacotado no hub → "Em trânsito"
+    if (substatus === "in_hub" || substatus === "in_packing_list") {
+      return "in_transit";
+    }
+
+    // invoice_pending continua em upcoming (aguarda acao do vendedor).
+    if (substatus === "invoice_pending") {
       return "upcoming";
     }
 
-    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
-    // (precisa imprimir/separar antes da coleta do dia).
-    if (
-      substatus === "ready_to_print" ||
-      substatus === "in_packing_list"
-    ) {
+    // ALINHAMENTO ML (2026-04-23 2a auditoria): Full in_warehouse → "today".
+    // O ML mostra pedidos no warehouse Full em "Envios de hoje" com labels
+    // "Processando no centro de distribuicao", "Vamos enviar o pacote no dia
+    // X" ou "Vamos enviar amanha" — esses labels sao gerados pelo ML quando
+    // o pacote ainda esta no estoque Full sendo preparado. Antes estava em
+    // upcoming.
+    if (substatus === "in_warehouse") {
+      return "today";
+    }
+
+    // ready_to_print: ML UI conta em "Envios de hoje".
+    if (substatus === "ready_to_print") {
       return "today";
     }
 
@@ -710,9 +728,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // Fulfillment: mesma lógica — só tracking recente = in_transit.
-  // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
+  // Fulfillment: mesmo tratamento shipped do cross-docking.
   if (status === "shipped") {
+    // waiting_for_withdrawal → in_transit ("No ponto de retirada")
+    if (substatus === "waiting_for_withdrawal") {
+      return "in_transit";
+    }
     if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
       return "upcoming";
     }
@@ -722,10 +743,13 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
-    // ALINHAMENTO ML (2026-04-23): shipped sem substatus despachados HOJE
-    // aparecem em "Envios de hoje" com label "A caminho" no Seller Center.
-    if ((!substatus || substatus === "none") && dates.shippedDateKey === todayKey) {
-      return "today";
+    // ALINHAMENTO ML: shipped sem substatus (recente) → in_transit "A caminho"
+    if ((!substatus || substatus === "none") && dates.shippedDateKey) {
+      const shippedAge =
+        (new Date(todayKey + "T12:00:00-03:00").getTime() -
+          new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
+        86400000;
+      return shippedAge <= 2 ? "in_transit" : null;
     }
     return null;
   }
@@ -1498,11 +1522,10 @@ const ML_LIVE_DETAILED_CACHE_TTL_MS = 50 * 1000;
 const RTS_EXCLUDED_SUBSTATUSES = new Set([
   "picked_up", "authorized_by_carrier",
 ]);
-// Shipped substatuses que o ML Seller Center coloca em "Próximos dias"
-// (o pacote está no ponto de retirada aguardando o comprador).
-const SHIPPED_UPCOMING_SUBSTATUSES = new Set([
-  "waiting_for_withdrawal",
-]);
+// Shipped substatuses que o ML Seller Center coloca em "Próximos dias".
+// Vazio atualmente — waiting_for_withdrawal foi movido pra in_transit
+// ("No ponto de retirada") apos auditoria 2026-04-23 (2a passada).
+const SHIPPED_UPCOMING_SUBSTATUSES = new Set([]);
 
 // Busca TODAS as orders de um shipping status com paginação PARALELA.
 // 1. Busca página 1 (para obter total)
