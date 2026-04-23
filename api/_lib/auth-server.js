@@ -92,7 +92,22 @@ function getProfileRowByUsername(username) {
   );
 }
 
+// Idle timeout: sessão inativa por mais que este valor é rejeitada mesmo
+// que `expires_at` ainda esteja válido. Default 8 horas — tempo de uma
+// jornada de trabalho. Override via env APP_SESSION_IDLE_TIMEOUT_MS.
+const SESSION_IDLE_TIMEOUT_MS = Math.max(
+  5 * 60 * 1000, // mínimo 5 minutos (evita disparos espúrios)
+  Number.parseInt(
+    process.env.APP_SESSION_IDLE_TIMEOUT_MS || String(8 * 60 * 60 * 1000),
+    10
+  ) || 8 * 60 * 60 * 1000
+);
+
 function getProfileRowBySessionHash(tokenHash) {
+  // Filtra por expires_at E last_seen_at (idle timeout). Usa datetime() do
+  // SQLite pra subtrair ms via epoch.
+  // (strftime('%s','now') - strftime('%s',last_seen_at)) * 1000 = idade_ms
+  const idleThresholdSec = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
   return mapProfileRow(
     db
       .prepare(
@@ -101,9 +116,13 @@ function getProfileRowBySessionHash(tokenHash) {
          INNER JOIN app_user_profiles p ON p.id = s.user_id
          WHERE s.token_hash = ?
            AND datetime(s.expires_at) > datetime('now')
+           AND (
+             s.last_seen_at IS NULL
+             OR (strftime('%s','now') - strftime('%s', s.last_seen_at)) < ?
+           )
          LIMIT 1`
       )
-      .get(tokenHash)
+      .get(tokenHash, idleThresholdSec)
   );
 }
 

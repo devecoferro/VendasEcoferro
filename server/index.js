@@ -466,6 +466,30 @@ let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
 let lastAutoHealAt = 0; // epoch ms do ultimo auto-heal disparado
 let lastHardHealAt = 0; // epoch ms do ultimo hard-heal disparado
 
+// P7: pula auto-sync quando nao houver atividade recente de sessao. Se
+// ninguem usou o app nas ultimas 15min, nao vale torrar ML API.
+// Override: ALWAYS_AUTO_SYNC=1 mantem comportamento antigo (util pra
+// cron/background apps que dependem de sync mesmo sem UI).
+const ACTIVE_SESSION_WINDOW_MS = 15 * 60 * 1000;
+const ALWAYS_AUTO_SYNC =
+  String(process.env.ALWAYS_AUTO_SYNC || "").toLowerCase() === "1" ||
+  String(process.env.ALWAYS_AUTO_SYNC || "").toLowerCase() === "true";
+
+function hasActiveSession() {
+  if (ALWAYS_AUTO_SYNC) return true;
+  try {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM app_sessions
+         WHERE datetime(last_seen_at) > datetime('now', '-' || ? || ' seconds')`
+      )
+      .get(Math.floor(ACTIVE_SESSION_WINDOW_MS / 1000));
+    return Number(row?.n || 0) > 0;
+  } catch {
+    return true; // tolera — melhor sincar do que nao sincar em erro
+  }
+}
+
 async function autoSyncOrders() {
   // Watchdog: se autoSyncRunning está true há mais de 5min, considera stuck
   // e reseta flag (promise original pode continuar em bg, mas não bloqueia).
@@ -478,6 +502,9 @@ async function autoSyncOrders() {
     }
   }
   autoSyncStartedAt = Date.now();
+
+  // P7: skip quando ninguém usou o app há 15min. Economiza API calls ML.
+  if (!hasActiveSession()) return;
 
   try {
     autoSyncRunning = true;
