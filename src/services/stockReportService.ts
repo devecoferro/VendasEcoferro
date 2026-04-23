@@ -13,7 +13,7 @@
  * PDF sai exatamente com os mesmos produtos que estao visiveis na tela
  * (mesmos filtros, mesma ordenacao). E uma "snapshot" do que ele ve.
  */
-import jsPDF from "jspdf";
+import { jsPDF } from "jspdf";
 import type { MLStockItem } from "@/services/mercadoLivreService";
 
 export interface StockReportFilters {

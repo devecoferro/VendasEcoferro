@@ -69,6 +69,8 @@ import mlAdminLiveCardsDebugHandler from "../api/ml/admin/live-cards-debug.js";
 import mlAdminUploadScraperStateHandler from "../api/ml/admin/upload-scraper-state.js";
 import mlAdminInstallChromiumHandler from "../api/ml/admin/install-chromium.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
+import adminAuditLogHandler from "../api/admin/audit-log.js";
+import adminHealthHandler from "../api/admin/health.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
@@ -360,6 +362,8 @@ app.all("/api/ml/admin/install-chromium", apiLimiter, (req, res) => mlAdminInsta
 // Proxy de imagens do ML — usado pelo PDF do estoque (jspdf precisa do
 // byte da imagem, e fetch direto bate em CORS). Whitelist de hosts no handler.
 app.get("/api/ml/image-proxy", apiLimiter, (req, res) => mlImageProxyHandler(req, res));
+app.get("/api/admin/audit-log", apiLimiter, (req, res) => adminAuditLogHandler(req, res));
+app.get("/api/admin/health", apiLimiter, (req, res) => adminHealthHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));

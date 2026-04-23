@@ -16,6 +16,7 @@
 
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { setOrdersLabelPrinted } from "./_lib/storage.js";
+import { recordAuditLog } from "../_lib/audit-log.js";
 
 function normalizeOrderIds(input) {
   if (!Array.isArray(input)) return [];
@@ -30,7 +31,8 @@ function normalizeOrderIds(input) {
 
 export default async function handler(request, response) {
   try {
-    await requireAuthenticatedProfile(request);
+    const { profile } = await requireAuthenticatedProfile(request);
+    request.profile = profile;
   } catch (error) {
     const status = error?.statusCode || 401;
     return response
@@ -77,6 +79,14 @@ export default async function handler(request, response) {
 
   const printedAt = markAsPrinted ? new Date().toISOString() : null;
   const affected = setOrdersLabelPrinted(orderIds, printedAt);
+
+  recordAuditLog({
+    req: request,
+    action: markAsPrinted ? "labels.mark_printed" : "labels.mark_unprinted",
+    targetType: "ml_order",
+    targetId: orderIds.length === 1 ? orderIds[0] : `batch:${orderIds.length}`,
+    payload: { order_ids: orderIds, printed_at: printedAt, affected },
+  });
 
   return response.json({
     success: true,

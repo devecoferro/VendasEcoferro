@@ -6,7 +6,7 @@
  * e recebe um PDF com cada produto listado uma unica vez, com imagem,
  * nome, SKU e quantidade total a separar.
  */
-import jsPDF from "jspdf";
+import { jsPDF } from "jspdf";
 import type { MLOrder, MLOrderItem } from "@/services/mercadoLivreService";
 
 // ─── Tipos ──────────────────────────────────────────────────────────────

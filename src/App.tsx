@@ -25,6 +25,7 @@ const ConferenciaVendaPage = lazy(() => import("./pages/ConferenciaVendaPage"));
 const MLDiagnosticsPage = lazy(() => import("./pages/MLDiagnosticsPage"));
 const ManualPage = lazy(() => import("./pages/ManualPage"));
 const ReportDebugPage = lazy(() => import("./pages/ReportDebugPage"));
+const AdminHealthPage = lazy(() => import("./pages/AdminHealthPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -67,6 +68,7 @@ const App = () => (
                 <Route element={<ProtectedRoute requireAdmin />}>
                   <Route path="/users" element={<UsersPage />} />
                   <Route path="/ml-diagnostics" element={<MLDiagnosticsPage />} />
+                  <Route path="/admin/health" element={<AdminHealthPage />} />
                 </Route>
 
                   <Route path="*" element={<NotFound />} />
