@@ -33,7 +33,7 @@ interface AuthContextValue {
   users: AuthUser[];
   ready: boolean;
   locationOptions: string[];
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, totpCode?: string) => Promise<void>;
   logout: () => Promise<void>;
   saveUser: (input: SaveUserInput) => Promise<void>;
   toggleUserActive: (userId: string) => Promise<void>;
@@ -83,11 +83,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void hydrateAuthState();
   }, [hydrateAuthState]);
 
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, totpCode?: string) => {
     setReady(false);
 
     try {
-      await signInWithUsername(username, password);
+      await signInWithUsername(username, password, totpCode);
       await hydrateAuthState();
     } catch (error) {
       setCurrentUser(null);

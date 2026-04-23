@@ -17,8 +17,27 @@ export default async function handler(request, response) {
     const action = body.action || "session";
 
     if (action === "login") {
-      const user = await authenticateUser(body.username, body.password, response);
-      return response.status(200).json({ user });
+      try {
+        const user = await authenticateUser(body.username, body.password, response, {
+          totpCode: body.totp_code || body.totpCode,
+        });
+        return response.status(200).json({ user });
+      } catch (error) {
+        // S9: 428 = TOTP required (cliente deve prompting pelo código)
+        if (error?.code === "totp_required") {
+          return response.status(428).json({
+            error: error.message,
+            code: "totp_required",
+          });
+        }
+        if (error?.code === "totp_invalid") {
+          return response.status(401).json({
+            error: error.message,
+            code: "totp_invalid",
+          });
+        }
+        throw error;
+      }
     }
 
     if (action === "logout") {

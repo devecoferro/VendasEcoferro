@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check, Eye, EyeOff, Loader2, Lock, User } from "lucide-react";
+import { ArrowRight, Check, Eye, EyeOff, Loader2, Lock, ShieldCheck, User } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { APP_VERSION_LABEL } from "@/lib/version";
+import { TotpRequiredError } from "@/services/appAuthService";
 
 const LOGIN_BACKGROUND = "/ChatGPT Image 2 de abr. de 2026, 11_27_17.png";
 const LOGO_PATH = "/login-ecoferro-logo-transparent.png";
@@ -17,6 +18,10 @@ export default function LoginPage() {
   const [rememberUser, setRememberUser] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // S9: quando backend responde 428 (totp_required), mostra campo pro código.
+  // Mantém username/password pra re-enviar junto com o código.
+  const [totpRequired, setTotpRequired] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
 
   const redirectTarget = useMemo(() => {
     const state = location.state as { from?: string } | null;
@@ -35,9 +40,15 @@ export default function LoginPage() {
     setError("");
 
     try {
-      await login(username.trim(), password);
+      await login(username.trim(), password, totpRequired ? totpCode.trim() : undefined);
       navigate(redirectTarget, { replace: true });
     } catch (loginError) {
+      if (loginError instanceof TotpRequiredError) {
+        // Backend pediu TOTP — ativa campo e espera próxima submit.
+        setTotpRequired(true);
+        setError("");
+        return;
+      }
       setError(
         loginError instanceof Error
           ? loginError.message
@@ -138,6 +149,33 @@ export default function LoginPage() {
               </button>
               <span>Lembrar usuario</span>
             </label>
+
+            {/* S9: campo de código 2FA só aparece quando backend pede. */}
+            {totpRequired && (
+              <div className="space-y-2">
+                <label className="text-[14px] font-medium text-white/90">
+                  Código 2FA
+                </label>
+                <InputShell>
+                  <ShieldCheck className="h-5 w-5 text-slate-400" />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    autoComplete="one-time-code"
+                    value={totpCode}
+                    onChange={(e) => setTotpCode(e.target.value)}
+                    placeholder="000000 ou código de backup"
+                    maxLength={16}
+                    className="h-[52px] w-full border-0 bg-transparent px-0 text-[17px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
+                  />
+                </InputShell>
+                <p className="text-[12px] text-white/70">
+                  Digite o código de 6 dígitos do seu app TOTP ou um dos códigos
+                  de backup gerados na ativação.
+                </p>
+              </div>
+            )}
 
             {error && (
               <div className="rounded-2xl border border-rose-300/25 bg-rose-500/14 px-4 py-3 text-sm text-rose-100">

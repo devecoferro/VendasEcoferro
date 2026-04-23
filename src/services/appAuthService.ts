@@ -72,9 +72,17 @@ async function authenticatedFetch<T>(
   return data;
 }
 
+export class TotpRequiredError extends Error {
+  constructor(message = "Código 2FA obrigatório.") {
+    super(message);
+    this.name = "TotpRequiredError";
+  }
+}
+
 export async function signInWithUsername(
   username: string,
-  password: string
+  password: string,
+  totpCode?: string
 ): Promise<void> {
   const normalizedUsername = normalizeUsername(username);
   if (!normalizedUsername) {
@@ -93,15 +101,22 @@ export async function signInWithUsername(
         action: "login",
         username: normalizedUsername,
         password,
+        totp_code: totpCode,
       }),
     },
     REMOTE_AUTH_TIMEOUT_MS,
     "Timeout ao autenticar no painel."
   );
 
-  const data = await parseJsonResponse<SessionResponse>(response);
+  const data = await parseJsonResponse<SessionResponse & { code?: string }>(response);
+
+  // S9: 428 = TOTP required, sinaliza pro frontend pedir código.
+  if (response.status === 428 || data?.code === "totp_required") {
+    throw new TotpRequiredError(data?.error || "Código 2FA obrigatório.");
+  }
+
   if (!response.ok) {
-    throw new Error(data.error || "Falha ao autenticar.");
+    throw new Error(data?.error || "Falha ao autenticar.");
   }
 }
 

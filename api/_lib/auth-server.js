@@ -474,7 +474,7 @@ export function getProfileByUsername(_dbInstance, username) {
 // igualando o tempo de resposta "username inválido" vs "senha inválida".
 const DUMMY_HASH = createPasswordHash("dummy_password_not_real_a1b2c3d4");
 
-export async function authenticateUser(username, password, response) {
+export async function authenticateUser(username, password, response, options = {}) {
   // NÃO chamar ensureDefaultAdmin aqui — é chamado uma vez no startup
   // (server/index.js). Chamar em cada login permite backdoor de senha via env.
   const profile = getProfileRowByUsername(username);
@@ -494,6 +494,75 @@ export async function authenticateUser(username, password, response) {
 
   if (!verifyPassword(password, profile.password_hash)) {
     throw invalidCredentialsError();
+  }
+
+  // S9: se o usuário tem 2FA habilitado, exige TOTP code no mesmo request.
+  // Frontend deve detectar `code=totp_required` e prompting pelo código.
+  const totpRow = db
+    .prepare(`SELECT totp_enabled, totp_secret, totp_backup_codes FROM app_user_profiles WHERE id = ?`)
+    .get(profile.id);
+
+  if (totpRow?.totp_enabled) {
+    const providedCode = String(options.totpCode || "").trim();
+    if (!providedCode) {
+      const err = new Error("Código 2FA obrigatório.");
+      err.statusCode = 428; // Precondition Required
+      err.code = "totp_required";
+      throw err;
+    }
+
+    // Tenta verificar como código TOTP primeiro
+    const { decryptSecret, verifyTotpCode, hashBackupCode } = await import("./totp.js");
+    const secret = decryptSecret(totpRow.totp_secret);
+    let valid = verifyTotpCode(secret, providedCode);
+
+    // Se não é TOTP válido, tenta como backup code (16 chars hex)
+    let usedBackupCode = null;
+    if (!valid && /^[0-9A-F]{16}$/i.test(providedCode)) {
+      const hashed = hashBackupCode(providedCode);
+      try {
+        const codes = JSON.parse(totpRow.totp_backup_codes || "[]");
+        const idx = codes.indexOf(hashed);
+        if (idx >= 0) {
+          valid = true;
+          usedBackupCode = hashed;
+          codes.splice(idx, 1);
+          db.prepare(
+            `UPDATE app_user_profiles SET totp_backup_codes = ? WHERE id = ?`
+          ).run(JSON.stringify(codes), profile.id);
+        }
+      } catch {
+        // JSON malformado — ignora
+      }
+    }
+
+    if (!valid) {
+      const err = new Error("Código 2FA inválido.");
+      err.statusCode = 401;
+      err.code = "totp_invalid";
+      throw err;
+    }
+
+    // Atualiza último uso
+    db.prepare(`UPDATE app_user_profiles SET totp_last_used_at = ? WHERE id = ?`).run(
+      nowIso(),
+      profile.id
+    );
+
+    // Best-effort: loga uso de backup code no audit
+    if (usedBackupCode) {
+      try {
+        const { recordAuditLog } = await import("./audit-log.js");
+        recordAuditLog({
+          req: { profile, headers: {} },
+          action: "totp.backup_code_used",
+          targetType: "app_user_profile",
+          targetId: profile.id,
+        });
+      } catch {
+        // ignore
+      }
+    }
   }
 
   const sessionToken = createSession(profile.id);
