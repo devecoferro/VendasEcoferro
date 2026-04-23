@@ -526,6 +526,18 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
   };
 }
 
+// Extrai sla_snapshot.expected_date do raw_data do ML e formata como
+// DD/MM/YYYY pra exibir direto na etiqueta interna Ecoferro ("Data Envio").
+function extractExpectedShippingDate(order: MLOrder): string {
+  const raw = (order.raw_data as { sla_snapshot?: { expected_date?: string } } | null | undefined);
+  const iso = raw?.sla_snapshot?.expected_date;
+  if (!iso || typeof iso !== "string") return "";
+  // Aceita formatos "YYYY-MM-DD" ou ISO completo. Pega YYYY-MM-DD do início.
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
 // Extrai a variação de um item do pedido ML.
 // F-M6: extractVariationFromRawItem movido pra mercadoLivreHelpers.ts
 // (era duplicado em separationReportService.ts).
@@ -601,6 +613,7 @@ export function mapMLOrderToSaleData(order: MLOrder) {
     groupedItems,
     variation: topVariation,
     depositLabel,
+    expectedShippingDate: extractExpectedShippingDate(order),
   };
 }
 

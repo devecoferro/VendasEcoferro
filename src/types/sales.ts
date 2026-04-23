@@ -42,6 +42,13 @@ export interface SaleData {
    * - "Sem depósito"
    */
   depositLabel?: string | null;
+  /**
+   * Data prevista de envio (ML SLA expected_date). Formatada como
+   * DD/MM/YYYY pra exibição direta na etiqueta. Vem de
+   * raw_data.sla_snapshot.expected_date. Pode ser vazia quando o
+   * pedido ainda não tem SLA definido (ex: pending sem packing).
+   */
+  expectedShippingDate?: string;
 }
 
 export interface DocumentRecord {
