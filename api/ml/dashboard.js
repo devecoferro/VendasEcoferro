@@ -1947,22 +1947,22 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (sub === "waiting_for_withdrawal") {
         addMlOrderIds("in_transit", pack.ml_order_ids);
       } else if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
-        // out_for_delivery, receiver_absent, not_visited, at_customs
-        // → in_transit se shipped nos ultimos 7 dias (antes era 2)
+        // AJUSTE FINO (2026-04-23 tarde): gate de 3 dias pra aproximar do
+        // chip do ML (antes era 7 → inflou in_transit pra 135 vs chip=6).
         if (!shipment.dateShipped) { shippedNoDate++; continue; }
         const shippedAt = new Date(shipment.dateShipped).getTime();
         if (Number.isNaN(shippedAt)) { shippedNoDate++; continue; }
         const ageDays = (nowMs - shippedAt) / msPerDay;
-        if (ageDays <= 7) {
+        if (ageDays <= 3) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
         } else {
           shippedStale++;
         }
       } else if (!sub && shipment.dateShipped) {
-        // ALINHAMENTO ML (4a auditoria): shipped SEM substatus → in_transit
-        // (agente achou 7 pedidos Full assim — ML mostra "A caminho")
+        // AJUSTE FINO: shipped sem substatus → in_transit so se shipped nas
+        // ultimas 72h. ML chip usa janela curta similar.
         const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (!Number.isNaN(shippedAt) && (nowMs - shippedAt) / msPerDay <= 7) {
+        if (!Number.isNaN(shippedAt) && (nowMs - shippedAt) / msPerDay <= 3) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
         } else {
           shippedStale++;
