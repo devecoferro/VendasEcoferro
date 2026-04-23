@@ -2,7 +2,7 @@
 // Use `recordAuditLog({ req, action, targetType, targetId, payload })`
 // em handlers de PATCH/DELETE/POST sensíveis.
 
-import db from "./db.js";
+import { db } from "./db.js";
 
 const insertStmt = db.prepare(`
   INSERT INTO app_audit_log (
