@@ -25,21 +25,27 @@ const WEBHOOK_SECRET = (process.env.ML_WEBHOOK_SECRET || "").trim();
 function isWebhookAuthorized(request) {
   if (!WEBHOOK_SECRET) {
     logger.warn("ML_WEBHOOK_SECRET nao configurado — webhook aberto", { route: "ml-notifications" });
-    return true;
+    return { ok: true };
   }
-  const provided = String(
-    request.headers["x-ml-webhook-secret"] ||
-      request.query?.secret ||
-      ""
-  );
-  if (!provided) return false;
+  const headerSecret = request.headers["x-ml-webhook-secret"];
+  const querySecret = request.query?.secret;
+  const provided = String(headerSecret || querySecret || "");
+  const diag = {
+    has_header: Boolean(headerSecret),
+    header_len: headerSecret ? String(headerSecret).length : 0,
+    has_query: Boolean(querySecret),
+    query_len: querySecret ? String(querySecret).length : 0,
+    expected_len: WEBHOOK_SECRET.length,
+  };
+  if (!provided) return { ok: false, reason: "missing", diag };
   const a = Buffer.from(provided);
   const b = Buffer.from(WEBHOOK_SECRET);
-  if (a.length !== b.length) return false;
+  if (a.length !== b.length) return { ok: false, reason: "length_mismatch", diag };
   try {
-    return timingSafeEqual(a, b);
+    const match = timingSafeEqual(a, b);
+    return { ok: match, reason: match ? null : "value_mismatch", diag };
   } catch {
-    return false;
+    return { ok: false, reason: "compare_error", diag };
   }
 }
 
@@ -82,10 +88,13 @@ export default async function handler(request, response) {
   }
 
   // Webhook auth — auditoria seg. sprint 1.1
-  if (!isWebhookAuthorized(request)) {
-    logger.warn("webhook rejeitado — secret invalido ou ausente", {
+  const auth = isWebhookAuthorized(request);
+  if (!auth.ok) {
+    logger.warn("webhook rejeitado", {
       route: "ml-notifications",
       ip: request.ip,
+      reason: auth.reason,
+      diag: auth.diag,
     });
     return response.status(401).json({ status: "error", error: "unauthorized" });
   }
