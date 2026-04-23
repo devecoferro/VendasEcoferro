@@ -547,27 +547,27 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "today";
     }
 
-    // Substatuses que SEMPRE vão pra "Próximos dias" (esperando algo externo):
-    // - in_hub: pedido já saiu, está no hub do transportador
-    // - in_warehouse: pedido no armazém ML (Full)
-    // - invoice_pending: aguardando NF-e do vendedor
-    if (
-      substatus === "in_hub" ||
-      substatus === "in_warehouse" ||
-      substatus === "invoice_pending"
-    ) {
+    // ALINHAMENTO ML (4a auditoria via screenshots — 2026-04-23):
+    // - in_hub: pacote JA saiu, esta no hub do carrier → "Em trânsito"
+    //   (ML mostra CARD_IN_THE_WAY "A caminho")
+    // - in_packing_list: pacote ja com carrier sendo empacotado → "Em trânsito"
+    //   (ML mostra "A caminho"). NOTA: so pra CROSS-DOCKING — Full tem outra regra.
+    if (substatus === "in_hub" || substatus === "in_packing_list") {
+      return "in_transit";
+    }
+
+    // invoice_pending: aguardando NF-e → "Proximos dias"
+    if (substatus === "invoice_pending") {
       return "upcoming";
     }
 
-    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
-    // (coleta do dia passa, precisa imprimir/separar antes).
-    // Observado em comparação real: 58 pedidos com ready_to_print sem SLA
-    // ficavam em upcoming no app mas today no ML. Sem SLA explícito,
-    // presumir "today" (coleta diária).
-    if (
-      substatus === "ready_to_print" ||
-      substatus === "in_packing_list"
-    ) {
+    // in_warehouse no cross-docking (raro) → "Proximos dias"
+    if (substatus === "in_warehouse") {
+      return "upcoming";
+    }
+
+    // ready_to_print → "Envios de hoje" (precisa imprimir antes da coleta)
+    if (substatus === "ready_to_print") {
       return "today";
     }
 
@@ -586,15 +586,31 @@ function classifyCrossDockingOrder(order, todayKey) {
   // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
   // (fetchMLLiveChipBucketsDetailed linha 1753).
   if (status === "shipped") {
+    // ALINHAMENTO ML (4a auditoria): waiting_for_withdrawal → "Em trânsito"
+    // (CARD_WAITING_FOR_WITHDRAWAL vive na aba in_transit do Seller Center,
+    // NAO em upcoming como estava)
+    if (substatus === "waiting_for_withdrawal") {
+      return "in_transit";
+    }
     if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
       return "upcoming";
     }
     if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(substatus)) {
-      // Só conta como "Em trânsito" se shipped nos últimos 3 dias
+      // Só conta como "Em trânsito" se shipped nos últimos 7 dias (antes 2)
+      // ML mostra pedidos shipped em in_transit ate a entrega, sem filtro forte.
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 2 ? "in_transit" : null;
+      return shippedAge <= 7 ? "in_transit" : null;
+    }
+    // ALINHAMENTO ML (4a auditoria): shipped SEM substatus → "Em trânsito"
+    // ML mostra esses em CARD_IN_THE_WAY "A caminho". Janela de 7 dias.
+    if ((!substatus || substatus === "none") && dates.shippedDateKey) {
+      const shippedAge =
+        (new Date(todayKey + "T12:00:00-03:00").getTime() -
+          new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
+        86400000;
+      return shippedAge <= 7 ? "in_transit" : null;
     }
     return null;
   }
@@ -672,18 +688,23 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "today";
     }
 
-    // Sempre "Próximos dias" (esperando algo externo/NF-e)
-    if (
-      substatus === "in_hub" ||
-      substatus === "invoice_pending" ||
-      substatus === "in_warehouse"
-    ) {
+    // ALINHAMENTO ML (4a auditoria): in_hub Full → "Em trânsito"
+    // (pacote ja saiu do warehouse ML, esta com carrier)
+    if (substatus === "in_hub") {
+      return "in_transit";
+    }
+
+    // invoice_pending → upcoming (aguarda NF-e)
+    if (substatus === "invoice_pending") {
       return "upcoming";
     }
 
-    // ready_to_print / in_packing_list: ML UI conta em "Envios de hoje"
-    // (precisa imprimir/separar antes da coleta do dia).
+    // ALINHAMENTO ML (4a auditoria): Full in_warehouse/in_packing_list →
+    // "Envios de hoje". ML mostra labels "Processando CD" / "Vamos enviar
+    // dia X" / "Vamos enviar amanha" — CARD_FULL vive em TAB_TODAY.
+    // Diferente do cross_docking que manda in_packing_list pra in_transit.
     if (
+      substatus === "in_warehouse" ||
       substatus === "ready_to_print" ||
       substatus === "in_packing_list"
     ) {
@@ -699,9 +720,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "upcoming";
   }
 
-  // Fulfillment: mesma lógica — só tracking recente = in_transit.
-  // ALINHAMENTO COM ML: shipped/waiting_for_withdrawal → "upcoming"
+  // Fulfillment: mesma lógica do cross-docking shipped.
   if (status === "shipped") {
+    // ALINHAMENTO ML (4a auditoria): waiting_for_withdrawal → in_transit
+    if (substatus === "waiting_for_withdrawal") {
+      return "in_transit";
+    }
     if (SHIPPED_UPCOMING_SUBSTATUSES.has(substatus)) {
       return "upcoming";
     }
@@ -709,7 +733,16 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 2 ? "in_transit" : null;
+      return shippedAge <= 7 ? "in_transit" : null;
+    }
+    // ALINHAMENTO ML (4a auditoria): shipped Full sem substatus → in_transit
+    // (agente achou 7 pedidos Full assim → nosso classifier retornava null)
+    if ((!substatus || substatus === "none") && dates.shippedDateKey) {
+      const shippedAge =
+        (new Date(todayKey + "T12:00:00-03:00").getTime() -
+          new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
+        86400000;
+      return shippedAge <= 7 ? "in_transit" : null;
     }
     return null;
   }
@@ -1826,7 +1859,13 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // Sempre "Envios de hoje" (pronto para envio/coleta)
+      // ALINHAMENTO ML (4a auditoria via screenshots 2026-04-23):
+      // detecta se eh Full vs cross-docking pra aplicar regras corretas.
+      const isFull =
+        shipment.logisticType === "fulfillment" ||
+        (pack.deposit_key && String(pack.deposit_key).startsWith("node:"));
+
+      // today — prontos pra envio/coleta (ambos cross e full)
       if (
         sub === "ready_for_pickup" ||
         sub === "packed" ||
@@ -1836,14 +1875,36 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // Sempre "Próximos dias" (esperando algo externo)
-      if (sub === "in_hub" || sub === "invoice_pending" || sub === "in_warehouse") {
+      // invoice_pending → upcoming (aguarda NF-e)
+      if (sub === "invoice_pending") {
         addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
 
-      // ready_to_print / in_packing_list: "Envios de hoje" (coleta do dia).
-      if (sub === "ready_to_print" || sub === "in_packing_list") {
+      // in_hub (cross OU full): CARD_IN_THE_WAY no ML → in_transit
+      // (pacote JA saiu, esta com carrier)
+      if (sub === "in_hub") {
+        addMlOrderIds("in_transit", pack.ml_order_ids);
+        continue;
+      }
+
+      // in_packing_list: depende da logistica
+      // - cross-docking: CARD_IN_THE_WAY "A caminho" → in_transit
+      // - full: CARD_FULL "Processando CD" → today
+      if (sub === "in_packing_list") {
+        addMlOrderIds(isFull ? "today" : "in_transit", pack.ml_order_ids);
+        continue;
+      }
+
+      // in_warehouse: so acontece em Full (pacote no warehouse ML)
+      // ML mostra CARD_FULL "Processando CD" / "Vamos enviar dia X" → today
+      if (sub === "in_warehouse") {
+        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
+        continue;
+      }
+
+      // ready_to_print → today (precisa imprimir antes da coleta)
+      if (sub === "ready_to_print") {
         addMlOrderIds("today", pack.ml_order_ids);
         continue;
       }
@@ -1881,17 +1942,27 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (!shipment) continue;
       if (shipment.status !== "shipped") continue;
       const sub = shipment.substatus;
-      if (SHIPPED_UPCOMING_SUBSTATUSES.has(sub)) {
-        // waiting_for_withdrawal → "Próximos dias"
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+      // ALINHAMENTO ML (4a auditoria): waiting_for_withdrawal → in_transit
+      // (CARD_WAITING_FOR_WITHDRAWAL vive em TAB_IN_THE_WAY do ML)
+      if (sub === "waiting_for_withdrawal") {
+        addMlOrderIds("in_transit", pack.ml_order_ids);
       } else if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
-        // Substatuses problemáticos: out_for_delivery, receiver_absent,
-        // not_visited, at_customs → in_transit se recente
+        // out_for_delivery, receiver_absent, not_visited, at_customs
+        // → in_transit se shipped nos ultimos 7 dias (antes era 2)
         if (!shipment.dateShipped) { shippedNoDate++; continue; }
         const shippedAt = new Date(shipment.dateShipped).getTime();
         if (Number.isNaN(shippedAt)) { shippedNoDate++; continue; }
         const ageDays = (nowMs - shippedAt) / msPerDay;
-        if (ageDays <= 2) {
+        if (ageDays <= 7) {
+          addMlOrderIds("in_transit", pack.ml_order_ids);
+        } else {
+          shippedStale++;
+        }
+      } else if (!sub && shipment.dateShipped) {
+        // ALINHAMENTO ML (4a auditoria): shipped SEM substatus → in_transit
+        // (agente achou 7 pedidos Full assim — ML mostra "A caminho")
+        const shippedAt = new Date(shipment.dateShipped).getTime();
+        if (!Number.isNaN(shippedAt) && (nowMs - shippedAt) / msPerDay <= 7) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
         } else {
           shippedStale++;
