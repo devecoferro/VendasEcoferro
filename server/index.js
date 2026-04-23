@@ -72,6 +72,7 @@ import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import adminAuditLogHandler from "../api/admin/audit-log.js";
 import adminHealthHandler from "../api/admin/health.js";
 import errorLogHandler from "../api/error-log.js";
+import adminTotpHandler from "../api/admin/totp.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
@@ -247,19 +248,31 @@ app.use((req, res, next) => {
   }
   // CSP — permissiva nas rotas /api (JSON), estrita nas rotas HTML.
   // Radix + Vite precisam de unsafe-inline pra styles; scripts ficam same-origin.
+  // S8 sprint 4: hardening adicional — upgrade-insecure-requests,
+  // block-all-mixed-content, object-src 'none', worker-src restritivo.
   if (!req.path.startsWith("/api")) {
     res.setHeader(
       "Content-Security-Policy",
       [
         "default-src 'self'",
-        "img-src 'self' data: https://http2.mlstatic.com https://*.mlstatic.com",
+        // imgs: self + data: + ML CDN (já whitelisted)
+        "img-src 'self' data: blob: https://http2.mlstatic.com https://*.mlstatic.com",
+        // style-src: unsafe-inline inevitável pra Radix/Shadcn (tentativa de
+        // substituir por nonces exigiria CSS-in-JS refactor, alto risco UI)
         "style-src 'self' 'unsafe-inline'",
+        // script-src: ESTRITO — só same-origin, sem unsafe-inline/eval
         "script-src 'self'",
+        // connect-src: só ML API + same-origin (bloqueia exfiltração anônima)
         "connect-src 'self' https://api.mercadolibre.com",
         "font-src 'self' data:",
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",
+        // S8: novos controles
+        "object-src 'none'", // bloqueia <object>, <embed> (plugins legados)
+        "worker-src 'self' blob:", // Web Workers restritos
+        "manifest-src 'self'", // PWA manifest
+        "upgrade-insecure-requests", // força https em requests mixos
       ].join("; ")
     );
   }
@@ -379,6 +392,7 @@ app.get("/api/ml/image-proxy", imageProxyLimiter, (req, res) => mlImageProxyHand
 app.get("/api/admin/audit-log", apiLimiter, (req, res) => adminAuditLogHandler(req, res));
 app.get("/api/admin/health", apiLimiter, (req, res) => adminHealthHandler(req, res));
 app.post("/api/error-log", apiLimiter, (req, res) => errorLogHandler(req, res));
+app.post("/api/admin/totp/*", apiLimiter, (req, res) => adminTotpHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));

@@ -1505,27 +1505,35 @@ export default function MercadoLivrePage() {
     return localScope;
   }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, scopedLiveSnapshot]);
 
+  // P5: mapa único ID → bucket computado 1x por snapshot. Reaproveitado
+  // pra derivar tanto o "qual bucket é do atual" quanto "qual está em
+  // outros". Evita iterar scopedLiveSnapshot.orders duas vezes.
+  const snapshotBucketByOrderId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!scopedLiveSnapshot?.orders) return map;
+    for (const [bucket, orders] of Object.entries(scopedLiveSnapshot.orders)) {
+      if (!Array.isArray(orders)) continue;
+      for (const o of orders) {
+        if (o.pack_id) map.set(String(o.pack_id), bucket);
+        if (o.order_id) map.set(String(o.order_id), bucket);
+      }
+    }
+    return map;
+  }, [scopedLiveSnapshot]);
+
   // IDs que o snapshot LIVE do ML classificou em OUTROS buckets (≠ shipmentFilter).
   // Usado pra SUBTRAIR do bucket atual quando o ML UI scraper já moveu o pedido.
   // Cenário coberto (descoberto em 2026-04-23, pedido 2000016018511684):
   //   - DB local: substatus=in_packing_list → classifier manda pra today
   //   - ML API /orders/search: idem (API retorna estado stale)
   //   - ML UI scraper: pedido em "A caminho" (in_transit)
-  // Sem isso, o app mostrava o pedido em today mesmo com o ML já tratando
-  // como in_transit, gerando confusão operacional.
   const orderIdsInOtherSnapshotBuckets = useMemo(() => {
     const out = new Set<string>();
-    if (!scopedLiveSnapshot?.orders) return out;
-    for (const [bucket, orders] of Object.entries(scopedLiveSnapshot.orders)) {
-      if (bucket === shipmentFilter) continue;
-      if (!Array.isArray(orders)) continue;
-      for (const o of orders) {
-        if (o.pack_id) out.add(String(o.pack_id));
-        if (o.order_id) out.add(String(o.order_id));
-      }
+    for (const [id, bucket] of snapshotBucketByOrderId) {
+      if (bucket !== shipmentFilter) out.add(id);
     }
     return out;
-  }, [scopedLiveSnapshot, shipmentFilter]);
+  }, [snapshotBucketByOrderId, shipmentFilter]);
 
   const bucketOrders = useMemo(() => {
     if (operationalOrderIds.size === 0) return [];

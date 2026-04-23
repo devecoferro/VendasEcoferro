@@ -59,6 +59,81 @@ let lastError = null; // { error, timestamp }
 // Estrutura: { tabs: { [tabKey]: { [storeKey]: { url, xhrJsonResponses: [], domSnapshot } } }, capturedAt, expiresAt }
 let cachedFullResult = null;
 
+// ─── P9: Warm browser pool ─────────────────────────────────────────────
+// Mantem um único browser chromium aberto entre scrapes pra economizar
+// os ~2-3s do launch. Fecha após 5min de idle pra liberar ~80MB de RAM.
+// Detecta browser morto (disconnected) e recria automaticamente.
+let warmBrowser = null;
+let warmBrowserUsageCount = 0;
+let warmBrowserIdleTimer = null;
+const WARM_BROWSER_IDLE_MS = 5 * 60 * 1000;
+
+const WARM_BROWSER_LAUNCH_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-blink-features=AutomationControlled",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--disable-software-rasterizer",
+  "--disable-extensions",
+  "--disable-background-timer-throttling",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--mute-audio",
+  "--single-process",
+];
+
+async function acquireWarmBrowser() {
+  // Cancela timer de fechamento — quem chamou vai usar
+  if (warmBrowserIdleTimer) {
+    clearTimeout(warmBrowserIdleTimer);
+    warmBrowserIdleTimer = null;
+  }
+
+  // Testa se o browser ainda está vivo
+  const isAlive =
+    warmBrowser &&
+    warmBrowser.isConnected &&
+    (typeof warmBrowser.isConnected === "function"
+      ? warmBrowser.isConnected()
+      : true);
+
+  if (!isAlive) {
+    warmBrowser = await chromium.launch({
+      headless: true,
+      args: WARM_BROWSER_LAUNCH_ARGS,
+    });
+  }
+  warmBrowserUsageCount += 1;
+  return warmBrowser;
+}
+
+function releaseWarmBrowser() {
+  warmBrowserUsageCount = Math.max(0, warmBrowserUsageCount - 1);
+  if (warmBrowserUsageCount > 0) return; // ainda em uso
+
+  // Agenda fechamento após idle
+  if (warmBrowserIdleTimer) clearTimeout(warmBrowserIdleTimer);
+  warmBrowserIdleTimer = setTimeout(async () => {
+    const b = warmBrowser;
+    warmBrowser = null;
+    warmBrowserIdleTimer = null;
+    if (b) {
+      try {
+        await b.close();
+      } catch {
+        // ignore — se já foi fechado
+      }
+    }
+  }, WARM_BROWSER_IDLE_MS);
+  // unref pra nao bloquear shutdown do node
+  if (warmBrowserIdleTimer && typeof warmBrowserIdleTimer.unref === "function") {
+    warmBrowserIdleTimer.unref();
+  }
+}
+
 // ─── Configuracao das combinacoes (tab × store) que serao scraped ───
 // Tabs do ML Seller Center (filters URL param)
 const ML_TABS = [
@@ -275,14 +350,8 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
 
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-      ],
-    });
+    // P9: reusa browser warm (economiza ~2-3s do launch).
+    browser = await acquireWarmBrowser();
     const context = await browser.newContext({
       storageState,
       userAgent:
@@ -352,11 +421,8 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
     return { ok: false, ...errorInfo };
   } finally {
     if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // best-effort
-      }
+      // P9: devolve pro pool em vez de fechar.
+      releaseWarmBrowser();
     }
   }
 }
@@ -1009,29 +1075,10 @@ export async function scrapeMlSellerCenterFull({
   let browser;
   const captures = {};
   try {
-    // Args otimizados pra reduzir RAM (~150MB → ~80MB) — importante em
-    // VPS pequena. --single-process roda tudo numa thread (renderer +
-    // browser process) evitando overhead. --disable-* corta features
-    // que nao usamos no scraping.
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-extensions",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--mute-audio",
-        "--single-process",
-      ],
-    });
+    // P9 — warm pool: reusa browser entre scrapes pra economizar ~2-3s
+    // por chamada (launch do chromium headless). Auto-fecha após idle
+    // > 5min pra liberar ~80MB de RAM quando nao ha atividade.
+    browser = await acquireWarmBrowser();
     // Viewport menor (1280x720 vs 1920x1080) reduz memoria do renderer
     const context = await browser.newContext({
       storageState,
@@ -1137,11 +1184,9 @@ export async function scrapeMlSellerCenterFull({
     return { ok: false, ...errorInfo };
   } finally {
     if (browser) {
-      try {
-        await browser.close();
-      } catch {
-        // best-effort
-      }
+      // P9: nao fechamos o browser aqui — fica no warm pool. Reset do
+      // timer de idle: se ninguem pedir scrape em 5min, o pool fecha.
+      releaseWarmBrowser();
     }
   }
 }
