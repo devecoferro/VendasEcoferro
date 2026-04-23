@@ -14,6 +14,7 @@
  */
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type { ShipmentBucket } from "@/services/mercadoLivreHelpers";
+import { nextBusinessDay } from "@/utils/businessDays";
 import {
   isOrderInvoicePending,
   isOrderReadyToPrintLabel,
@@ -558,8 +559,14 @@ export function getOrderPickupDateLabel(order: MLOrder): string {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const target = new Date(date);
+  let target = new Date(date);
   target.setHours(0, 0, 0, 0);
+
+  // ML nao coleta em sab/dom/feriado nacional — se a data cair num
+  // desses, avanca pro proximo dia util. Evita cards "Coleta | Sabado"
+  // e "Coleta | Domingo", que sao inuteis pro operador (coleta nao
+  // acontece naquele dia).
+  target = nextBusinessDay(target);
 
   const diffDays = Math.round(
     (target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000)
