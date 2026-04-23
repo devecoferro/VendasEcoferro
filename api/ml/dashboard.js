@@ -512,14 +512,14 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
-  // ALINHAMENTO ML (2026-04-23): cancelados de HOJE aparecem na aba "Envios
-  // de hoje" do Seller Center com label "Venda cancelada. Não envie." pra
-  // alertar o operador. Cancelados antigos vao pra "Finalizadas".
+  // Cancelamento: ML Seller Center UI conta cancelados de hoje em "Finalizadas".
+  // Nossa classificação agora redireciona pra "finalized" e o filtro de data
+  // (linha ~1983 do loop principal) mantém só os de hoje.
   const rawOrderStatus = normalizeState(
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return "finalized";
   }
 
   // shipping.status=pending: pedido pago aguardando processamento.
@@ -596,14 +596,6 @@ function classifyCrossDockingOrder(order, todayKey) {
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
-    // ALINHAMENTO ML (2026-04-23): shipped sem substatus despachados HOJE
-    // aparecem em "Envios de hoje" com label "A caminho" no Seller Center
-    // (pra operador ver progresso). shipped antigos sem substatus sao
-    // stale — ignorar. Nota: normalizeState("") → "none", entao comparamos
-    // explicitamente com "none".
-    if ((!substatus || substatus === "none") && dates.shippedDateKey === todayKey) {
-      return "today";
-    }
     return null;
   }
 
@@ -624,10 +616,9 @@ function classifyCrossDockingOrder(order, todayKey) {
     return "finalized";
   }
 
-  // Cancelled via shipment.status: mesmo tratamento do bloco inicial —
-  // cancelados de HOJE vao pra "Envios de hoje" (alerta), resto pra finalized.
+  // Cancelled via shipment.status: ML UI conta em Finalizadas (filtro de data).
   if (status === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return "finalized";
   }
 
   // Devolvidas ficam em Finalizadas (pos-venda concluido).
@@ -654,14 +645,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.handlingDateKey ||
     dates.saleDateKey;
 
-  // ALINHAMENTO ML (2026-04-23): cancelados de HOJE vao pra "Envios de hoje"
-  // com label "Venda cancelada. Nao envie." Cancelados antigos vao pra
-  // "Finalizadas".
+  // Cancelamento: ML UI conta em Finalizadas (filtro de data aplicado depois).
   const rawOrderStatus = normalizeState(
     order.raw_data?.status || order.order_status || ""
   );
   if (rawOrderStatus === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return "finalized";
   }
 
   // shipping.status=pending: pedido pago aguardando processamento.
@@ -722,11 +711,6 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
         : 999;
       return shippedAge <= 2 ? "in_transit" : null;
     }
-    // ALINHAMENTO ML (2026-04-23): shipped sem substatus despachados HOJE
-    // aparecem em "Envios de hoje" com label "A caminho" no Seller Center.
-    if ((!substatus || substatus === "none") && dates.shippedDateKey === todayKey) {
-      return "today";
-    }
     return null;
   }
 
@@ -742,10 +726,8 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     return "finalized";
   }
 
-  // Cancelled via shipment.status: cancelados de HOJE vao pra "Envios de
-  // hoje" (alerta), resto pra finalized. Mesmo tratamento do bloco inicial.
   if (status === "cancelled") {
-    return dates.finalExceptionDateKey === todayKey ? "today" : "finalized";
+    return "finalized";
   }
 
   if (status === "returned") {
@@ -1730,12 +1712,8 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         cancelledRecent.push(order);
       }
     }
-    // ALINHAMENTO ML (2026-04-23): cancelados de HOJE vao pra "Envios de hoje"
-    // no Seller Center com label "Venda cancelada. Nao envie." — alerta pra
-    // o operador nao despachar por engano. Antes redirecionavamos pra
-    // finalized; ML UI NAO mostra eles em finalized, so em today.
     for (const order of cancelledRecent) {
-      addMlOrderIds("today", [String(order.id)]);
+      addMlOrderIds("finalized", [String(order.id)]);
     }
 
     // Busca adicional: cancelled de HOJE via order.status=cancelled
@@ -1752,9 +1730,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       for (const [key, pack] of cancelledPacks) {
         if (cancelledOrdersSeen.has(key)) continue;
         cancelledOrdersSeen.add(key);
-        // ALINHAMENTO ML: cancelados de hoje em "Envios de hoje" (mesma regra
-        // aplicada ao cancelledRecent acima — alerta "nao enviar").
-        addMlOrderIds("today", pack.ml_order_ids);
+        addMlOrderIds("finalized", pack.ml_order_ids);
       }
     } catch {
       // best-effort
@@ -1919,16 +1895,6 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
           addMlOrderIds("in_transit", pack.ml_order_ids);
         } else {
           shippedStale++;
-        }
-      } else if (!sub && shipment.dateShipped) {
-        // ALINHAMENTO ML (2026-04-23): shipped sem substatus despachados HOJE
-        // aparecem em "Envios de hoje" com label "A caminho" no Seller Center.
-        // Antes iam pra shippedNormal (nenhum bucket).
-        const shippedKey = getDateKey(shipment.dateShipped);
-        if (shippedKey === todayKey) {
-          addMlOrderIds("today", pack.ml_order_ids);
-        } else {
-          shippedNormal++;
         }
       } else {
         // Trânsito normal (in_transit, at_sender, etc.) → nenhum chip.
