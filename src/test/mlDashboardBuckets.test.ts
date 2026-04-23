@@ -218,3 +218,107 @@ describe("isOrderForCollection", () => {
     expect(__dashboardTestables.isOrderForCollection(order)).toBe(false);
   });
 });
+
+// Regressões específicas descobertas em 2026-04-23 via engenharia reversa
+// do ML Seller Center (ver docs/ml-bricks-reverse-engineered.md).
+describe("classifyCrossDockingOrder — regressoes 2026-04-23", () => {
+  it("pedido 2000016018511684: in_packing_list + paid → today (SLA vencido)", () => {
+    // Cenario real: nosso DB tem substatus=in_packing_list, ML UI ja moveu
+    // pra "A caminho" mas a API dele ainda retorna in_packing_list. O
+    // classifier LOCAL acerta em mandar pra today (regra linha 566-570
+    // do dashboard.js), e o fix do snapshot subtrai do bucket no frontend.
+    const order = buildOrder({
+      orderStatus: "paid",
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "in_packing_list",
+      expectedDate: "2026-04-22T23:59:59.000-03:00",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("today");
+  });
+
+  it("picked_up vai pra in_transit (nao today)", () => {
+    const order = buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "picked_up",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("in_transit");
+  });
+
+  it("authorized_by_carrier vai pra in_transit", () => {
+    const order = buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "authorized_by_carrier",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("in_transit");
+  });
+
+  it("cancelled fica em finalized (nao today, mesmo com SLA hoje)", () => {
+    const order = buildOrder({
+      orderStatus: "cancelled",
+      shipmentStatus: "cancelled",
+      shipmentSubstatus: "",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("finalized");
+  });
+
+  it("packed vai pra today (pronto pra envio)", () => {
+    const order = buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "packed",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("today");
+  });
+
+  it("ready_to_print vai pra today (coleta do dia passa)", () => {
+    const order = buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "ready_to_print",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("today");
+  });
+
+  it("invoice_pending vai pra upcoming (aguardando NF)", () => {
+    const order = buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "invoice_pending",
+    });
+    expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
+      .toBe("upcoming");
+  });
+});
+
+describe("classifyFulfillmentOrder — cobertura basica", () => {
+  function buildFulfillmentOrder(overrides: Record<string, unknown> = {}) {
+    return buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "in_warehouse",
+      depositKey: "logistic:fulfillment",
+      logisticType: "fulfillment",
+      ...overrides,
+    });
+  }
+
+  it("status cancelled → finalized", () => {
+    const order = buildFulfillmentOrder({ orderStatus: "cancelled" });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-04-23", null)
+    ).toBe("finalized");
+  });
+
+  it("status delivered → finalized", () => {
+    const order = buildFulfillmentOrder({
+      orderStatus: "paid",
+      shipmentStatus: "delivered",
+      shipmentSubstatus: "",
+    });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-04-23", null)
+    ).toBe("finalized");
+  });
+});

@@ -3,6 +3,7 @@ import { db } from "../_lib/db.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { getConnectionById } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
+import { recordAuditLog } from "../_lib/audit-log.js";
 
 const STOCK_PAGE_LIMIT = 100;
 const STOCK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -513,7 +514,9 @@ ensureLocationColumns();
 
 export default async function mlStockHandler(req, res) {
   try {
-    await requireAuthenticatedProfile(req);
+    const { profile } = await requireAuthenticatedProfile(req);
+    // Anexa profile em req pra handlers downstream usarem (audit-log, etc).
+    req.profile = profile;
   } catch (error) {
     const statusCode = error?.statusCode || 401;
     return res.status(statusCode).json({
@@ -595,6 +598,14 @@ export default async function mlStockHandler(req, res) {
         `UPDATE ml_stock SET ${setClauses}, updated_at = @updated_at WHERE connection_id = @connection_id AND item_id = @item_id`
       ).run({ ...updates, updated_at: now, connection_id: connectionId, item_id: String(itemId) });
 
+      recordAuditLog({
+        req,
+        action: "stock.update",
+        targetType: "ml_stock",
+        targetId: String(itemId),
+        payload: { fields: Object.keys(updates), updates },
+      });
+
       return res.json({ success: true });
     } catch (error) {
       return res.status(500).json({ error: error.message });
@@ -610,6 +621,14 @@ export default async function mlStockHandler(req, res) {
       const result = db.prepare(
         "DELETE FROM ml_stock WHERE connection_id = ? AND item_id = ?"
       ).run(connectionId, String(itemId));
+
+      recordAuditLog({
+        req,
+        action: "stock.delete",
+        targetType: "ml_stock",
+        targetId: String(itemId),
+        payload: { deleted: result.changes },
+      });
 
       return res.json({ success: true, deleted: result.changes });
     } catch (error) {

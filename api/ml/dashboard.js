@@ -2507,6 +2507,7 @@ export default async function handler(request, response) {
 
 export const __dashboardTestables = {
   classifyCrossDockingOrder,
+  classifyFulfillmentOrder,
   classifyNativeMercadoLivreOrder,
   classifySellerCenterMirrorEntity,
   isSellerCenterMirrorFinalStatus,
