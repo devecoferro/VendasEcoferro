@@ -322,3 +322,100 @@ describe("classifyFulfillmentOrder — cobertura basica", () => {
     ).toBe("finalized");
   });
 });
+
+// Builders com status_history pra cobrir os casos novos (cancelled/shipped hoje).
+function buildOrderWithHistory(
+  overrides: Record<string, unknown>,
+  statusHistory: Record<string, string>
+) {
+  const base = buildOrder({
+    shipmentStatus: "cancelled",
+    shipmentSubstatus: "",
+    ...(overrides as Parameters<typeof buildOrder>[0]),
+  });
+  base.raw_data.shipment_snapshot.status_history = statusHistory as unknown as Record<
+    string,
+    never
+  >;
+  return base;
+}
+
+describe("alinhamento ML — cancelled/shipped HOJE", () => {
+  const TODAY = "2026-04-23";
+  const TODAY_ISO = "2026-04-23T15:00:00.000-03:00";
+  const YESTERDAY_ISO = "2026-04-22T15:00:00.000-03:00";
+
+  describe("cancelled de HOJE → bucket today (alerta 'Nao enviar')", () => {
+    it("cross-docking: cancelled HOJE vai pra today", () => {
+      const order = buildOrderWithHistory(
+        { orderStatus: "cancelled" },
+        { date_cancelled: TODAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
+      ).toBe("today");
+    });
+
+    it("cross-docking: cancelled ONTEM vai pra finalized", () => {
+      const order = buildOrderWithHistory(
+        { orderStatus: "cancelled" },
+        { date_cancelled: YESTERDAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
+      ).toBe("finalized");
+    });
+
+    it("fulfillment: cancelled HOJE vai pra today", () => {
+      const order = buildOrderWithHistory(
+        {
+          orderStatus: "cancelled",
+          depositKey: "logistic:fulfillment",
+          logisticType: "fulfillment",
+        },
+        { date_cancelled: TODAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyFulfillmentOrder(order, TODAY, null)
+      ).toBe("today");
+    });
+  });
+
+  describe("shipped sem substatus HOJE → bucket today (label 'A caminho')", () => {
+    it("cross-docking: shipped/null despachado HOJE vai pra today", () => {
+      const order = buildOrderWithHistory(
+        { orderStatus: "paid", shipmentStatus: "shipped", shipmentSubstatus: "" },
+        { date_shipped: TODAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
+      ).toBe("today");
+    });
+
+    it("cross-docking: shipped/null despachado ONTEM volta a nao contar (null)", () => {
+      const order = buildOrderWithHistory(
+        { orderStatus: "paid", shipmentStatus: "shipped", shipmentSubstatus: "" },
+        { date_shipped: YESTERDAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyCrossDockingOrder(order, TODAY)
+      ).toBeNull();
+    });
+
+    it("fulfillment: shipped/null despachado HOJE vai pra today", () => {
+      const order = buildOrderWithHistory(
+        {
+          orderStatus: "paid",
+          shipmentStatus: "shipped",
+          shipmentSubstatus: "",
+          depositKey: "logistic:fulfillment",
+          logisticType: "fulfillment",
+        },
+        { date_shipped: TODAY_ISO }
+      );
+      expect(
+        __dashboardTestables.classifyFulfillmentOrder(order, TODAY, null)
+      ).toBe("today");
+    });
+  });
+});
