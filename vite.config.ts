@@ -75,6 +75,31 @@ export default defineConfig(({ mode }) => ({
           ) {
             return "vendor-forms";
           }
+          // Supabase client — grande, usado em toda a app mas estavel
+          if (normalizedId.includes("node_modules/@supabase/")) {
+            return "vendor-supabase";
+          }
+          // TanStack query + virtual — estado de servidor + virtualizacao
+          if (normalizedId.includes("node_modules/@tanstack/")) {
+            return "vendor-tanstack";
+          }
+          // pdf-lib — manipulacao PDF (diferente de jsPDF, que so gera)
+          if (normalizedId.includes("node_modules/pdf-lib")) {
+            return "vendor-pdf-lib";
+          }
+          // react-day-picker — calendar grande (usado so em poucos campos)
+          if (normalizedId.includes("node_modules/react-day-picker")) {
+            return "vendor-daypicker";
+          }
+          // embla + vaul + cmdk — UI libs medias, raro mudar
+          if (
+            normalizedId.includes("node_modules/embla-carousel") ||
+            normalizedId.includes("node_modules/vaul") ||
+            normalizedId.includes("node_modules/cmdk") ||
+            normalizedId.includes("node_modules/sonner")
+          ) {
+            return "vendor-ui-extras";
+          }
           // D3 — dep transitiva de recharts; pode ser grande. Nao separa
           // completamente pra nao gerar circular dep, mas agrupa.
           // React, React DOM, scheduler, react-router — todos vão para vendor-misc.

@@ -29,6 +29,41 @@ const ALLOWED_HOSTS = [
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB
 const FETCH_TIMEOUT_MS = 10_000;
 
+// Cache LRU em memoria — evita re-fetch da mesma thumbnail em cada geracao
+// de PDF. Thumbnails do ML sao imutaveis pro mesmo hash na URL, entao cache
+// longo e seguro. Limite por numero de entries (nao bytes) pra evitar leak
+// em caso de uso anormal.
+const IMAGE_CACHE_MAX_ENTRIES = 500;
+const IMAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const imageCache = new Map(); // url → { buffer, contentType, expiresAt }
+
+function cacheGet(url) {
+  const entry = imageCache.get(url);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    imageCache.delete(url);
+    return null;
+  }
+  // LRU: re-insere no final (hash preserva ordem de insercao)
+  imageCache.delete(url);
+  imageCache.set(url, entry);
+  return entry;
+}
+
+function cacheSet(url, buffer, contentType) {
+  // Evict LRU (primeiro entry) quando atinge o limite
+  while (imageCache.size >= IMAGE_CACHE_MAX_ENTRIES) {
+    const firstKey = imageCache.keys().next().value;
+    if (firstKey == null) break;
+    imageCache.delete(firstKey);
+  }
+  imageCache.set(url, {
+    buffer,
+    contentType,
+    expiresAt: Date.now() + IMAGE_CACHE_TTL_MS,
+  });
+}
+
 function isHostAllowed(hostname) {
   const lower = String(hostname || "").toLowerCase();
   return ALLOWED_HOSTS.some(
@@ -72,6 +107,17 @@ export default async function handler(request, response) {
     return response.status(403).json({
       error: `Host nao permitido: ${parsed.hostname}. Whitelist: ${ALLOWED_HOSTS.join(", ")}`,
     });
+  }
+
+  // Cache hit — serve direto da memoria sem tocar o upstream
+  const normalizedUrl = parsed.toString();
+  const cached = cacheGet(normalizedUrl);
+  if (cached) {
+    response.setHeader("Content-Type", cached.contentType);
+    response.setHeader("Cache-Control", "public, max-age=3600, immutable");
+    response.setHeader("Content-Length", String(cached.buffer.length));
+    response.setHeader("X-Image-Cache", "HIT");
+    return response.status(200).send(cached.buffer);
   }
 
   // Fetch com timeout pra evitar hang em URL morta
@@ -118,11 +164,15 @@ export default async function handler(request, response) {
 
     const buffer = Buffer.from(arrayBuffer);
 
+    // Popula cache in-memory pro proximo request da mesma URL
+    cacheSet(normalizedUrl, buffer, contentType);
+
     // Cache no browser por 1h — thumbnails do ML sao imutaveis pra mesmo
     // hash na URL, entao seguro cachear forte.
     response.setHeader("Content-Type", contentType);
     response.setHeader("Cache-Control", "public, max-age=3600, immutable");
     response.setHeader("Content-Length", String(buffer.length));
+    response.setHeader("X-Image-Cache", "MISS");
     return response.status(200).send(buffer);
   } catch (error) {
     if (error?.name === "AbortError") {
