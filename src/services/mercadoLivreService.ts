@@ -855,6 +855,7 @@ export async function startMLOAuth(): Promise<string> {
 
 export async function exchangeMLCode(params: {
   code: string;
+  state: string;
   redirectUri?: string;
   codeVerifier?: string;
 }): Promise<MLConnection> {
@@ -874,6 +875,7 @@ export async function exchangeMLCode(params: {
       body: JSON.stringify({
         action: "exchange_code",
         code: params.code,
+        state: params.state,
         redirect_uri: redirectUri,
         code_verifier: params.codeVerifier,
       }),
