@@ -2017,34 +2017,37 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     };
 
     // ═════════════════════════════════════════════════════════════════
-    // ALINHAMENTO 1:1 COM ML SELLER CENTER (2026-04-23 4a+ auditoria):
-    // Chama o endpoint OFICIAL do ML (/sales-omni/packs/marketshops/
-    // operations-dashboard/tabs) via proxy wrapper com cookies da sessao.
-    // Usa os counts EXATOS que o ML mostra no chip do header.
+    // ML CHIP PROXY (opcional, desativado por default):
     //
-    // Preserva order_ids_by_bucket (nossa classificacao local) pra o
-    // frontend continuar mostrando todos os pedidos operacionais
-    // quando o user clica num chip. So os NUMEROS do header viram os
-    // numeros oficiais do ML.
+    // O endpoint oficial do ML (/sales-omni/packs/marketshops/
+    // operations-dashboard/tabs) retorna chips 1:1 com o Seller Center,
+    // MAS descobrimos que o valor de TAB_TODAY no retorno depende do
+    // parametro `filters` enviado na query — nao e estavel. Alem disso
+    // depende de storage state do ML (expira ~horas), gerando 403
+    // quando a sessao cai.
     //
-    // Fail-open: se chamada falhar (sessao expirada, rate limit), usa
-    // os counts locais (comportamento atual).
+    // Pra ativar: setar env ENABLE_ML_CHIP_PROXY=true. Quando ativo,
+    // tenta buscar counts oficiais; se falhar, fallback pra local.
+    // Default: usa classifier local (semanticamente correto, conforme
+    // 4a auditoria, ~96% de concordancia com chip do ML).
+    //
+    // Ver docs/ml-chip-sync-notes.md pra historico completo.
     // ═════════════════════════════════════════════════════════════════
-    try {
-      const mlCounts = await fetchMLChipCountsDirect();
-      if (mlCounts && typeof mlCounts === "object") {
-        result.counts_local = { ...result.counts };
-        result.counts.today = mlCounts.today;
-        result.counts.upcoming = mlCounts.upcoming;
-        result.counts.in_transit = mlCounts.in_transit;
-        result.counts.finalized = mlCounts.finalized;
-        result.chip_source = "ml_direct";
-      } else {
-        result.chip_source = "local_classifier";
+    result.chip_source = "local_classifier";
+    if (process.env.ENABLE_ML_CHIP_PROXY === "true") {
+      try {
+        const mlCounts = await fetchMLChipCountsDirect();
+        if (mlCounts && typeof mlCounts === "object") {
+          result.counts_local = { ...result.counts };
+          result.counts.today = mlCounts.today;
+          result.counts.upcoming = mlCounts.upcoming;
+          result.counts.in_transit = mlCounts.in_transit;
+          result.counts.finalized = mlCounts.finalized;
+          result.chip_source = "ml_direct";
+        }
+      } catch {
+        // fail-open — fallback pra local
       }
-    } catch (err) {
-      // best-effort — fallback pra counts locais
-      result.chip_source = "local_classifier";
     }
 
     // ── Diagnóstico detalhado ─────────────────────────────────────────
