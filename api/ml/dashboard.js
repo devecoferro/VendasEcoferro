@@ -2017,28 +2017,25 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     };
 
     // ═════════════════════════════════════════════════════════════════
-    // ML CHIP PROXY (opcional, desativado por default):
+    // ML CHIP PROXY — alinhamento automatico 1:1 com chips oficiais.
     //
-    // O endpoint oficial do ML (/sales-omni/packs/marketshops/
-    // operations-dashboard/tabs) retorna chips 1:1 com o Seller Center,
-    // MAS descobrimos que o valor de TAB_TODAY no retorno depende do
-    // parametro `filters` enviado na query — nao e estavel. Alem disso
-    // depende de storage state do ML (expira ~horas), gerando 403
-    // quando a sessao cai.
+    // Chama o endpoint /sales-omni/packs/marketshops/operations-dashboard/
+    // tabs 4x (uma por filter) e pega o MAIOR count por segment — mesma
+    // logica do scraper do ML que funciona 1:1. Cache 60s.
     //
-    // Pra ativar: setar env ENABLE_ML_CHIP_PROXY=true. Quando ativo,
-    // tenta buscar counts oficiais; se falhar, fallback pra local.
-    // Default: usa classifier local (semanticamente correto, conforme
-    // 4a auditoria, ~96% de concordancia com chip do ML).
+    // counts_local preserva nossos calculos (debug + fallback em caso de
+    // session expirada). chip_source indica a fonte ("ml_direct" /
+    // "local_classifier") pra transparencia.
     //
-    // Ver docs/ml-chip-sync-notes.md pra historico completo.
+    // Pra DESATIVAR (em caso de bug ou degradacao): setar env
+    // DISABLE_ML_CHIP_PROXY=true.
     // ═════════════════════════════════════════════════════════════════
+    result.counts_local = { ...result.counts };
     result.chip_source = "local_classifier";
-    if (process.env.ENABLE_ML_CHIP_PROXY === "true") {
+    if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
       try {
         const mlCounts = await fetchMLChipCountsDirect();
         if (mlCounts && typeof mlCounts === "object") {
-          result.counts_local = { ...result.counts };
           result.counts.today = mlCounts.today;
           result.counts.upcoming = mlCounts.upcoming;
           result.counts.in_transit = mlCounts.in_transit;
