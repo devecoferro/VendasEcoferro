@@ -213,6 +213,9 @@ export interface MLDashboardResponse {
   post_sale_overview?: MLDashboardPostSaleOverview;
   operational_queues?: MLDashboardOperationalQueues;
   deposits: MLDashboardDeposit[];
+  ml_ui_chip_counts?: MLLiveChipCounts | null;
+  ml_ui_chip_counts_stale?: boolean;
+  ml_ui_chip_counts_age_seconds?: number | null;
   ml_live_chip_counts?: MLLiveChipCounts;
   ml_live_chip_order_ids_by_bucket?: MLLiveChipOrderIdsByBucket;
 }
@@ -1050,6 +1053,9 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     post_sale_overview?: MLDashboardPostSaleOverview;
     operational_queues?: MLDashboardOperationalQueues;
     deposits?: MLDashboardDeposit[];
+    ml_ui_chip_counts?: MLLiveChipCounts | null;
+    ml_ui_chip_counts_stale?: boolean;
+    ml_ui_chip_counts_age_seconds?: number | null;
     ml_live_chip_counts?: MLLiveChipCounts;
     ml_live_chip_order_ids_by_bucket?: MLLiveChipOrderIdsByBucket;
     error?: string;
@@ -1073,6 +1079,9 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     post_sale_overview: data?.post_sale_overview,
     operational_queues: data?.operational_queues,
     deposits: Array.isArray(data?.deposits) ? data.deposits : [],
+    ml_ui_chip_counts: data?.ml_ui_chip_counts ?? null,
+    ml_ui_chip_counts_stale: Boolean(data?.ml_ui_chip_counts_stale),
+    ml_ui_chip_counts_age_seconds: data?.ml_ui_chip_counts_age_seconds ?? null,
     ml_live_chip_counts: data?.ml_live_chip_counts,
     ml_live_chip_order_ids_by_bucket: data?.ml_live_chip_order_ids_by_bucket,
   };

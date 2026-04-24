@@ -31,9 +31,10 @@ import {
 const log = createLogger("ml-chip-proxy");
 
 const CACHE_TTL_MS = 60 * 1000;
-const SCRAPER_FRESHNESS_MS = 3 * 60 * 1000; // aceita cache do scraper ate 3min
+const SCRAPER_FRESHNESS_MS = 30 * 60 * 1000; // aceita cache do scraper ate 30min (stale tolerance)
 
 let chipCountsCache = null;
+let lastKnownCounts = null; // ultimo valor conhecido (mesmo stale) — evita pulo UX quando cache expira
 let inflightPromise = null;
 
 function extractCountsFromSnapshot(snap) {
@@ -60,11 +61,9 @@ async function doFetchChips() {
   // cache existente (alimentado por background refresh a cada 30s).
   const cached = getCachedLiveSnapshot("all");
   if (!cached) {
-    // Sem cache — dispara refresh background pra proxima chamada e
-    // retorna null (fallback classifier local nessa chamada).
     maybeRefreshLiveSnapshotInBackground("all");
-    log.info("sem cache scraper — disparando refresh background");
-    return null;
+    log.info("sem cache scraper — retornando ultimo valor conhecido (ou null)");
+    return lastKnownCounts ? { ...lastKnownCounts, stale: true, ageSeconds: null } : null;
   }
 
   const snapTs = new Date(
@@ -72,28 +71,25 @@ async function doFetchChips() {
   ).getTime();
   const ageMs = Date.now() - snapTs;
 
-  // Sempre dispara refresh background se cache tiver mais de 45s
   if (ageMs > 45_000) {
     maybeRefreshLiveSnapshotInBackground("all");
   }
 
-  // Aceita cache ate SCRAPER_FRESHNESS_MS (3min). Acima disso, retorna
-  // null pra nao servir dados velhos.
-  if (ageMs > SCRAPER_FRESHNESS_MS) {
-    log.info("cache scraper muito velho — fallback classifier local", {
-      ageSeconds: Math.round(ageMs / 1000),
-    });
-    return null;
+  const counts = extractCountsFromSnapshot(cached.data);
+  if (!counts) {
+    return lastKnownCounts ? { ...lastKnownCounts, stale: true, ageSeconds: null } : null;
   }
 
-  const counts = extractCountsFromSnapshot(cached.data);
-  if (!counts) return null;
+  // Atualiza lastKnownCounts sempre que temos valor valido (mesmo stale)
+  lastKnownCounts = counts;
 
-  log.info("chips do scraper (cache)", {
+  const stale = ageMs > SCRAPER_FRESHNESS_MS;
+  log.info(stale ? "chips do scraper (stale)" : "chips do scraper (cache)", {
     ...counts,
     ageSeconds: Math.round(ageMs / 1000),
+    stale,
   });
-  return counts;
+  return { ...counts, stale, ageSeconds: Math.round(ageMs / 1000) };
 }
 
 /**

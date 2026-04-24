@@ -1389,6 +1389,24 @@ export default function MercadoLivrePage() {
     return localCounts;
   }, [selectedDashboardDeposits, dashboard, scopedLiveSnapshot]);
 
+  // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
+  const chipMeta = useMemo(() => {
+    if (scopedLiveSnapshot?.counters && typeof scopedLiveSnapshot.counters.today === "number") {
+      return { source: "live_snapshot" as const, stale: false, ageSeconds: null };
+    }
+    if (dashboard?.ml_ui_chip_counts && typeof dashboard.ml_ui_chip_counts.today === "number") {
+      return {
+        source: "ml_ui" as const,
+        stale: Boolean(dashboard.ml_ui_chip_counts_stale),
+        ageSeconds: dashboard.ml_ui_chip_counts_age_seconds ?? null,
+      };
+    }
+    if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
+      return { source: "ml_live" as const, stale: false, ageSeconds: null };
+    }
+    return { source: "local" as const, stale: false, ageSeconds: null };
+  }, [dashboard, scopedLiveSnapshot]);
+
   // IDs dos pedidos que compõem a lista abaixo do chip selecionado.
   //
   // FONTE DE VERDADE: ml_live_chip_order_ids_by_bucket (ML Seller Center).
@@ -2103,7 +2121,7 @@ export default function MercadoLivrePage() {
 
           {/* Chips de bucket + Etiquetas imprimíveis */}
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {SHIPMENT_FILTERS.map((filterOption) => {
                 const active = shipmentFilter === filterOption.key;
                 const count = shipmentCounts[filterOption.key];
@@ -2116,7 +2134,18 @@ export default function MercadoLivrePage() {
                       active
                         ? "bg-white text-[#333333] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
                         : "text-[#666666] hover:bg-white/70"
-                    }`}
+                    } ${chipMeta.stale ? "opacity-70" : ""}`}
+                    title={
+                      chipMeta.source === "live_snapshot"
+                        ? "Fonte: live snapshot ML (1:1 com Seller Center)"
+                        : chipMeta.source === "ml_ui"
+                          ? chipMeta.stale
+                            ? `Fonte: chip ML (cache stale, ${chipMeta.ageSeconds ?? "?"}s) — atualizando em background`
+                            : "Fonte: chip ML (Seller Center)"
+                          : chipMeta.source === "ml_live"
+                            ? "Fonte: API ML (classifier local)"
+                            : "Fonte: classifier local (pode divergir do ML)"
+                    }
                   >
                     <span>{filterOption.label}</span>
                     <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[#3483fa] px-1.5 py-0.5 text-xs font-bold text-white">
@@ -2125,6 +2154,16 @@ export default function MercadoLivrePage() {
                   </button>
                 );
               })}
+              {chipMeta.source === "local" && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+                  ⚠ Chip ML indisponível — contagem local
+                </span>
+              )}
+              {chipMeta.source === "ml_ui" && chipMeta.stale && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700">
+                  ↻ Sincronizando ML{chipMeta.ageSeconds != null ? ` (${chipMeta.ageSeconds}s)` : ""}
+                </span>
+              )}
             </div>
             <div className="inline-flex items-center gap-2 rounded-full border border-[#e6e6e6] bg-white px-4 py-2 text-[15px] text-[#5a6d92] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               <span className="font-medium">Etiquetas imprimíveis</span>

@@ -2574,14 +2574,40 @@ export async function buildDashboardPayload(options = {}) {
     }
   }
 
-  // ML UI chip counts (via scraper do Seller Center — 100% alinhado com UI).
-  // Override com maior prioridade se disponível.
+  // ML UI chip counts (via scraper do Seller Center — 100% alinhado com UI visual).
+  // Prioriza fetchMLChipCountsDirect (que mantem lastKnownCounts mesmo quando cache
+  // expira, evitando pulo UX de 1→3→1). Fallback pro getUiChipCounts() legado.
   let mlUiChipCounts = null;
-  try {
-    const { getUiChipCounts } = await import("./_lib/seller-center-scraper.js");
-    mlUiChipCounts = getUiChipCounts();
-  } catch {
-    // scraper não configurado ou falhou — ignora (fallback pro ml_live_chip_counts)
+  let mlUiChipCountsStale = false;
+  let mlUiChipCountsAgeSeconds = null;
+  if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+    try {
+      const { fetchMLChipCountsDirect } = await import("./_lib/ml-chip-proxy.js");
+      const counts = await fetchMLChipCountsDirect();
+      if (counts && typeof counts === "object" && Number.isFinite(counts.today)) {
+        mlUiChipCounts = {
+          today: counts.today,
+          upcoming: counts.upcoming,
+          in_transit: counts.in_transit,
+          finalized: counts.finalized,
+          cancelled: 0,
+        };
+        mlUiChipCountsStale = Boolean(counts.stale);
+        mlUiChipCountsAgeSeconds = Number.isFinite(counts.ageSeconds)
+          ? counts.ageSeconds
+          : null;
+      }
+    } catch {
+      // fail-open — fallback pro legado abaixo
+    }
+  }
+  if (!mlUiChipCounts) {
+    try {
+      const { getUiChipCounts } = await import("./_lib/seller-center-scraper.js");
+      mlUiChipCounts = getUiChipCounts();
+    } catch {
+      // scraper não configurado ou falhou — payload fica sem ml_ui_chip_counts
+    }
   }
 
   const payload = {
@@ -2596,6 +2622,12 @@ export async function buildDashboardPayload(options = {}) {
     // Fonte de verdade MÁXIMA — bate 100% com o que o usuário vê no ML.
     // Se null, o frontend usa ml_live_chip_counts (fallback API ML).
     ml_ui_chip_counts: mlUiChipCounts,
+    // Flag: o valor de ml_ui_chip_counts vem de cache stale (> 30min)?
+    // Frontend deve renderizar badge "atualizando..." quando true, sem trocar
+    // o numero (evita pulo visual — ultimo valor conhecido continua melhor
+    // que fallback pra classifier local, que diverge muito).
+    ml_ui_chip_counts_stale: mlUiChipCountsStale,
+    ml_ui_chip_counts_age_seconds: mlUiChipCountsAgeSeconds,
     // Contagens LIVE dos chips — ML API como fonte de verdade.
     // Pack-deduplicated, classificado por substatus real do ML.
     // Se null, o frontend usa counts dos deposits (fallback local).
