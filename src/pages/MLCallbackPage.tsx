@@ -49,8 +49,17 @@ export default function MLCallbackPage() {
       return;
     }
 
+    // Backend exige `state` no exchange_code — antes caía com "state is
+    // required" porque ele chegava da URL mas não era reencaminhado.
+    if (!state) {
+      setStatus("error");
+      setMessage("Parâmetro `state` ausente na URL de retorno do Mercado Livre.");
+      return;
+    }
+
     exchangeMLCode({
       code,
+      state,
       redirectUri,
       codeVerifier,
     })
