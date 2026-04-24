@@ -9,9 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SaleCardPreview } from "@/components/SaleCardPreview";
 import {
+  AlertTriangle,
   CheckCircle2,
+  ExternalLink,
   FileText,
+  Flame,
   Loader2,
+  MessageSquare,
   Printer,
   Receipt,
   Tag,
@@ -25,12 +29,16 @@ import {
   formatSaleMoment,
   getBuyerType,
   getDepositInfo,
+  getMLTrackingUrl,
   getShipmentPresentation,
   isOrderForCollection,
   isOrderFulfillment,
   isOrderInvoicePending,
   isOrderUnderReview,
+  orderHasClaimOrMediation,
+  orderPriority,
 } from "@/services/mercadoLivreHelpers";
+import { orderHasUnreadMessages } from "@/services/mlSubStatusClassifier";
 
 export interface VirtualizedOrderListProps {
   orders: MLOrder[];
@@ -76,6 +84,10 @@ const OrderCard = memo(function OrderCard({
   const buyerType = getBuyerType(order);
   const nfeEligible = isOrderInvoicePending(order);
   const labelEligible = canPrintMLShippingLabel(order);
+  const hasClaim = orderHasClaimOrMediation(order);
+  const hasUnreadMsgs = orderHasUnreadMessages(order);
+  const isHighPriority = orderPriority(order) === "high";
+  const trackingUrl = getMLTrackingUrl(order);
 
   return (
     <article className="mb-3 overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:mb-4">
@@ -120,6 +132,35 @@ const OrderCard = memo(function OrderCard({
               {nfeEligible && <Badge variant="secondary">NF-e sem emitir</Badge>}
               {isOrderUnderReview(order) && <Badge variant="destructive">Em revisão</Badge>}
               {isOrderForCollection(order) && <Badge variant="outline">Para coleta</Badge>}
+              {isHighPriority && (
+                <Badge
+                  variant="destructive"
+                  className="border-[#f87171] bg-[#fef2f2] text-[#b91c1c]"
+                  title="Pedido marcado como alta prioridade pelo ML"
+                >
+                  <Flame className="mr-1 h-3 w-3" />
+                  Prioridade alta
+                </Badge>
+              )}
+              {hasClaim && (
+                <Badge
+                  variant="destructive"
+                  title="Pedido com reclamação ou mediação aberta no ML"
+                >
+                  <AlertTriangle className="mr-1 h-3 w-3" />
+                  Reclamação / Mediação
+                </Badge>
+              )}
+              {hasUnreadMsgs && (
+                <Badge
+                  variant="outline"
+                  className="border-[#60a5fa] bg-[#eff6ff] text-[#1d4ed8]"
+                  title="Comprador enviou mensagem não lida"
+                >
+                  <MessageSquare className="mr-1 h-3 w-3" />
+                  Msg. não lidas
+                </Badge>
+              )}
               {order.label_printed_at ? (
                 <Badge
                   variant="outline"
@@ -193,6 +234,15 @@ const OrderCard = memo(function OrderCard({
             >
               <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
               Documentos
+            </Button>
+            <Button
+              variant="outline"
+              className="h-11 w-full rounded-lg border-[#d9e7ff] bg-white px-4 text-[13px] font-semibold text-[#2968c8] hover:bg-[#eef4ff] sm:w-auto sm:text-sm"
+              onClick={() => window.open(trackingUrl, "_blank", "noopener,noreferrer")}
+              title="Abre acompanhamento no ML Seller Center (nova aba)"
+            >
+              <ExternalLink className="mr-1.5 h-4 w-4 sm:mr-2" />
+              Acompanhar
             </Button>
           </div>
         </div>

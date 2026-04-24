@@ -559,6 +559,44 @@ export function getBuyerType(order: MLOrder): BuyerTypeFilter {
   return isBusiness ? "business" : "person";
 }
 
+// Y2: helpers de tags/prioridade capturadas do raw_data ML.
+// tags comuns: ["paid", "messages_with_unread_messages", "claim", "mediation", "test_order"]
+// priority vem em raw_data.priority ou raw_data.tags contendo "high_priority".
+
+export function orderHasClaimOrMediation(order: MLOrder): boolean {
+  const tags = Array.isArray(getRawData(order).tags) ? (getRawData(order).tags as unknown[]) : [];
+  return tags.some((t) => {
+    const v = normalizeState(t);
+    return v === "claim" || v === "mediation" || v === "claim_or_mediation";
+  });
+}
+
+/**
+ * Retorna 'high' se o ML marcou o pedido como prioridade alta. Vem de:
+ *  - raw_data.priority: "high" (oficial)
+ *  - raw_data.tags inclui "high_priority" (fallback/scraper)
+ */
+export function orderPriority(order: MLOrder): "high" | null {
+  const raw = getRawData(order);
+  if (normalizeState(raw.priority) === "high") return "high";
+  const tags = Array.isArray(raw.tags) ? (raw.tags as unknown[]) : [];
+  if (tags.some((t) => normalizeState(t) === "high_priority")) return "high";
+  return null;
+}
+
+/**
+ * URL de acompanhamento do envio no Seller Center do ML. Prioriza shipping_id,
+ * cai pra detalhe da venda se nao houver.
+ */
+export function getMLTrackingUrl(order: MLOrder): string {
+  const raw = getRawData(order);
+  const shippingId = raw.shipping?.id || raw.shipping_id;
+  if (shippingId) {
+    return `https://www.mercadolivre.com.br/envios/${shippingId}/acompanhamento`;
+  }
+  return `https://www.mercadolivre.com.br/vendas/${order.order_id}/detalhe`;
+}
+
 export function isOrderUnderReview(order: MLOrder): boolean {
   const rawData = getRawData(order);
   const shipmentSnapshot = getShipmentSnapshot(order);

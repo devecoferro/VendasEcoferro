@@ -274,15 +274,15 @@ function ensureDirectoryForFile(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-function buildSellerCenterUrl(baseUrl, store, selectedTab) {
+function buildSellerCenterUrl(baseUrl, store, selectedTab, { offset = 0, subFilters = "" } = {}) {
   const url = new URL(baseUrl);
   url.searchParams.set("search", "");
   url.searchParams.set("limit", "50");
-  url.searchParams.set("offset", "0");
+  url.searchParams.set("offset", String(offset));
   url.searchParams.set("selectedTab", selectedTab);
   url.searchParams.set("store", store);
   url.searchParams.set("filters", selectedTab);
-  url.searchParams.set("subFilters", "");
+  url.searchParams.set("subFilters", subFilters);
   url.searchParams.set("startPeriod", "");
   return url.toString();
 }
@@ -880,21 +880,66 @@ async function capturePrivateView(page, view, selectedTab, selectedTabLabel, con
   page.on("response", responseListener);
 
   try {
-    const targetUrl = buildSellerCenterUrl(
-      config.sellerCenterBaseUrl,
-      view.store,
-      selectedTab
-    );
-    logStep(`Abrindo visao ${view.view_label} (${view.store})...`);
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
+    // ── Z2: paginação (offset loop) ─────────────────────────────────
+    // Z3: também captura subFilters/hrefs únicos dos sub-cards por página
+    const MAX_PAGES = 40; // 40×50 = 2000 pedidos max por visão (finalized tem 1903)
+    const PAGE_SIZE = 50;
+    const allPageUrls = [];
+    const subFiltersObserved = new Set();
+    const sortsObserved = new Set();
 
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      if (collector.hasMinimumData()) {
+    for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
+      const offset = pageIndex * PAGE_SIZE;
+      const targetUrl = buildSellerCenterUrl(
+        config.sellerCenterBaseUrl,
+        view.store,
+        selectedTab,
+        { offset }
+      );
+      logStep(
+        `Abrindo visao ${view.view_label} (${view.store}) tab=${selectedTab} offset=${offset}`
+      );
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
+      allPageUrls.push(page.url());
+
+      // Captura hrefs da UI que tenham subFilters ou sort populados
+      try {
+        const hrefs = await page.$$eval("a[href*='subFilters=']", (els) =>
+          els.map((a) => a.getAttribute("href") || "").filter(Boolean)
+        );
+        for (const h of hrefs) {
+          try {
+            const u = new URL(h, config.sellerCenterBaseUrl);
+            const sf = u.searchParams.get("subFilters");
+            const so = u.searchParams.get("sort");
+            if (sf) subFiltersObserved.add(sf);
+            if (so) sortsObserved.add(so);
+          } catch {
+            // href malformado — ignora
+          }
+        }
+      } catch {
+        // selector não achou nada — segue
+      }
+
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        if (collector.hasMinimumData()) break;
+        await page.waitForTimeout(500);
+      }
+
+      // Conta rows desta página (se <50, é a última)
+      const stateNow = collector.getState();
+      const rowsThisPage = Array.isArray(stateNow.dashboard?.rows)
+        ? stateNow.dashboard.rows.length - (pageIndex === 0 ? 0 : pageIndex * PAGE_SIZE)
+        : 0;
+      if (pageIndex > 0 && rowsThisPage < PAGE_SIZE) {
+        logStep(`  ultima pagina atingida (rows=${rowsThisPage} < ${PAGE_SIZE})`);
         break;
       }
-      await page.waitForTimeout(500);
+
+      await page.waitForTimeout(500); // polidez
     }
 
     const fallbackUi = await extractFallbackUiSnapshot(
@@ -917,6 +962,11 @@ async function capturePrivateView(page, view, selectedTab, selectedTabLabel, con
         (Array.isArray(state.dashboard?.cards) && state.dashboard.cards.length > 0
           ? state.dashboard.cards
           : fallbackUi.cards) || [],
+      // Z3: valores de subFilters e sort observados em links da lista
+      sub_filters_observed: Array.from(subFiltersObserved),
+      sorts_observed: Array.from(sortsObserved),
+      pages_captured: allPageUrls.length,
+      page_urls: allPageUrls,
       raw_payload: {
         ...collector.buildRawPayload(),
         page_url: page.url(),
@@ -1020,8 +1070,47 @@ async function main() {
     await context.storageState({ path: config.storageStatePath });
 
     if (config.skipPost) {
-      logStep("Captura concluida em modo --skip-post. Nenhum snapshot foi enviado ao backend.");
-      console.log(JSON.stringify({ status: "captured", snapshots }, null, 2));
+      // Salva em tmp-ml-audit3/ pra auditoria posterior (Z2+Z3)
+      const outDir = path.join(process.cwd(), "tmp-ml-audit3");
+      fs.mkdirSync(outDir, { recursive: true });
+      for (const snap of snapshots) {
+        const name = `${snap.selected_tab}.${snap.store}.json`;
+        fs.writeFileSync(path.join(outDir, name), JSON.stringify(snap, null, 2));
+      }
+      // Consolidado: subFilters e sorts únicos agregados
+      const allSubFilters = new Set();
+      const allSorts = new Set();
+      for (const s of snapshots) {
+        for (const sf of s.sub_filters_observed || []) allSubFilters.add(sf);
+        for (const so of s.sorts_observed || []) allSorts.add(so);
+      }
+      fs.writeFileSync(
+        path.join(outDir, "_aggregate.json"),
+        JSON.stringify(
+          {
+            generated_at: nowIso(),
+            total_snapshots: snapshots.length,
+            tabs_captured: [...new Set(snapshots.map((s) => s.selected_tab))],
+            stores_captured: [...new Set(snapshots.map((s) => s.store))],
+            sub_filters_unique: [...allSubFilters],
+            sorts_unique: [...allSorts],
+            pages_per_snapshot: snapshots.map((s) => ({
+              tab: s.selected_tab,
+              store: s.store,
+              pages: s.pages_captured,
+              tab_counts: s.tab_counts,
+            })),
+          },
+          null,
+          2
+        )
+      );
+      logStep(
+        `Captura concluida (--skip-post). ${snapshots.length} snapshots salvos em ${outDir}`
+      );
+      logStep(
+        `  sub_filters unicos: ${allSubFilters.size} | sorts unicos: ${allSorts.size}`
+      );
       return;
     }
 
