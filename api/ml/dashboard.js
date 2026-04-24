@@ -3,6 +3,7 @@ import { getLatestConnection, getOrderSummariesByScope, listConnections } from "
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
+import { fetchMLChipCountsDirect } from "./_lib/ml-chip-proxy.js";
 import {
   getMirrorEntityStatusBreakdown,
   getSellerCenterMirrorOverview,
@@ -2014,6 +2015,37 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       },
       order_ids_by_bucket: buckets,
     };
+
+    // ═════════════════════════════════════════════════════════════════
+    // ALINHAMENTO 1:1 COM ML SELLER CENTER (2026-04-23 4a+ auditoria):
+    // Chama o endpoint OFICIAL do ML (/sales-omni/packs/marketshops/
+    // operations-dashboard/tabs) via proxy wrapper com cookies da sessao.
+    // Usa os counts EXATOS que o ML mostra no chip do header.
+    //
+    // Preserva order_ids_by_bucket (nossa classificacao local) pra o
+    // frontend continuar mostrando todos os pedidos operacionais
+    // quando o user clica num chip. So os NUMEROS do header viram os
+    // numeros oficiais do ML.
+    //
+    // Fail-open: se chamada falhar (sessao expirada, rate limit), usa
+    // os counts locais (comportamento atual).
+    // ═════════════════════════════════════════════════════════════════
+    try {
+      const mlCounts = await fetchMLChipCountsDirect();
+      if (mlCounts && typeof mlCounts === "object") {
+        result.counts_local = { ...result.counts };
+        result.counts.today = mlCounts.today;
+        result.counts.upcoming = mlCounts.upcoming;
+        result.counts.in_transit = mlCounts.in_transit;
+        result.counts.finalized = mlCounts.finalized;
+        result.chip_source = "ml_direct";
+      } else {
+        result.chip_source = "local_classifier";
+      }
+    } catch (err) {
+      // best-effort — fallback pra counts locais
+      result.chip_source = "local_classifier";
+    }
 
     // ── Diagnóstico detalhado ─────────────────────────────────────────
     // Log completo da classificação com breakdown de substatuses para
