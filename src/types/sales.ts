@@ -9,6 +9,7 @@ export interface SaleItemData {
   locationCorridor?: string | null;
   locationShelf?: string | null;
   locationLevel?: string | null;
+  locationNotes?: string | null;
 }
 
 export interface SaleData {
@@ -33,6 +34,7 @@ export interface SaleData {
   locationCorridor?: string | null;
   locationShelf?: string | null;
   locationLevel?: string | null;
+  locationNotes?: string | null;
   /**
    * Depósito de origem do pedido — mostrado em negrito abaixo da imagem
    * na etiqueta interna Ecoferro pra o operador distinguir visualmente

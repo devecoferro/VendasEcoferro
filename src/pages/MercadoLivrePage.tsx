@@ -81,8 +81,6 @@ import {
   mapMLOrderToSaleData,
   mapUnifiedPackSaleData,
   findOrdersInSamePack,
-  getStockLocations,
-  getMLConnectionStatus,
   getOrderPackId,
   markLabelsAsPrinted,
   markLabelsAsUnprinted,
@@ -96,6 +94,7 @@ import {
 // ColetasPanel removido do render em commit b88cf61. Import tambem
 // removido (sprint 2.4 cleanup) — estava causando import morto.
 import { exportSalePdf } from "@/services/pdfExportService";
+import { enrichSalesWithLocations, fetchStockLocationsBySku } from "@/lib/stockLocation";
 import {
   mergeLabelPdfs,
   openPdfBlobForPrint,
@@ -835,36 +834,9 @@ export default function MercadoLivrePage() {
     });
   }, []);
 
-  // Enriquece SaleData com localização (Corredor/Estante/Nível) buscando do ml_stock
-  // por SKU. Isso permite que a etiqueta mostre automaticamente onde o produto está.
   const enrichSaleWithLocations = useCallback(async (sale: ReturnType<typeof mapMLOrderToSaleData>) => {
-    try {
-      const conn = await getMLConnectionStatus();
-      if (!conn?.id) return sale;
-      const skus = [sale.sku, ...(sale.groupedItems || []).map((i) => i.sku)].filter(Boolean) as string[];
-      if (skus.length === 0) return sale;
-
-      const locations = await getStockLocations(conn.id, skus);
-      const topLoc = sale.sku ? locations[sale.sku] : null;
-
-      return {
-        ...sale,
-        locationCorridor: topLoc?.corridor || null,
-        locationShelf: topLoc?.shelf || null,
-        locationLevel: topLoc?.level || null,
-        groupedItems: (sale.groupedItems || []).map((item) => {
-          const loc = item.sku ? locations[item.sku] : null;
-          return {
-            ...item,
-            locationCorridor: loc?.corridor || null,
-            locationShelf: loc?.shelf || null,
-            locationLevel: loc?.level || null,
-          };
-        }),
-      };
-    } catch {
-      return sale;
-    }
+    const [enriched] = await enrichSalesWithLocations([sale]);
+    return enriched ?? sale;
   }, []);
 
   // Ref com os orders atuais — atualizada via useEffect abaixo, depois que
@@ -1037,24 +1009,16 @@ export default function MercadoLivrePage() {
           return;
         }
 
-        // Enriquece com localização do stock por SKU (Corredor/Estante/Nível)
-        try {
-          const conn = await getMLConnectionStatus();
-          if (conn?.id) {
-            const skus = items.map((i) => i.sku).filter((s) => s && s !== "-");
-            if (skus.length > 0) {
-              const locations = await getStockLocations(conn.id, skus);
-              for (const item of items) {
-                const loc = locations[item.sku];
-                if (loc) {
-                  item.locationCorridor = loc.corridor;
-                  item.locationShelf = loc.shelf;
-                  item.locationLevel = loc.level;
-                }
-              }
-            }
+        const skus = items.map((i) => i.sku).filter((s) => s && s !== "-");
+        const locations = await fetchStockLocationsBySku(skus);
+        for (const item of items) {
+          const loc = locations[item.sku];
+          if (loc) {
+            item.locationCorridor = loc.corridor;
+            item.locationShelf = loc.shelf;
+            item.locationLevel = loc.level;
           }
-        } catch { /* best effort */ }
+        }
 
         const today = new Date().toISOString().slice(0, 10);
         await exportSeparationPdf(items, {

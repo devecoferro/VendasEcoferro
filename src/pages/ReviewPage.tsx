@@ -20,11 +20,8 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { exportBatchPdf, exportSalePdf } from "@/services/pdfExportService";
-import {
-  getStockLocations,
-  getMLConnectionStatus,
-  markLabelsAsPrinted,
-} from "@/services/mercadoLivreService";
+import { markLabelsAsPrinted } from "@/services/mercadoLivreService";
+import { enrichSalesWithLocations } from "@/lib/stockLocation";
 import {
   Dialog,
   DialogContent,
@@ -85,44 +82,6 @@ export default function ReviewPage() {
 
   const currentSale = sales[currentIndex];
   const currentResult = results[currentIndex] ?? null;
-
-  // Enriquece vendas com localização (Corredor/Estante/Nível) buscando do ml_stock por SKU.
-  // Assim a etiqueta mostra automaticamente onde cada produto está no depósito.
-  async function enrichSalesWithLocations(salesToEnrich: SaleData[]): Promise<SaleData[]> {
-    try {
-      const conn = await getMLConnectionStatus();
-      if (!conn?.id) return salesToEnrich;
-
-      const allSkus = Array.from(
-        new Set(
-          salesToEnrich.flatMap((s) => [s.sku, ...(s.groupedItems || []).map((i) => i.sku)]).filter(Boolean) as string[]
-        )
-      );
-      if (allSkus.length === 0) return salesToEnrich;
-
-      const locations = await getStockLocations(conn.id, allSkus);
-      return salesToEnrich.map((sale) => {
-        const topLoc = sale.sku ? locations[sale.sku] : null;
-        return {
-          ...sale,
-          locationCorridor: sale.locationCorridor || topLoc?.corridor || null,
-          locationShelf: sale.locationShelf || topLoc?.shelf || null,
-          locationLevel: sale.locationLevel || topLoc?.level || null,
-          groupedItems: (sale.groupedItems || []).map((item) => {
-            const loc = item.sku ? locations[item.sku] : null;
-            return {
-              ...item,
-              locationCorridor: item.locationCorridor || loc?.corridor || null,
-              locationShelf: item.locationShelf || loc?.shelf || null,
-              locationLevel: item.locationLevel || loc?.level || null,
-            };
-          }),
-        };
-      });
-    } catch {
-      return salesToEnrich;
-    }
-  }
 
   /**
    * Marca os ProcessingResults dados como "etiqueta impressa" no backend.

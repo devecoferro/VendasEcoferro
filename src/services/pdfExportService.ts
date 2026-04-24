@@ -193,25 +193,41 @@ async function drawSaleCard(
   x0: number,
   y0: number
 ) {
-  // ── Borda laranja grossa ──────────────────────────────────────────
-  doc.setDrawColor(ORANGE_R, ORANGE_G, ORANGE_B);
-  doc.setLineWidth(0.8);
-  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
-
-  // Guias de coluna (não desenhadas — apenas cálculo).
-  const colLeftX = x0;
-  const colInfoX = x0 + COL_LEFT_W;
-  const colLocX = colInfoX + COL_INFO_W;
-  const colRightX = colLocX + COL_LOC_W;
+  /**
+   * Layout ajustado para ficar visualmente igual ao modelo enviado:
+   * - etiqueta horizontal limpa;
+   * - borda laranja fina e reta;
+   * - logo ML no topo esquerdo;
+   * - produto grande na esquerda;
+   * - dados principais no topo central;
+   * - QR Venda + logo Ecoferro no miolo;
+   * - localização no centro/direita;
+   * - QR Objeto no topo direito;
+   * - SKU / Quantidade / Data Envio alinhados à direita.
+   */
 
   const pad = 3;
 
-  // ── COLUNA 1 (LEFT): Logo ML + foto + # venda ─────────────────────
-  const mlLogoW = COL_LEFT_W - pad * 2;
-  const mlLogoH = 10;
-  const mlLogoX = colLeftX + pad;
-  const mlLogoY = y0 + pad;
+  // ── Borda laranja quadrada ───────────────────────────────────────
+  doc.setDrawColor(ORANGE_R, ORANGE_G, ORANGE_B);
+  doc.setLineWidth(0.45);
+  doc.rect(x0, y0, CARD_W, CARD_H, "S");
+
+  // Áreas base em mm dentro do card
+  const leftX = x0 + 4;
+  const infoX = x0 + 45;
+  const saleQrX = x0 + 90;
+  const ecoLogoX = x0 + 116;
+  const stockX = x0 + 139;
+  const rightX = x0 + CARD_W - 31;
+
+  // ── Logo Mercado Livre ───────────────────────────────────────────
   const mlLogoData = await loadMlLogoDataUrl();
+  const mlLogoX = leftX + 3;
+  const mlLogoY = y0 + 2.2;
+  const mlLogoW = 24;
+  const mlLogoH = 6.8;
+
   if (mlLogoData) {
     try {
       drawContainedImage(doc, mlLogoData, mlLogoX, mlLogoY, mlLogoW, mlLogoH);
@@ -222,16 +238,19 @@ async function drawSaleCard(
     drawMlLogoFallback(doc, mlLogoX, mlLogoY, mlLogoW, mlLogoH);
   }
 
-  const imageX = colLeftX + pad;
-  const imageW = COL_LEFT_W - pad * 2;
-  const imageY = mlLogoY + mlLogoH + 1.5;
-  const imageH = CARD_H - (imageY - y0) - pad - 5; // deixa espaço pro #venda no rodapé
+  // ── Imagem do produto ────────────────────────────────────────────
   const imageSource =
     item.productImageData ||
     item.productImageUrl ||
     sale.productImageData ||
     sale.productImageUrl;
+
   const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
+  const imageX = x0 + 3;
+  const imageY = y0 + 12;
+  const imageW = 40;
+  const imageH = 30;
+
   if (imgData) {
     try {
       drawContainedImage(doc, imgData, imageX, imageY, imageW, imageH);
@@ -242,54 +261,41 @@ async function drawSaleCard(
     drawPlaceholder(doc, imageX, imageY, imageW, imageH);
   }
 
-  // #Número da venda — rodapé da coluna esquerda
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(17, 24, 39);
-  doc.text(`#${sale.saleNumber || "-"}`, colLeftX + pad, y0 + CARD_H - pad, {
-    maxWidth: COL_LEFT_W - pad * 2,
-  });
-
-  // ── COLUNA 2 (INFO): SKU / Produto / Comprador / QR venda ─────────
-  const infoLeftPad = 2;
-  const infoTextX = colInfoX + infoLeftPad;
-  const infoMaxW = COL_INFO_W - infoLeftPad * 2;
-  let textY = y0 + pad + 2.5;
-
-  // SKU em destaque
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.setTextColor(17, 24, 39);
-  doc.text(`SKU: ${item.sku || "-"}`, infoTextX, textY);
-  textY += 4.8;
-
-  // Nome do produto (até 2 linhas)
+  // Número da venda no rodapé esquerdo
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
+  doc.setFontSize(8.2);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`#${sale.saleNumber || "-"}`, x0 + 3.5, y0 + CARD_H - 3.2);
+
+  // ── Dados principais ─────────────────────────────────────────────
+  doc.setTextColor(0, 0, 0);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.8);
+  doc.text(`SKU: ${item.sku || "-"}`, infoX, y0 + 5.8);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.3);
   const productLines = doc.splitTextToSize(
     item.itemTitle || sale.productName || "-",
-    infoMaxW
+    70
   );
-  doc.text(productLines.slice(0, 2), infoTextX, textY);
-  textY += Math.min(productLines.length, 2) * 3.8 + 0.6;
+  doc.text(productLines.slice(0, 2), infoX, y0 + 12.8);
 
-  // Nome do comprador
+  doc.setFontSize(7.2);
+  doc.text(sale.customerName || "-", infoX, y0 + 21.8, { maxWidth: 72 });
+
+  doc.setFontSize(7.1);
+  doc.text(sale.customerNickname || "-", infoX, y0 + 28.6, { maxWidth: 72 });
+
+  // ── QR Venda ─────────────────────────────────────────────────────
+  const saleQrSize = 19;
+  const saleQrY = y0 + 31.3;
+
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(17, 24, 39);
-  doc.text(sale.customerName || "-", infoTextX, textY, { maxWidth: infoMaxW });
-  textY += 4;
-
-  // Nickname
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7.5);
-  doc.setTextColor(17, 24, 39);
-  doc.text(sale.customerNickname || "-", infoTextX, textY, { maxWidth: infoMaxW });
-
-  // QR Venda + Logo Eco no rodapé da coluna info
-  const saleQrSize = 16;
-  const saleQrX = infoTextX;
-  const saleQrY = y0 + CARD_H - saleQrSize - pad - 1;
+  doc.setFontSize(5.2);
+  doc.setTextColor(145, 145, 145);
+  doc.text("QR Venda", saleQrX + saleQrSize / 2, saleQrY - 1.2, { align: "center" });
 
   const saleQrData = await generateQRCodeDataUrl(sale.saleQrcodeValue || "");
   if (saleQrData) {
@@ -301,60 +307,47 @@ async function drawSaleCard(
   } else {
     drawPlaceholder(doc, saleQrX, saleQrY, saleQrSize, saleQrSize);
   }
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.5);
-  doc.setTextColor(120, 120, 130);
-  doc.text("QR Venda", saleQrX + saleQrSize / 2, saleQrY - 0.8, { align: "center" });
 
-  // Logo EcoFerro ao lado do QR Venda
+  // ── Logo Ecoferro ────────────────────────────────────────────────
   const ecoLogoData = await loadEcoferroLogoDataUrl();
   if (ecoLogoData) {
     try {
-      drawContainedImage(
-        doc,
-        ecoLogoData,
-        saleQrX + saleQrSize + 3,
-        saleQrY + 1,
-        16,
-        saleQrSize - 2
-      );
+      drawContainedImage(doc, ecoLogoData, ecoLogoX, y0 + 30.5, 21, 17);
     } catch {
-      // silent
+      // mantém silencioso para não quebrar geração do PDF
     }
   }
 
-  // ── COLUNA 3 (LOC): Corredor / Estante / Nível / Local ────────────
-  // Campos sempre VAZIOS — serão preenchidos no futuro via /stock.
-  const locTextX = colLocX + 2;
-  const locFontSize = 8;
-  const locLineH = 5;
-  let locY = y0 + pad + 4;
+  const corridor = item.locationCorridor || sale.locationCorridor || "";
+  const shelf = item.locationShelf || sale.locationShelf || "";
+  const level = item.locationLevel || sale.locationLevel || "";
+  const localNotes = item.locationNotes || sale.locationNotes || "";
+
+  // Local no rodapé central
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(locFontSize);
-  doc.setTextColor(17, 24, 39);
-  doc.text("Corredor:", locTextX, locY);
-  locY += locLineH;
-  doc.text("Estante:", locTextX, locY);
-  locY += locLineH;
-  doc.text("Nível:", locTextX, locY);
-  locY += locLineH;
-  doc.text("Local:", locTextX, locY);
+  doc.setFontSize(7.3);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Local: ${localNotes}`, ecoLogoX - 5, y0 + CARD_H - 3.2);
 
-  // ── COLUNA 4 (RIGHT): QR Objeto + SKU + Quant + Data Envio ────────
-  const rightPad = 2;
-  const rightInnerW = COL_RIGHT_W - rightPad * 2;
-  const rightCenterX = colRightX + COL_RIGHT_W / 2;
-
-  // Label "QR Objeto" no topo
+  // ── Campos de estoque ────────────────────────────────────────────
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.5);
-  doc.setTextColor(120, 120, 130);
-  doc.text("QR Objeto", rightCenterX, y0 + pad + 2, { align: "center" });
+  doc.setFontSize(7.4);
+  doc.setTextColor(0, 0, 0);
 
-  // QR Objeto (= qrcodeValue — geralmente SKU)
-  const objectQrSize = Math.min(rightInnerW - 4, 18);
-  const objectQrX = rightCenterX - objectQrSize / 2;
-  const objectQrY = y0 + pad + 3.2;
+  doc.text(`Corredor: ${corridor}`, stockX, y0 + 26.5);
+  doc.text(`Estante: ${shelf}`, stockX, y0 + 34.0);
+  doc.text(`Nível: ${level}`, stockX, y0 + 41.5);
+
+  // ── QR Objeto no topo direito ────────────────────────────────────
+  const objectQrSize = 20;
+  const objectQrX = rightX + 4;
+  const objectQrY = y0 + 6.2;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(5.2);
+  doc.setTextColor(145, 145, 145);
+  doc.text("QR  Objeto", objectQrX + objectQrSize / 2, y0 + 4.2, { align: "center" });
+
   const objectQrData = await generateQRCodeDataUrl(sale.qrcodeValue || item.sku || "");
   if (objectQrData) {
     try {
@@ -366,28 +359,25 @@ async function drawSaleCard(
     drawPlaceholder(doc, objectQrX, objectQrY, objectQrSize, objectQrSize);
   }
 
-  // SKU em destaque à direita
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(17, 24, 39);
-  doc.text(item.sku || "-", rightCenterX, objectQrY + objectQrSize + 3.5, { align: "center" });
+  // SKU / Quantidade / Data Envio à direita
+  const rightCenterX = objectQrX + objectQrSize / 2;
 
-  // Quant
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8.5);
-  doc.setTextColor(17, 24, 39);
-  doc.text(`Quant: ${String(item.quantity ?? 1).padStart(2, "0")}`, rightCenterX, objectQrY + objectQrSize + 8.5, {
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.2);
+  doc.setTextColor(0, 0, 0);
+  doc.text(item.sku || "-", rightCenterX, y0 + 35.2, { align: "center" });
+
+  doc.setFontSize(7.2);
+  doc.text(`Quant: ${String(item.quantity ?? 1).padStart(2, "0")}`, rightCenterX, y0 + 43.5, {
     align: "center",
   });
 
-  // Data Envio — no rodapé
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.5);
-  doc.setTextColor(17, 24, 39);
   const dataEnvioLabel = sale.expectedShippingDate
-    ? `Data Envio: ${sale.expectedShippingDate}`
-    : "Data Envio:";
-  doc.text(dataEnvioLabel, rightCenterX, y0 + CARD_H - pad - 1, { align: "center" });
+    ? `Data Envio ${sale.expectedShippingDate}`
+    : "Data Envio";
+
+  doc.setFontSize(7.2);
+  doc.text(dataEnvioLabel, rightCenterX, y0 + CARD_H - 3.2, { align: "center" });
 }
 
 // Expande uma SaleData em N "renderable units" — um por item agrupado.
@@ -408,6 +398,7 @@ function expandSaleToRenderableUnits(sale: SaleData): Array<{ sale: SaleData; it
       locationCorridor: sale.locationCorridor,
       locationShelf: sale.locationShelf,
       locationLevel: sale.locationLevel,
+      locationNotes: sale.locationNotes,
     };
     return [{ sale, item: singleItem }];
   }

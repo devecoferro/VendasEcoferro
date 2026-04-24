@@ -215,6 +215,7 @@ export function SaleCardPreview({
           locationCorridor: sale.locationCorridor,
           locationShelf: sale.locationShelf,
           locationLevel: sale.locationLevel,
+          locationNotes: sale.locationNotes,
         },
       ];
 
@@ -317,7 +318,7 @@ export function SaleCardPreview({
                         />
                       </div>
 
-                      {/* Bloco CORREDOR / ESTANTE / NIVEL / VARIAÇÃO */}
+                      {/* Bloco CORREDOR / ESTANTE / NIVEL / LOCAL (igual ao modelo da etiqueta interna Ecoferro) */}
                       <div className="flex flex-col justify-center min-h-[104px] text-slate-800 font-bold">
                         <p className="text-[14px] leading-tight">
                           CORREDOR : {item.locationCorridor || sale.locationCorridor || ""}
@@ -328,8 +329,8 @@ export function SaleCardPreview({
                         <p className="text-[14px] leading-tight mt-1">
                           NIVEL : {item.locationLevel || sale.locationLevel || ""}
                         </p>
-                        <p className="text-[15px] leading-tight mt-1 font-bold">
-                          VARIAÇÃO : {item.variation || sale.variation || ""}
+                        <p className="text-[14px] leading-tight mt-1">
+                          LOCAL : {item.locationNotes || sale.locationNotes || ""}
                         </p>
                       </div>
                     </div>
