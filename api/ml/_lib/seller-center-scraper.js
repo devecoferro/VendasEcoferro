@@ -63,9 +63,15 @@ let cachedFullResult = null;
 // Mantem um único browser chromium aberto entre scrapes pra economizar
 // os ~2-3s do launch. Fecha após 5min de idle pra liberar ~80MB de RAM.
 // Detecta browser morto (disconnected) e recria automaticamente.
+//
+// Serialização: max 1 consumer simultâneo do pool (semáforo de 1).
+// Antes: scrapes de escopos diferentes (ourinhos + all) rodavam em paralelo
+// no mesmo browser singleton — newContext/page de um quebrava o outro.
+// Com o semáforo, o segundo acquire aguarda o primeiro release.
 let warmBrowser = null;
 let warmBrowserUsageCount = 0;
 let warmBrowserIdleTimer = null;
+const warmBrowserWaiters = [];
 const WARM_BROWSER_IDLE_MS = 5 * 60 * 1000;
 
 const WARM_BROWSER_LAUNCH_ARGS = [
@@ -82,10 +88,27 @@ const WARM_BROWSER_LAUNCH_ARGS = [
   "--no-first-run",
   "--no-default-browser-check",
   "--mute-audio",
-  "--single-process",
+  // --single-process REMOVIDO: docs do Chromium marcam como "unsupported
+  // and unstable". Em prod, qualquer erro JS de uma página do ML (ex:
+  // "Minified React error #418") derrubava o processo inteiro do browser,
+  // matando scrapes em andamento com "Target page/context/browser has
+  // been closed". Trade-off: ~40MB a mais de RAM por renderer separado.
 ];
 
 async function acquireWarmBrowser() {
+  // Semáforo de 1: aguarda o consumer anterior liberar antes de prosseguir.
+  // Evita que scrapes concorrentes compartilhem o mesmo browser instance e
+  // se derrubem mutuamente no newContext/page lifecycle.
+  //
+  // Quando desenfileirado por release(), o slot já está alocado — o release
+  // passa a posse sem decrementar o contador, pra não dar janela onde
+  // usageCount=0 e um acquire paralelo se cole à frente na fila.
+  let inheritedSlot = false;
+  if (warmBrowserUsageCount > 0) {
+    await new Promise((resolve) => warmBrowserWaiters.push(resolve));
+    inheritedSlot = true;
+  }
+
   // Cancela timer de fechamento — quem chamou vai usar
   if (warmBrowserIdleTimer) {
     clearTimeout(warmBrowserIdleTimer);
@@ -101,20 +124,42 @@ async function acquireWarmBrowser() {
       : true);
 
   if (!isAlive) {
+    warmBrowser = null; // descarta referência zumbi
     const chromium = await loadPlaywright();
     if (!chromium) {
       throw new Error("playwright not available — chromium.launch aborted");
     }
-    warmBrowser = await chromium.launch({
+    const launched = await chromium.launch({
       headless: true,
       args: WARM_BROWSER_LAUNCH_ARGS,
     });
+    // Auto-invalida quando o processo do browser morrer — próximo acquire
+    // recria. Fecha a janela do "zumbi": antes, o isConnected() demorava
+    // a refletir o crash e acquire devolvia um browser que falharia no
+    // próximo newContext.
+    launched.on("disconnected", () => {
+      if (warmBrowser === launched) warmBrowser = null;
+    });
+    warmBrowser = launched;
   }
-  warmBrowserUsageCount += 1;
+  // Só incrementa se NÃO herdou o slot de um release — nesse caso o slot
+  // já estava contabilizado (release deixa usageCount em 1 pra o waiter).
+  if (!inheritedSlot) {
+    warmBrowserUsageCount += 1;
+  }
   return warmBrowser;
 }
 
 function releaseWarmBrowser() {
+  // Se há waiter na fila, transfere a posse diretamente (mantém
+  // usageCount=1). Decrementar-e-re-incrementar criaria uma janela onde
+  // usageCount=0 e um acquire paralelo "fura a fila".
+  if (warmBrowserWaiters.length > 0) {
+    const next = warmBrowserWaiters.shift();
+    next();
+    return;
+  }
+
   warmBrowserUsageCount = Math.max(0, warmBrowserUsageCount - 1);
   if (warmBrowserUsageCount > 0) return; // ainda em uso
 
@@ -353,10 +398,11 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
   }
 
   let browser;
+  let context;
   try {
     // P9: reusa browser warm (economiza ~2-3s do launch).
     browser = await acquireWarmBrowser();
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -424,6 +470,13 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
     log.error("Scraper falhou", err instanceof Error ? err : new Error(String(err)));
     return { ok: false, ...errorInfo };
   } finally {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // browser pode ter morrido — release abaixo cuida do resto
+      }
+    }
     if (browser) {
       // P9: devolve pro pool em vez de fechar.
       releaseWarmBrowser();
@@ -1077,6 +1130,7 @@ export async function scrapeMlSellerCenterFull({
   }
 
   let browser;
+  let context;
   const captures = {};
   try {
     // P9 — warm pool: reusa browser entre scrapes pra economizar ~2-3s
@@ -1084,7 +1138,7 @@ export async function scrapeMlSellerCenterFull({
     // > 5min pra liberar ~80MB de RAM quando nao ha atividade.
     browser = await acquireWarmBrowser();
     // Viewport menor (1280x720 vs 1920x1080) reduz memoria do renderer
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1187,6 +1241,13 @@ export async function scrapeMlSellerCenterFull({
     log.error("[full-scrape] falhou", err instanceof Error ? err : new Error(String(err)));
     return { ok: false, ...errorInfo };
   } finally {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // browser pode ter morrido — release abaixo cuida do resto
+      }
+    }
     if (browser) {
       // P9: nao fechamos o browser aqui — fica no warm pool. Reset do
       // timer de idle: se ninguem pedir scrape em 5min, o pool fecha.
