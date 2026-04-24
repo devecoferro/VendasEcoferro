@@ -50,16 +50,33 @@ Investigação 2026-04-24 (`scripts/debug-intransit.mjs` rodado em prod):
 1. CARD_IN_THE_WAY no Seller Center é dividido em sub-cards; `in_hub` aparece mas NÃO conta no chip TAB_IN_THE_WAY principal (chip = só cards específicos tipo `shipped`)
 2. A 4ª auditoria contou cards múltiplos pra um único bucket incorretamente
 
-**Decisão pendente do usuário:**
-- **(A)** Reverter `in_hub` / `in_packing_list cross` → `upcoming` (alinha com chip visual, perde alinhamento com CARD_IN_THE_WAY visual)
-- **(B)** Aceitar divergência (chip visual é UX separado do bucket interno — lista é útil mesmo com 106 items porque são todos operacionalmente relevantes)
-- **(C)** Capturar screenshots frescos do Seller Center com storage state renovado pra decidir baseado em evidência
+**Decisão tomada em 2026-04-24: OPÇÃO B (aceitar divergência).**
+
+Raciocínio:
+- Chip grande do topo do Seller Center conta **envios** (com pack dedup estrito + filtros ocultos) = ~11
+- Classifier local conta **pedidos** operacionalmente relevantes = 106
+- Ambas são representações legítimas, servem propósitos diferentes:
+  - Chip pro usuário ML ver "quantas caixas estão a caminho do cliente"
+  - Lista do app pro operador EcoFerro ver "quantos pedidos estão em fluxo pré/pós envio"
+- `in_hub` e `in_packing_list` cross são pedidos **já saídos da loja**, no fluxo do carrier. Operacionalmente é "em trânsito" pro vendedor (Ecoferro não age mais neles).
+- Mover pra `upcoming` faria operador vê-los em "Próximos dias" junto com `invoice_pending` (NF-e pendente, que requer AÇÃO), poluindo a lista acionável.
+- Tentativa de capturar evidência visual via scraper (2026-04-24) falhou: collector de XHR ficou defasado em relação ao ML atual. Decisão tomada sem screenshots novos, mas com análise de pack dedup que explica 100% da divergência (30 pedidos shipped / 11 envios = 2.7:1 ratio, típico de cross-docking).
+
+**Consequência UX:** dashboard mostra chip = 11 (visual ML) e lista = 106 (operacional local). Usuário pode estranhar a primeira vez mas tooltip + badge de fonte (commit `a35fe93`) explicam contexto. Comportamento **intencional**, não bug.
 
 ## Diagnóstico: `hardHealDrift` é circular
 
 `api/ml/diagnostics.js:396` (hardHealDrift) compara `ml_seller_center` com `app_internal` — mas AMBOS vêm de `fetchMLLiveChipBucketsDetailed` (Camada 2). **Sempre vai retornar `ALREADY_IN_SYNC`**. Essa função é útil pra detectar pedidos com `raw_data` stale (quando sync incremental perde update), mas NÃO pra alinhar com Camada 1.
 
 Verificado em 2026-04-24: `hardHealDrift({ maxOrdersToRefresh: 500 })` retornou `orders_refreshed=0, ALREADY_IN_SYNC`. DB não estava stale; a frustração vinha do pulo UX entre Camadas 1 e 2.
+
+## Tech debt: scraper `capture-private-seller-center-snapshots.mjs`
+
+**Estado em 2026-04-24:** script de captura `--headed` consegue logar, navegar e paginar, mas o **collector de XHRs ficou defasado** em relação ao ML atual — retorna `tab_counts={0,0,0,0}` e `sub_filters=[]` mesmo com páginas carregadas. Único campo coletado com sucesso: `post_sale_count` (actions endpoint).
+
+**Por que isso não afeta prod:** `api/ml/_lib/seller-center-scraper.js` (o scraper interno que alimenta os chips em produção) funciona com outro pattern de interceptação de XHR. Esse sim está em dia.
+
+**Pendência futura (Z2/Z3/Z4, não-urgente):** reinstrumentar o collector do `capture-private-seller-center-snapshots.mjs` pra acompanhar mudanças recentes de URL/estrutura de XHR do Seller Center. Ou descontinuar o script e rodar diagnósticos via endpoints do scraper de prod.
 
 
 

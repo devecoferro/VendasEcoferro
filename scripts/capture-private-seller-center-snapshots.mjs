@@ -754,9 +754,26 @@ function createEventCollector() {
 }
 
 async function waitForSellerCenterReady(page, timeoutMs) {
-  await page.waitForURL(/\/vendas\/omni\/lista/i, { timeout: timeoutMs });
-  await page.waitForLoadState("domcontentloaded");
-  await page.locator("text=Vendas").first().waitFor({ timeout: timeoutMs });
+  // Validacao simples: URL correta + DOM carregado.
+  // Nao exige seletor especifico pq o ML muda DOM com frequencia e DOM
+  // selectors velhos falham mesmo com login valido. Se a URL nao foi
+  // pra /auth/login e tem /vendas/omni/lista, consideramos pronto.
+  const deadline = Date.now() + timeoutMs;
+  const checkInterval = 500;
+  while (Date.now() < deadline) {
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    const currentUrl = page.url();
+    if (/\/auth\/login/i.test(currentUrl) || /\/registration/i.test(currentUrl)) {
+      throw new Error(`Redirecionado para login: ${currentUrl}`);
+    }
+    if (/\/vendas\/omni\/lista/i.test(currentUrl)) {
+      // URL ok. Aguarda networkidle ate 5s pra dar chance de renderizar.
+      await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+      return;
+    }
+    await page.waitForTimeout(checkInterval);
+  }
+  throw new Error("Timeout aguardando Seller Center ficar pronto");
 }
 
 async function hasBackendSession(context, backendBaseUrl, sessionCookieName) {
@@ -777,14 +794,30 @@ async function ensureSellerCenterLogin(page, context, config) {
     logStep("Sessao do Seller Center reaproveitada com sucesso.");
   } catch {
     logStep(
-      "Sessao do Seller Center nao estava valida. Conclua o login manualmente na janela aberta; o script continua automaticamente quando a pagina de vendas ficar pronta."
+      "Sessao do Seller Center nao estava valida. Conclua o login manualmente na janela aberta; o script continua automaticamente assim que detectar login."
     );
-    await waitForSellerCenterReady(page, config.loginTimeoutMs).catch(() => {
+    // Aguarda user sair de /auth/login (login concluido)
+    const loginDeadline = Date.now() + config.loginTimeoutMs;
+    while (Date.now() < loginDeadline) {
+      const u = page.url();
+      if (!/\/auth\/login/i.test(u) && !/\/registration/i.test(u)) {
+        logStep(`Login detectado (url=${u}). Forcando navegacao para /vendas/omni/lista...`);
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+    if (Date.now() >= loginDeadline) {
+      throw new Error("Tempo esgotado aguardando o login manual do Seller Center.");
+    }
+    // Forca navegacao pra URL que queremos — apos login, ML pode ter
+    // redirecionado pra home, central-vendedor, etc.
+    await page.goto(initialUrl, { waitUntil: "domcontentloaded" });
+    await waitForSellerCenterReady(page, 60000).catch((err) => {
       throw new Error(
-        "Tempo esgotado aguardando o login manual do Seller Center."
+        `Apos login, nao conseguiu carregar /vendas/omni/lista: ${err?.message || err}`
       );
     });
-    logStep("Login manual do Seller Center confirmado.");
+    logStep("Login manual confirmado e pagina de vendas carregada.");
   }
 
   await context.storageState({ path: config.storageStatePath });
@@ -1045,7 +1078,13 @@ async function main() {
 
   try {
     await ensureSellerCenterLogin(sellerPage, context, config);
-    await ensureBackendLogin(backendPage, context, config);
+    // Backend login so e necessario pra POST dos snapshots. Pula quando
+    // --skip-post (modo auditoria local — nao envia pro backend).
+    if (!config.skipPost) {
+      await ensureBackendLogin(backendPage, context, config);
+    } else {
+      logStep("--skip-post ativo: pulando login no backend EcoFerro.");
+    }
 
     const snapshots = [];
 
