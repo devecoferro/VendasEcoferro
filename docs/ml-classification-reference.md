@@ -1,8 +1,67 @@
 # Classificação de pedidos Mercado Livre — Referência
 
-> **Atualizado em:** 2026-04-22 (engenharia reversa a partir de 1504 pedidos da base EcoFerro)
-> **Fonte autoritativa:** observação direta + API ML (`/shipments/{id}`) + ML Seller Center UI
+> **Atualizado em:** 2026-04-24 (4ª auditoria + investigação de divergência chip visual vs API)
+> **Fonte autoritativa:** observação direta + API ML (`/shipments/{id}`) + ML Seller Center UI + scraper Playwright
 > **Mantém:** `src/services/mlSubStatusClassifier.ts` (frontend) + `api/ml/dashboard.js` (backend)
+
+## ⚠️ Leia isto antes de tentar 5ª auditoria
+
+**Existem 3 camadas numéricas diferentes, todas legítimas, todas capturadas na UI:**
+
+| Camada | Valor (ex. prod 2026-04-24) | Fonte | Bate com |
+|---|---|---|---|
+| **Chip visual ML** (scraper) | `today=1  upcoming=33  in_transit=8  finalized=4` | `seller-center-scraper.js` navegando o Seller Center e lendo contadores | O que o user vê **com os olhos** no topo do Seller Center |
+| **API oficial ML** (nosso classifier) | `today=3  upcoming=72  in_transit=107  finalized=44` | `fetchMLLiveChipBucketsDetailed` → agregação dos `order_ids_by_bucket` locais baseados em `/orders/search` | Pedidos reais no DB classificados conforme regras ML |
+| **Classifier local puro** (fallback) | ~= API oficial | `deposits[].internal_operational_counts` | Quando ML API falha; usa apenas `raw_data` local |
+
+**Camada 1 (chip visual) aplica filtros/dedup OCULTOS do ML** que nunca foram documentados publicamente (pack dedup estrito + janela de data mais apertada + exclusão de certos substatus). **Não é possível replicar 100%.** A diferença `in_transit 8 vs 107` (13×) é normal e esperada — **não é bug**.
+
+**Regra prática:**
+- **Numero grande do chip no dashboard** deve vir da Camada 1 (via `ml_ui_chip_counts`)
+- **Lista de pedidos detalhados** (quando user clica num chip) vem da Camada 2 (via `ml_live_chip_order_ids_by_bucket`)
+- Camada 3 é último fallback quando Camada 2 falha
+
+**Quando chip Camada 1 está indisponível** (cache expirou, scraper caiu): UI mostra último valor conhecido com badge "Sincronizando ML (Xs)" — NUNCA cai silenciosamente pra Camada 3 (causa pulo visual 1→108). Implementado em `fix(chips): elimina pulo visual` (commit `a35fe93`, 2026-04-24).
+
+## Divergência `in_transit`: 106 (local) vs 11 (chip visual) — causa identificada
+
+Investigação 2026-04-24 (`scripts/debug-intransit.mjs` rodado em prod):
+
+**Breakdown dos 106 pedidos que classifier local coloca em `in_transit`:**
+
+| Substatus | N | Chip visual ML mostra aqui? |
+|-----------|---|---|
+| `ready_to_ship/in_hub/cross` | 55 | ❌ Provavelmente em TAB_NEXT_DAYS |
+| `ready_to_ship/in_packing_list/cross` | 17 | ❌ Provavelmente em TAB_NEXT_DAYS |
+| `shipped/out_for_delivery/cross` | 14 | ✅ |
+| `shipped/waiting_for_withdrawal/cross` | 7 | ✅ (CARD_WAITING_FOR_WITHDRAWAL) |
+| `ready_to_ship/in_packing_list/full` | 4 | ❌ Full vai pra today |
+| `shipped/waiting_for_withdrawal/full` | 4 | ✅ |
+| `shipped/out_for_delivery/full` | 3 | ✅ |
+| `shipped/not_visited/full` | 1 | ✅ |
+| `shipped/receiver_absent/full` | 1 | ✅ |
+| **Total** | **106** | |
+
+**Só os `shipped/*` somam 30 pedidos.** Com pack dedup ~3:1 → **11 envios** — bate com chip visual.
+
+**Os 76 extras** (55 `in_hub` + 17 `in_packing_list cross` + 4 `in_packing_list full`) vêm de decisão da 4ª auditoria (`dashboard.js:556-558`) que moveu `in_hub` e `in_packing_list` pra `in_transit` baseado em screenshots de CARD_IN_THE_WAY.
+
+**Hipóteses pra 5ª investigação (com storage state renovado):**
+1. CARD_IN_THE_WAY no Seller Center é dividido em sub-cards; `in_hub` aparece mas NÃO conta no chip TAB_IN_THE_WAY principal (chip = só cards específicos tipo `shipped`)
+2. A 4ª auditoria contou cards múltiplos pra um único bucket incorretamente
+
+**Decisão pendente do usuário:**
+- **(A)** Reverter `in_hub` / `in_packing_list cross` → `upcoming` (alinha com chip visual, perde alinhamento com CARD_IN_THE_WAY visual)
+- **(B)** Aceitar divergência (chip visual é UX separado do bucket interno — lista é útil mesmo com 106 items porque são todos operacionalmente relevantes)
+- **(C)** Capturar screenshots frescos do Seller Center com storage state renovado pra decidir baseado em evidência
+
+## Diagnóstico: `hardHealDrift` é circular
+
+`api/ml/diagnostics.js:396` (hardHealDrift) compara `ml_seller_center` com `app_internal` — mas AMBOS vêm de `fetchMLLiveChipBucketsDetailed` (Camada 2). **Sempre vai retornar `ALREADY_IN_SYNC`**. Essa função é útil pra detectar pedidos com `raw_data` stale (quando sync incremental perde update), mas NÃO pra alinhar com Camada 1.
+
+Verificado em 2026-04-24: `hardHealDrift({ maxOrdersToRefresh: 500 })` retornou `orders_refreshed=0, ALREADY_IN_SYNC`. DB não estava stale; a frustração vinha do pulo UX entre Camadas 1 e 2.
+
+
 
 ## Contexto
 
@@ -73,10 +132,10 @@ A combinação `(ss, sss, lt, os)` determina unicamente a classificação.
 
 | ss | sss | lt | os | Bucket | Sub-status | Notas |
 |---|---|---|---|---|---|---|
-| `shipped` | `waiting_for_withdrawal` | `cross_docking` | `paid` | **`finalized`** | — | **Business rule EcoFerro**: pacote no ponto = finalizado pro vendedor (comprador quem retira) — **5** |
-| `shipped` | `waiting_for_withdrawal` | `fulfillment` | `paid` | **`finalized`** | — | Idem Full — **1** |
+| `shipped` | `waiting_for_withdrawal` | `cross_docking` | `paid` | **`in_transit`** | — | Classificado pelo ML como "A caminho" (TAB_IN_THE_WAY) — **5** |
+| `shipped` | `waiting_for_withdrawal` | `fulfillment` | `paid` | **`in_transit`** | — | Idem Full — **1** |
 
-> ⚠️ `CLAUDE.md` tem esta regra: `"shipped/waiting_for_withdrawal NAO e em transito"`. A UI do ML mostra esses pedidos em "Em trânsito", mas pro workflow da EcoFerro eles são terminais (não há mais ação do vendedor).
+> ⚠️ **Mudou em 2026-04-23 (4ª auditoria, commit `2a0252f`):** anteriormente ia pra `finalized` baseado em business rule EcoFerro ("pacote no ponto = finalizado pro vendedor"). Screenshots reais do Seller Center mostraram que o ML mantém esses pedidos em TAB_IN_THE_WAY — então código foi alinhado (`dashboard.js:593-594, 727, 1948`). Código correto, doc antiga estava desatualizada.
 
 ### ENVIOS DE HOJE / PRÓXIMOS DIAS — `ready_to_ship` processando (108 pedidos)
 
@@ -88,21 +147,22 @@ Depende da **pickup date** (se ≤ hoje → today, se > hoje → upcoming):
 | `ready_to_ship` | `in_warehouse` | `fulfillment` | `paid` | `today` | `upcoming` | `in_distribution_center` | Full no CD do ML — **18** |
 | `ready_to_ship` | `ready_to_print` | `cross_docking` | `paid` | `today` | `upcoming` | `ready_to_print` | Etiqueta pra imprimir — **17** |
 | `ready_to_ship` | `in_packing_list` | `fulfillment` | `paid` | `today` | `upcoming` | `in_processing` | Full em lista de embalagem — **9** |
+| `ready_to_ship` | `in_packing_list` | `cross_docking` | `paid` | **`in_transit`** | **`in_transit`** | — | **Cross dedicado** vai pra CARD_IN_THE_WAY, não today (ver `dashboard.js:556`) |
 | `ready_to_ship` | `packed` | `fulfillment` | `paid` | `today` | `upcoming` | `printed_ready_to_send` | Full já embalado — **2** |
 | `ready_to_ship` | `ready_to_pack` | `fulfillment` | `paid` | `today` | `upcoming` | `in_processing` | Full aguardando embalar — **1** |
 
-### PENDING — pedidos recém-pagos (44 pedidos) ✅ resolvido
+> ⚠️ **Importante:** `in_packing_list` tem regra DIFERENTE por `logistic_type` (não é simétrico):
+> - `fulfillment` → `today` (ML processando no CD)
+> - `cross_docking` → `in_transit` (CARD_IN_THE_WAY — considerado "já no fluxo de saída")
+> Ver `dashboard.js:556` (cross) vs `:709-711` (full).
+
+### PENDING — pedidos recém-pagos
 
 | ss | sss | lt | os | Bucket | Sub-status | Notas |
 |---|---|---|---|---|---|---|
-| `pending` | `buffered` | `cross_docking` | `paid` | **`today`** | `in_processing` | Pedido pago recentemente, ML está criando o shipment — **44** |
+| `pending` | `buffered` | `cross_docking` | `paid` | **`upcoming`** | `in_processing` | Pedido pago recentemente, ML está criando o shipment — **44** |
 
-**Análise (2026-04-22):** todos os 44 pedidos tinham `sale_date` = hoje, `pickup_date` = null, `tags` contendo `paid`. São pedidos recém-criados aguardando ML processar o shipment — devem aparecer em "Envios de hoje" como "Em processamento" até ganharem substatus específico (`ready_to_print`, etc).
-
-Regra aplicada:
-```ts
-if (shipStatus === "pending" && !isCancelled) return "today";
-```
+> ⚠️ **Atualizado em 2026-04-23 (4ª auditoria):** anteriormente doc dizia `→ today`, mas observação real do Seller Center (screenshots) mostrou que ML mantém pendentes em TAB_NEXT_DAYS. Código `dashboard.js:531-532 (cross) + 1817-1823 (live)` implementa `→ upcoming`. Código correto; doc atualizada.
 
 ## Campos de `pickup_date` (prioridade no `parsePickupDate`)
 
