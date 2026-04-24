@@ -522,6 +522,7 @@ export default function MercadoLivrePage() {
     loading,
     error,
     refresh,
+    syncNow,
     loadMoreOrders,
   } = useMercadoLivreData({
     autoSync: true,
@@ -667,9 +668,18 @@ export default function MercadoLivrePage() {
 
   const handleRetryLoad = async () => {
     try {
-      await refresh();
-    } catch {
-      // O hook já controla e expõe o estado de erro.
+      // Dispara SYNC com o ML (puxa pedidos novos pro banco local),
+      // nao so refresh (que apenas refaz a query local). Fix 2026-04-24:
+      // antes so chamava refresh() — quando ML tinha pedido novo que
+      // o app ainda nao tinha, o botao "Sincronizar agora" nao
+      // resolvia porque nao forcava um fetch do ML.
+      toast.info("Sincronizando com o Mercado Livre...");
+      await syncNow({ forceFullSync: true });
+      toast.success("Sincronização concluída.");
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Falha ao sincronizar.";
+      toast.error(msg);
     }
   };
 
