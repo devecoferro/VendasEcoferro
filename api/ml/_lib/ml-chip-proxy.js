@@ -26,7 +26,6 @@ import createLogger from "../../_lib/logger.js";
 import {
   getCachedLiveSnapshot,
   maybeRefreshLiveSnapshotInBackground,
-  scrapeMlLiveSnapshot,
 } from "./seller-center-scraper.js";
 
 const log = createLogger("ml-chip-proxy");
@@ -56,44 +55,45 @@ function extractCountsFromSnapshot(snap) {
 }
 
 async function doFetchChips() {
-  // 1. Tenta cache fresh do scraper (atualizado < 3min)
+  // IMPORTANTE: NUNCA dispara scrape sincrono aqui. Scraper leva 30-60s
+  // e trava o request do dashboard se for chamado sob demanda. So LE do
+  // cache existente (alimentado por background refresh a cada 30s).
   const cached = getCachedLiveSnapshot("all");
-  if (cached && !cached.stale && cached.data) {
-    const snapTs = new Date(
-      cached.data?.capturedAt || cached.capturedAt || 0
-    ).getTime();
-    if (Date.now() - snapTs < SCRAPER_FRESHNESS_MS) {
-      const counts = extractCountsFromSnapshot(cached.data);
-      if (counts) {
-        log.info("chips do scraper (cache fresco)", counts);
-        // Dispara refresh em background pra proxima chamada ja ter dados novos
-        maybeRefreshLiveSnapshotInBackground("all");
-        return counts;
-      }
-    }
+  if (!cached) {
+    // Sem cache — dispara refresh background pra proxima chamada e
+    // retorna null (fallback classifier local nessa chamada).
+    maybeRefreshLiveSnapshotInBackground("all");
+    log.info("sem cache scraper — disparando refresh background");
+    return null;
   }
 
-  // 2. Cache stale ou ausente — dispara scrape sincrono
-  log.info("cache scraper ausente/stale — scraping sob demanda");
-  try {
-    const snap = await scrapeMlLiveSnapshot({ scope: "all" });
-    const counts = extractCountsFromSnapshot(snap);
-    if (counts) {
-      log.info("chips do scraper (recem capturado)", counts);
-      return counts;
-    }
-    log.warn("scraper retornou mas counters vazios/invalidos", {
-      hasSnap: !!snap,
-      counters: snap?.counters,
+  const snapTs = new Date(
+    cached.data?.capturedAt || cached.capturedAt || 0
+  ).getTime();
+  const ageMs = Date.now() - snapTs;
+
+  // Sempre dispara refresh background se cache tiver mais de 45s
+  if (ageMs > 45_000) {
+    maybeRefreshLiveSnapshotInBackground("all");
+  }
+
+  // Aceita cache ate SCRAPER_FRESHNESS_MS (3min). Acima disso, retorna
+  // null pra nao servir dados velhos.
+  if (ageMs > SCRAPER_FRESHNESS_MS) {
+    log.info("cache scraper muito velho — fallback classifier local", {
+      ageSeconds: Math.round(ageMs / 1000),
     });
     return null;
-  } catch (err) {
-    log.error(
-      "falha ao scraper pra chips",
-      err instanceof Error ? err : new Error(String(err))
-    );
-    return null;
   }
+
+  const counts = extractCountsFromSnapshot(cached.data);
+  if (!counts) return null;
+
+  log.info("chips do scraper (cache)", {
+    ...counts,
+    ageSeconds: Math.round(ageMs / 1000),
+  });
+  return counts;
 }
 
 /**

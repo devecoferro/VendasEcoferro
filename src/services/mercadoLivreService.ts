@@ -470,7 +470,7 @@ export interface MLNFeResponse {
 
 const ML_REMOTE_TIMEOUT_MS = 8000;
 const ML_ORDERS_TIMEOUT_MS = 30000;
-const ML_SYNC_TIMEOUT_MS = 30000;
+const ML_SYNC_TIMEOUT_MS = 120000; // 2min — sync full pode puxar muitas paginas
 const ML_DASHBOARD_TIMEOUT_MS = 45000;
 
 function padDatePart(value: number): string {
