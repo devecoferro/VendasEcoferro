@@ -1661,6 +1661,24 @@ export default function MercadoLivrePage() {
       );
     }
 
+    // Dedup por pack_id: ML Seller Center agrupa multiplos orders do
+    // mesmo pack em 1 linha visual (1 pack = 1 etiqueta fisica). Antes
+    // desse dedup, o app mostrava 67 pedidos quando o ML mostrava 50 —
+    // 14 desses 17 extras eram orders filhos do mesmo pack_id.
+    // Auditoria 2026-04-24 confirmou que todos sao o MESMO pedido do
+    // lado do ML, so temos o order_id em vez do pack_id.
+    //
+    // Estrategia: para cada pack_id, manter o order_id mais antigo
+    // (primeiro da venda). Orders sem pack_id passam direto.
+    const seenPacks = new Set<string>();
+    result = result.filter((order) => {
+      const packId = getOrderPackId(order);
+      if (!packId) return true;
+      if (seenPacks.has(packId)) return false;
+      seenPacks.add(packId);
+      return true;
+    });
+
     return result;
   }, [
     filteredOperationalOrders,
