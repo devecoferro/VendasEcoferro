@@ -1,4 +1,7 @@
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
+import createLogger from "../_lib/logger.js";
+
+const log = createLogger("ml-sync");
 import {
   deleteOrdersByOrderIds,
   getConnectionById,
@@ -651,6 +654,32 @@ export async function runMercadoLivreSync({
     const totalAvailable = Number(ordersPayload?.paging?.total ?? 0);
     if (pageOrders.length < ML_PAGE_LIMIT || (totalAvailable > 0 && offset >= totalAvailable)) {
       break;
+    }
+
+    // ML limita /orders/search via offset a 10.000 records.
+    // Doc: developers.mercadolivre.com.br/pt_br/gerenciamento-de-vendas
+    // Quando passa disso precisa switch pra from_id cursor pagination.
+    // Hoje (~1500 pedidos no DB) nunca atingimos. Detector defensivo:
+    //   - 8000  → log info "se aproximando do limite"
+    //   - 9500  → log warn "limite proximo, implementar from_id"
+    //   - 10000 → break + log error "limite atingido, dados truncados"
+    if (offset >= 10000) {
+      log.error(
+        `offset=${offset} atingiu limite ML (10k). Sync truncado em ` +
+          `${totalFetched} pedidos de ${totalAvailable || "?"} totais. ` +
+          `Implementar from_id cursor pagination — ver TODO em sync.js.`
+      );
+      break;
+    }
+    if (offset >= 9500) {
+      log.warn(
+        `offset=${offset} proximo do limite ML (10k). Em breve precisa ` +
+          `de from_id pagination. Total disponivel: ${totalAvailable || "?"}`
+      );
+    } else if (offset >= 8000 && offset % 1000 < ML_PAGE_LIMIT) {
+      log.info(
+        `offset=${offset} se aproximando do limite ML (10k). Total: ${totalAvailable || "?"}`
+      );
     }
   }
 
