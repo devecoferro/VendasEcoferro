@@ -1249,24 +1249,32 @@ export default function MercadoLivrePage() {
 
   const depositOptions = useMemo(() => {
     const orderOptions = buildDepositOptions(permittedOrders);
-    const baseOptions =
-      orderOptions.length > 0
-        ? orderOptions
-        : accessibleDashboardDeposits.map((deposit) => ({
-            key: deposit.key,
-            label: deposit.label,
-            displayLabel:
-              deposit.key === "without-deposit"
-                ? "Vendas sem depósito"
-                : deposit.logistic_type === "fulfillment"
-                  ? "Full"
-                  : deposit.label,
-            isFulfillment: deposit.logistic_type === "fulfillment",
-            kind:
-              deposit.key === "without-deposit"
-                ? ("without-deposit" as const)
-                : ("deposit" as const),
-          }));
+
+    // Sempre inclui deposits do dashboard payload — antes era usado apenas
+    // como fallback (quando orderOptions vazio), o que escondia o filtro
+    // "Full" sempre que a lista de orders na aba atual nao tinha nenhum
+    // pedido fulfillment. Bug reportado em 2026-04-25 ("ta faltando o
+    // Filtron FULL"). Fix: merge SEMPRE — Full visivel mesmo quando
+    // a aba selecionada nao tem fulfillment orders no momento.
+    const fromDashboard = accessibleDashboardDeposits.map((deposit) => ({
+      key: deposit.key,
+      label: deposit.label,
+      displayLabel:
+        deposit.key === "without-deposit"
+          ? "Vendas sem depósito"
+          : deposit.logistic_type === "fulfillment"
+            ? "Full"
+            : deposit.label,
+      isFulfillment: deposit.logistic_type === "fulfillment",
+      kind:
+        deposit.key === "without-deposit"
+          ? ("without-deposit" as const)
+          : ("deposit" as const),
+    }));
+
+    const dashboardKeys = new Set(fromDashboard.map((o) => o.key));
+    const extraFromOrders = orderOptions.filter((o) => !dashboardKeys.has(o.key));
+    const baseOptions = [...fromDashboard, ...extraFromOrders];
 
     // Whitelist: só "Vendas sem depósito", "Ourinhos Rua Dario Alonso" e "Full".
     // Filtra códigos brutos do ML (ex.: BRP750438981) que vinham listados.
