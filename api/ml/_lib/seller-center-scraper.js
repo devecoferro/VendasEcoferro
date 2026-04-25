@@ -1620,9 +1620,19 @@ export async function scrapeMlLiveSnapshot({
     { key: "upcoming", label: "Nav 2 (abre em NEXT_DAYS)" },
   ];
 
+  // Helper: detecta erros de "browser fechado durante uso" — race condition
+  // do warm browser pool quando scopes paralelos compartilham referencia.
+  // Nesses casos, retry 1x com pequeno delay quase sempre resolve (browser
+  // recriado fresh).
+  const isBrowserClosedError = (msg) =>
+    typeof msg === "string" &&
+    (msg.includes("Target page, context or browser has been closed") ||
+      msg.includes("Browser has been closed") ||
+      msg.includes("browserContext.close"));
+
   for (const nav of navPlan) {
     log.info(`[live-snapshot] ${nav.label}`);
-    const r = await scrapeMlSellerCenterFull({
+    let r = await scrapeMlSellerCenterFull({
       timeoutMs: 90_000,
       singleTab: nav.key,
       // singleStore passa PRA URL do ML via storeToUrlParam:
@@ -1635,6 +1645,22 @@ export async function scrapeMlLiveSnapshot({
       waitMs: 10_000,
       fetchDirect: false,
     });
+
+    // Retry 1x se erro for "browser closed" durante uso (race do warm pool).
+    if (!r.ok && isBrowserClosedError(r.message)) {
+      log.warn(
+        `[live-snapshot] ${nav.label} falhou com browser-closed — retry em 1.5s (race do warm pool)`
+      );
+      await new Promise((res) => setTimeout(res, 1500));
+      r = await scrapeMlSellerCenterFull({
+        timeoutMs: 90_000,
+        singleTab: nav.key,
+        singleStore: storeUrlParam || "all",
+        waitMs: 10_000,
+        fetchDirect: false,
+      });
+    }
+
     if (!r.ok) {
       // Se a 1a falhou, aborta. Se a 2a falhou mas a 1a rolou, usa so a 1a.
       if (allXhrs.length === 0) {
@@ -1821,6 +1847,14 @@ async function recordTelemetryBestEffort({ scope, result, startedAt, triggered_b
     const { recordScrapeHistory, detectXhrDrift } = await import(
       "../../_lib/scrape-telemetry.js"
     );
+    // Constroi error com tipo + msg pra telemetria preservar causa raiz
+    // (antes gravava so "network" perdendo a real "browser closed", etc).
+    let errorForTelemetry = errorOverride || null;
+    if (!errorForTelemetry && result && result.ok !== true) {
+      const errType = result.error || "unknown";
+      const errMsg = result.message ? String(result.message).slice(0, 300) : "";
+      errorForTelemetry = errMsg ? `${errType}: ${errMsg}` : errType;
+    }
     recordScrapeHistory({
       scope,
       ok: result?.ok === true,
@@ -1830,7 +1864,7 @@ async function recordTelemetryBestEffort({ scope, result, startedAt, triggered_b
       detected_store_ids: result?.stats?.detected_store_ids || [],
       xhr_signatures: result?.xhr_signatures || [],
       elapsed_ms: Date.now() - startedAt,
-      error: errorOverride || result?.error || null,
+      error: errorForTelemetry,
       triggered_by,
     });
     // Auto-deteccao de drift sem bloqueio
