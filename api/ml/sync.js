@@ -174,9 +174,17 @@ async function getItemImageUrl(accessToken, itemId, cache) {
 async function getShipmentSnapshot(accessToken, shippingId, cache) {
   if (!shippingId) return null;
   return cachedFetch(cache, shippingId, async () => {
+    // Header x-format-new: true e obrigatorio pelo ML pra retornar o
+    // schema atualizado de /shipments/{id}. Sem ele, response e legado e
+    // perde campos novos. Doc: developers.mercadolivre.com.br/en_us/shipment-handling
     const shipmentResponse = await fetch(
       `https://api.mercadolibre.com/shipments/${shippingId}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "x-format-new": "true",
+        },
+      }
     );
     if (!shipmentResponse.ok) return null;
     const p = await shipmentResponse.json();
@@ -219,9 +227,15 @@ async function getShipmentSnapshot(accessToken, shippingId, cache) {
 async function getShipmentSlaSnapshot(accessToken, shippingId, cache) {
   if (!shippingId) return null;
   return cachedFetch(cache, `sla:${shippingId}`, async () => {
+    // x-format-new: true — schema atualizado conforme doc oficial ML.
     const slaResponse = await fetch(
       `https://api.mercadolibre.com/shipments/${shippingId}/sla`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "x-format-new": "true",
+        },
+      }
     );
     if (!slaResponse.ok) return null;
     const p = await slaResponse.json();

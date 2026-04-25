@@ -45,6 +45,7 @@ import mlStoresHandler from "../api/ml/stores.js";
 import mlSyncHandler, { runMercadoLivreSync, runActiveOrdersRefresh } from "../api/ml/sync.js";
 import mlSyncEventsHandler from "../api/ml/sync-events.js";
 import mlNotificationsHandler from "../api/ml/notifications.js";
+import { recoverMissedFeeds } from "../api/ml/_lib/missed-feeds.js";
 import mlReturnsHandler from "../api/ml/returns.js";
 import mlClaimsHandler from "../api/ml/claims.js";
 import mlPacksHandler from "../api/ml/packs.js";
@@ -474,6 +475,10 @@ const HARD_HEAL_COOLDOWN_MS = 10 * 60 * 1000;
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
+// Missed feeds recovery — busca notificacoes ML que webhook nao recebeu
+// (rede, downtime, ML desativou topico por timeout). Roda a cada 1h.
+// Doc oficial: developers.mercadolivre.com.br/pt_br/produto-receba-notificacoes
+const MISSED_FEEDS_RECOVERY_INTERVAL_MS = 60 * 60 * 1000; // 1 hora
 // Watchdog: máximo que um cron pode rodar antes de ser considerado stuck.
 // Se ultrapassar esse prazo, o lock é forçadamente resetado pra permitir
 // próxima execução (o sync original continua rodando em background mas
@@ -488,6 +493,8 @@ let autoSyncIntervalId = null;
 let activeRefreshIntervalId = null;
 let chipDriftSnapshotIntervalId = null;
 let chipDriftPruneIntervalId = null;
+let missedFeedsRecoveryIntervalId = null;
+let missedFeedsRecoveryRunning = false;
 let chipDriftSnapshotRunning = false;
 let chipDriftSnapshotStartedAt = 0;
 let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapshot gravado
@@ -842,10 +849,12 @@ async function gracefulShutdown(signal) {
   if (activeRefreshIntervalId) clearInterval(activeRefreshIntervalId);
   if (chipDriftSnapshotIntervalId) clearInterval(chipDriftSnapshotIntervalId);
   if (chipDriftPruneIntervalId) clearInterval(chipDriftPruneIntervalId);
+  if (missedFeedsRecoveryIntervalId) clearInterval(missedFeedsRecoveryIntervalId);
   autoSyncIntervalId = null;
   activeRefreshIntervalId = null;
   chipDriftSnapshotIntervalId = null;
   chipDriftPruneIntervalId = null;
+  missedFeedsRecoveryIntervalId = null;
   stopAutoBackup();
 
   // 3. Aguarda todas operações atuais terminarem (max 30s)
@@ -973,6 +982,41 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     );
     // Primeiro prune 5min apos boot
     setTimeout(autoChipDriftPrune, 5 * 60 * 1000);
+
+    // Missed feeds recovery — safety net pra webhooks que ML desativou.
+    // Roda 1x/hora, busca /missed_feeds e processa cada notificacao
+    // perdida com mesmo handler do webhook normal.
+    log.info(
+      `Missed feeds recovery iniciado (intervalo: ${MISSED_FEEDS_RECOVERY_INTERVAL_MS / 60000}min)`
+    );
+    const runMissedFeedsRecovery = async () => {
+      if (missedFeedsRecoveryRunning) {
+        log.warn("missed-feeds: tick anterior ainda rodando, pulando");
+        return;
+      }
+      missedFeedsRecoveryRunning = true;
+      try {
+        const result = await recoverMissedFeeds();
+        if (result.total_recovered > 0) {
+          log.info(
+            `missed-feeds: ${result.total_processed}/${result.total_recovered} processadas em ${result.duration_ms}ms`
+          );
+        }
+      } catch (err) {
+        log.error(
+          "missed-feeds tick falhou",
+          err instanceof Error ? err : new Error(String(err))
+        );
+      } finally {
+        missedFeedsRecoveryRunning = false;
+      }
+    };
+    missedFeedsRecoveryIntervalId = setInterval(
+      runMissedFeedsRecovery,
+      MISSED_FEEDS_RECOVERY_INTERVAL_MS
+    );
+    // Primeira execucao 10min apos boot (depois do sync inicial estabilizar)
+    setTimeout(runMissedFeedsRecovery, 10 * 60 * 1000);
 
     // Auto-emit NF-e: a cada 30s, emitia automaticamente NF-e de pedidos
     // invoice_pending que já passaram 30s desde que ML sinalizou.
