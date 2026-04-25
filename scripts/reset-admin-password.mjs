@@ -54,9 +54,12 @@ function createPasswordHash(password) {
 }
 
 function resolveDbPath() {
-  // Mesma logica do api/_lib/app-config.js: DATA_DIR ou default ./data
+  // Mesma logica do api/_lib/app-config.js: DATA_DIR ou default ./data.
+  // Banco real e ecoferro.db (nao app.db — bug original do script de
+  // reset; corrigido em 2026-04-25 apos reset de senha em prod ter
+  // falhado com "Banco nao encontrado: /app/data/app.db").
   const dataDir = process.env.DATA_DIR || path.join(process.cwd(), "data");
-  return path.join(dataDir, "app.db");
+  return path.join(dataDir, "ecoferro.db");
 }
 
 function main() {

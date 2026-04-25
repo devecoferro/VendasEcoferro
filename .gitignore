@@ -39,6 +39,14 @@ data/
 backup/
 backups/
 
+# Snapshots de auditoria do scraper (PII de compradores em texto claro)
+# Sempre permanecem locais — nunca pra git.
+tmp-ml-audit*/
+tmp-ourinhos-audit/
+tmp-ecoferro-audit/
+tmp-xhr/
+arquivos em imagens para alteração/
+
 # Claude Code local config (per-developer)
 .claude/
 

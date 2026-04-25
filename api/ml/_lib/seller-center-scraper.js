@@ -1662,6 +1662,26 @@ export async function scrapeMlLiveSnapshot({
   const ordersByTab = extractOrdersByTab(allXhrs);
   const subCards = aggregateSubCards(ordersByTab);
 
+  // xhr_signatures: paths unicos (sem query string) dos XHRs interceptados,
+  // normalizados (IDs numericos -> :id) pra usar em deteccao de drift sem
+  // gerar falsos-positivos por order_id/shipment_id. Telemetria
+  // (api/_lib/scrape-telemetry.js) usa isso pra alertar quando endpoint
+  // conhecido sumir ou novo aparecer.
+  const xhrSignaturesSet = new Set();
+  for (const xhr of allXhrs) {
+    if (!xhr?.url) continue;
+    try {
+      const u = new URL(xhr.url);
+      const normalizedPath = u.pathname
+        .replace(/\/\d{6,}/g, "/:id")
+        .replace(/\/[A-Z]+\d{6,}/g, "/:mlid");
+      xhrSignaturesSet.add(normalizedPath);
+    } catch {
+      // url malformada — ignora
+    }
+  }
+  const xhrSignatures = Array.from(xhrSignaturesSet).sort();
+
   const snapshot = {
     ok: true,
     scope: normalizedScope,
@@ -1670,12 +1690,14 @@ export async function scrapeMlLiveSnapshot({
     counters: counters || { today: 0, upcoming: 0, in_transit: 0, finalized: 0 },
     sub_cards: subCards,
     orders: ordersByTab,
+    xhr_signatures: xhrSignatures,
     stats: {
       total_orders: Object.values(ordersByTab).reduce((sum, o) => sum + o.length, 0),
       tabs_with_data: Object.entries(ordersByTab)
         .filter(([, o]) => o.length > 0)
         .map(([k]) => k),
       xhr_count: allXhrs.length,
+      xhr_signature_count: xhrSignatures.length,
       navs_successful: lastResult ? navPlan.findIndex((n) => n.key === "upcoming") + 1 : 1,
       // IDs de loja detectados nas URLs dos XHRs durante o scrape.
       // Agrega os detected_store_ids de cada captura (scrapeMlSellerCenterFull)
@@ -1753,11 +1775,20 @@ export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
   // Dispara scrape em background (fire-and-forget)
   lastBackgroundRefreshByScope.set(normalizedScope, now);
   log.info(`[live-snapshot] disparando refresh background scope="${normalizedScope}"`);
+  const startedAt = Date.now();
   const promise = scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope: normalizedScope })
-    .then((result) => {
+    .then(async (result) => {
       log.info(
         `[live-snapshot] refresh background scope="${normalizedScope}" concluido (${result.ok ? "ok" : "erro"})`
       );
+      // Telemetria — grava execucao em ml_scrape_history pra auto-deteccao
+      // de drift de XHR. Best-effort: se telemetria falhar, log + segue.
+      void recordTelemetryBestEffort({
+        scope: normalizedScope,
+        result,
+        startedAt,
+        triggered_by: "auto-refresh",
+      });
       return result;
     })
     .catch((err) => {
@@ -1765,7 +1796,15 @@ export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
         `[live-snapshot] refresh background scope="${normalizedScope}" falhou`,
         err instanceof Error ? err : new Error(String(err))
       );
-      return { ok: false, error: "background_failed" };
+      const failResult = { ok: false, error: "background_failed" };
+      void recordTelemetryBestEffort({
+        scope: normalizedScope,
+        result: failResult,
+        startedAt,
+        triggered_by: "auto-refresh",
+        errorOverride: err instanceof Error ? err.message : String(err),
+      });
+      return failResult;
     })
     .finally(() => {
       liveSnapshotInflightByScope.delete(normalizedScope);
@@ -1773,6 +1812,41 @@ export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
   liveSnapshotInflightByScope.set(normalizedScope, promise);
 
   return { triggered: true, scope: normalizedScope };
+}
+
+// Telemetria opcional — import dinamico pra evitar dep circular ao
+// carregamento (telemetry → db → este modulo).
+async function recordTelemetryBestEffort({ scope, result, startedAt, triggered_by, errorOverride }) {
+  try {
+    const { recordScrapeHistory, detectXhrDrift } = await import(
+      "../../_lib/scrape-telemetry.js"
+    );
+    recordScrapeHistory({
+      scope,
+      ok: result?.ok === true,
+      counters: result?.counters || null,
+      total_orders: result?.stats?.total_orders || 0,
+      xhr_count: result?.stats?.xhr_count || 0,
+      detected_store_ids: result?.stats?.detected_store_ids || [],
+      xhr_signatures: result?.xhr_signatures || [],
+      elapsed_ms: Date.now() - startedAt,
+      error: errorOverride || result?.error || null,
+      triggered_by,
+    });
+    // Auto-deteccao de drift sem bloqueio
+    const drift = detectXhrDrift(scope);
+    if (drift?.has_drift) {
+      log.warn(
+        `[live-snapshot] DRIFT detectado no scope="${scope}": ${drift.message}`,
+        new Error(drift.changes?.join(" | ") || "drift")
+      );
+    }
+  } catch (err) {
+    log.warn(
+      `[live-snapshot] telemetria falhou (scope="${scope}")`,
+      err instanceof Error ? err : new Error(String(err))
+    );
+  }
 }
 
 export function isLiveSnapshotScrapeInProgress(scope = "all") {
