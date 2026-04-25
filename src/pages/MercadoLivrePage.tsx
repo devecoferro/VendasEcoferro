@@ -665,22 +665,42 @@ export default function MercadoLivrePage() {
     }
   };
 
-  const handleRetryLoad = async () => {
-    try {
-      // Dispara SYNC com o ML (puxa pedidos novos pro banco local),
-      // nao so refresh (que apenas refaz a query local). Fix 2026-04-24:
-      // antes so chamava refresh() — quando ML tinha pedido novo que
-      // o app ainda nao tinha, o botao "Sincronizar agora" nao
-      // resolvia porque nao forcava um fetch do ML.
-      toast.info("Sincronizando com o Mercado Livre...");
-      await syncNow({ forceFullSync: true });
-      toast.success("Sincronização concluída.");
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Falha ao sincronizar.";
-      toast.error(msg);
-    }
-  };
+  const handleRetryLoad = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      const { silent = false } = options;
+      try {
+        // Dispara SYNC com o ML (puxa pedidos novos pro banco local),
+        // nao so refresh. silent=true pula toasts (usado pelo auto-trigger
+        // quando chip ML > lista local — sem encher de toast).
+        if (!silent) toast.info("Sincronizando com o Mercado Livre...");
+        await syncNow({ forceFullSync: true });
+        if (!silent) toast.success("Sincronização concluída.");
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Falha ao sincronizar.";
+        if (!silent) toast.error(msg);
+      }
+    },
+    [syncNow]
+  );
+
+  // Auto-trigger sync quando chip ML mostra pedidos mas lista local esta
+  // vazia (selectedBucketTotalCount > 0 && bucketOrders.length === 0).
+  // Evita o operador ter que clicar em "Sincronizar agora" toda vez que
+  // chega pedido novo. Debounce 3s + flag pra disparar so 1x por
+  // combinacao (count, bucket).
+  const lastAutoSyncSignatureRef = useRef<string>("");
+  useEffect(() => {
+    if (selectedBucketTotalCount <= 0) return;
+    if (bucketOrders.length > 0) return;
+    const signature = `${shipmentFilter}:${selectedBucketTotalCount}`;
+    if (lastAutoSyncSignatureRef.current === signature) return;
+    const timer = window.setTimeout(() => {
+      lastAutoSyncSignatureRef.current = signature;
+      void handleRetryLoad({ silent: true });
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [selectedBucketTotalCount, bucketOrders.length, shipmentFilter, handleRetryLoad]);
 
   const handleGenerateLabels = useCallback((ordersToReview: MLOrder[]) => {
     if (ordersToReview.length === 0) {
@@ -2608,22 +2628,21 @@ export default function MercadoLivrePage() {
                 + botao "Sincronizar agora" pra forcar a sync. */}
             {selectedBucketTotalCount > 0 && bucketOrders.length === 0 ? (
               <>
-                <CircleAlert className="mx-auto mb-3 h-8 w-8 text-[#ff6d1b]" />
+                <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-[#3483fa]" />
                 <p className="text-[16px] font-semibold text-[#333333]">
-                  ML mostra <strong>{selectedBucketTotalCount}</strong> pedido(s),
-                  mas o app não tem nenhum sincronizado ainda.
+                  Sincronizando <strong>{selectedBucketTotalCount}</strong> pedido(s) novos do ML...
                 </p>
                 <p className="mt-1 text-[15px] text-[#666666]">
-                  Isso acontece quando vendas novas ainda nao foram puxadas pro banco local.
-                  Clica em "Sincronizar agora" pra resolver.
+                  Vendas novas detectadas — puxando pro banco local automaticamente. Em ~10s a lista atualiza sozinha.
                 </p>
                 <div className="mt-5 flex justify-center">
                   <Button
-                    onClick={handleRetryLoad}
-                    className="bg-[#ff6d1b] text-white hover:bg-[#e65c10]"
+                    variant="outline"
+                    onClick={() => handleRetryLoad()}
+                    className="border-[#3483fa] text-[#3483fa] hover:bg-[#eef4ff]"
                   >
                     <RefreshCw className="mr-2 h-4 w-4" />
-                    Sincronizar agora
+                    Sincronizar agora (manual)
                   </Button>
                 </div>
               </>
