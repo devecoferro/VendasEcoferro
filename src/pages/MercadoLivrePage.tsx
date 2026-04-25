@@ -2173,6 +2173,38 @@ export default function MercadoLivrePage() {
             </div>
           </div>
 
+          {/* Campo de pesquisa — busca em sale_number, order_id, SKU,
+              buyer_name, buyer_nickname e item_title (matchesSearch em
+              mercadoLivreHelpers.ts:530). Filtra a lista da aba ativa. */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-[280px] max-w-[560px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9aa0a6]" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar por número da venda, SKU, comprador ou produto..."
+                className="h-10 w-full rounded-full border border-[#e6e6e6] bg-white pl-10 pr-10 text-[14px] text-[#333333] placeholder:text-[#9aa0a6] shadow-[0_1px_2px_rgba(0,0,0,0.04)] focus:border-[#3483fa] focus:outline-none focus:ring-2 focus:ring-[#3483fa]/20"
+                aria-label="Buscar pedidos"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-semibold text-[#5a6d92] hover:text-[#333333]"
+                  aria-label="Limpar busca"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            {searchQuery.trim() && (
+              <span className="text-[13px] text-[#5a6d92]">
+                {filteredOperationalOrders.length} resultado(s)
+              </span>
+            )}
+          </div>
+
           {/* SUB-CLASSIFICAÇÃO AO VIVO (ML) — pills clicáveis */}
           {scopedLiveSnapshot && (
             <LiveSubCardsStrip
