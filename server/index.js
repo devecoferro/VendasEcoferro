@@ -195,6 +195,23 @@ const syncLimiter = rateLimit({
   message: { ok: false, error: "Sync muito frequente. Aguarde." },
 });
 
+// Limiter dedicado pra emissao de NF-e. Operador legitimo pode ter 30+
+// pedidos pra emitir em sequencia (cada NF-e leva ~3-5s no ML, processado
+// em serie via handleGenerateNFeBulk). Antes usava syncLimiter (10/min)
+// que bloqueava no 11o pedido com 429. 60/min = 1 NF-e por segundo,
+// folga real pro uso operacional, longe de risco de abuso (ML cobra
+// fiscal de quem emite).
+const nfeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "Muitas emissoes de NF-e em sequencia. Aguarde 1 minuto e tente de novo.",
+  },
+});
+
 // S5: limiter dedicado pro image-proxy — PDFs com 50+ produtos podem
 // fazer 50+ requests do proxy rapidamente (antes do cache popular).
 // Gente legítima precisa mais que 120/min do apiLimiter generico.
@@ -355,7 +372,7 @@ app.all("/api/ml/private-seller-center-comparison", apiLimiter, (req, res) =>
 );
 
 // ─── NFe API (rate limited) ─────────────────────────────────────────
-app.all("/api/nfe/generate", syncLimiter, (req, res) => nfeGenerateHandler(req, res));
+app.all("/api/nfe/generate", nfeLimiter, (req, res) => nfeGenerateHandler(req, res));
 app.all("/api/nfe/document", apiLimiter, (req, res) => nfeDocumentHandler(req, res));
 app.all("/api/nfe/file", apiLimiter, (req, res) => nfeFileHandler(req, res));
 app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
