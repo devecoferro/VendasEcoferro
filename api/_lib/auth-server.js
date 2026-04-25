@@ -397,9 +397,19 @@ export async function ensureDefaultAdmin() {
   const existingProfile = getProfileRowByUsername(DEFAULT_ADMIN_USERNAME);
 
   if (existingProfile) {
-    // Sincronizar senha APENAS no startup (quando _allowPasswordSync = true).
-    // Em requests normais, não reescreve a senha — protege contra backdoor.
-    if (_allowPasswordSync) {
+    // Sincronizar senha APENAS no startup (quando _allowPasswordSync = true)
+    // E APENAS se APP_DISABLE_PASSWORD_SYNC nao estiver setada. Permite ao
+    // admin trocar senha via UI (/users) e persistir entre restarts.
+    //
+    // Setup inicial: env vazia (default) → sync ativo, primeira run cria user
+    //                com senha da env.
+    // Apos trocar senha via UI: setar APP_DISABLE_PASSWORD_SYNC=true no
+    //                ambiente de prod → restart nao sobrescreve mais.
+    const disableSync =
+      String(process.env.APP_DISABLE_PASSWORD_SYNC || "").toLowerCase() === "true" ||
+      String(process.env.APP_DISABLE_PASSWORD_SYNC || "") === "1";
+
+    if (_allowPasswordSync && !disableSync) {
       const passwordMatches = verifyPassword(DEFAULT_ADMIN_PASSWORD, existingProfile.password_hash);
       if (!passwordMatches) {
         const newHash = createPasswordHash(DEFAULT_ADMIN_PASSWORD);
@@ -408,6 +418,11 @@ export async function ensureDefaultAdmin() {
         ).run(newHash, nowIso(), existingProfile.id);
         console.log(`[auth] Admin password synced from env vars for user "${DEFAULT_ADMIN_USERNAME}" (startup only).`);
       }
+    } else if (_allowPasswordSync && disableSync) {
+      console.log(
+        `[auth] Admin password sync DISABLED via APP_DISABLE_PASSWORD_SYNC env. ` +
+          `User "${DEFAULT_ADMIN_USERNAME}" senha mantida (a que esta no DB, alterada via UI).`
+      );
     }
     // Garantir que está ativo (safe pra ser chamado sempre)
     if (!existingProfile.active) {
