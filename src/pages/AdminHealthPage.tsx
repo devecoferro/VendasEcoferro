@@ -34,8 +34,36 @@ interface HealthRuntime {
     rss: string;
     heap_used: string;
     heap_total: string;
+    external?: string;
+  };
+  cpu_seconds?: {
+    user: string;
+    system: string;
   };
   node_version: string;
+}
+
+interface HealthHost {
+  load_avg: [number, number, number];
+  memory_mb: {
+    total: string;
+    free: string;
+    used: string;
+    used_pct: string;
+  };
+  cpu_count: number;
+  cpu_model: string;
+  platform: string;
+  hostname: string;
+}
+
+interface ScrapeStatRow {
+  scope: string;
+  total: number;
+  sucessos: number;
+  success_rate: number | null;
+  avg_elapsed_ms: number | null;
+  last_run_at: string | null;
 }
 
 interface HealthAuditRow {
@@ -53,6 +81,8 @@ interface HealthResponse {
   last_sync: HealthLastSync | null;
   db_size: HealthDbSize | null;
   runtime: HealthRuntime;
+  host?: HealthHost;
+  scrape_stats?: ScrapeStatRow[] | null;
   recent_audit: HealthAuditRow[];
 }
 
@@ -92,7 +122,8 @@ export default function AdminHealthPage() {
 
   useEffect(() => {
     load();
-    const interval = window.setInterval(load, 30_000);
+    // Refresh 5s — usuario quer monitorar carga em tempo real (CPU/mem)
+    const interval = window.setInterval(load, 5_000);
     return () => window.clearInterval(interval);
   }, [load]);
 
@@ -106,7 +137,7 @@ export default function AdminHealthPage() {
               Saúde do Sistema
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Atualiza a cada 30s. Admin-only.
+              Atualiza a cada 5s. Admin-only.
             </p>
           </div>
           <Button onClick={load} disabled={loading} variant="outline" size="sm">
@@ -188,6 +219,129 @@ export default function AdminHealthPage() {
                 </div>
               </div>
             </div>
+
+            {/* Recursos do Sistema (Host + scrape stats) */}
+            {data.host && (
+              <div className="rounded-lg border border-border bg-card p-4">
+                <div className="text-sm font-semibold flex items-center gap-2 mb-3">
+                  <Activity className="h-4 w-4 text-red-500" />
+                  Recursos do sistema (refresh 5s)
+                </div>
+                <div className="grid gap-4 md:grid-cols-3 text-sm">
+                  {/* Load average */}
+                  <div className="rounded border border-border bg-background p-3">
+                    <div className="text-xs text-muted-foreground mb-1">Load average</div>
+                    <div className="text-2xl font-bold">
+                      {data.host.load_avg[0].toFixed(2)}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      5min: {data.host.load_avg[1].toFixed(2)} • 15min: {data.host.load_avg[2].toFixed(2)}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {data.host.cpu_count} core(s)
+                      {data.host.load_avg[0] > data.host.cpu_count ? (
+                        <span className="ml-2 text-red-600 font-semibold">⚠ saturado</span>
+                      ) : data.host.load_avg[0] > data.host.cpu_count * 0.7 ? (
+                        <span className="ml-2 text-orange-600 font-semibold">alto</span>
+                      ) : (
+                        <span className="ml-2 text-green-600 font-semibold">ok</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Memory host */}
+                  <div className="rounded border border-border bg-background p-3">
+                    <div className="text-xs text-muted-foreground mb-1">Memória do host</div>
+                    <div className="text-2xl font-bold">
+                      {data.host.memory_mb.used_pct}%
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {(Number(data.host.memory_mb.used) / 1024).toFixed(1)} / {(Number(data.host.memory_mb.total) / 1024).toFixed(1)} GB
+                    </div>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={`h-full ${
+                          Number(data.host.memory_mb.used_pct) > 85
+                            ? "bg-red-500"
+                            : Number(data.host.memory_mb.used_pct) > 70
+                              ? "bg-orange-500"
+                              : "bg-green-500"
+                        }`}
+                        style={{ width: `${data.host.memory_mb.used_pct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Process Node memory */}
+                  <div className="rounded border border-border bg-background p-3">
+                    <div className="text-xs text-muted-foreground mb-1">Nosso app (node)</div>
+                    <div className="text-2xl font-bold">
+                      {data.runtime.memory_mb.rss} MB
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Heap: {data.runtime.memory_mb.heap_used}/{data.runtime.memory_mb.heap_total} MB
+                    </div>
+                    {data.runtime.cpu_seconds && (
+                      <div className="text-xs text-muted-foreground mt-1">
+                        CPU acumulada: user {data.runtime.cpu_seconds.user}s + sys {data.runtime.cpu_seconds.system}s
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Host meta */}
+                <div className="mt-3 text-xs text-muted-foreground">
+                  Host: {data.host.hostname} • {data.host.platform} • {data.host.cpu_model}
+                </div>
+              </div>
+            )}
+
+            {/* Scrape stats (telemetria) */}
+            {Array.isArray(data.scrape_stats) && data.scrape_stats.length > 0 && (
+              <div className="rounded-lg border border-border bg-card p-4">
+                <div className="text-sm font-semibold flex items-center gap-2 mb-3">
+                  <Activity className="h-4 w-4 text-blue-500" />
+                  Scraper Seller Center — últimas 24h
+                </div>
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr className="border-b">
+                      <th className="text-left py-2">Scope</th>
+                      <th className="text-right py-2">Total</th>
+                      <th className="text-right py-2">Sucessos</th>
+                      <th className="text-right py-2">Taxa</th>
+                      <th className="text-right py-2">Tempo médio</th>
+                      <th className="text-left py-2">Última</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.scrape_stats.map((row) => {
+                      const rate = row.success_rate ?? 0;
+                      const rateColor =
+                        rate >= 0.9 ? "text-green-600" : rate >= 0.7 ? "text-orange-600" : "text-red-600";
+                      return (
+                        <tr key={row.scope} className="border-b last:border-0">
+                          <td className="py-1.5 font-mono">{row.scope}</td>
+                          <td className="py-1.5 text-right">{row.total}</td>
+                          <td className="py-1.5 text-right">{row.sucessos}</td>
+                          <td className={`py-1.5 text-right font-semibold ${rateColor}`}>
+                            {rate != null ? `${(rate * 100).toFixed(0)}%` : "—"}
+                          </td>
+                          <td className="py-1.5 text-right">
+                            {row.avg_elapsed_ms ? `${(row.avg_elapsed_ms / 1000).toFixed(1)}s` : "—"}
+                          </td>
+                          <td className="py-1.5 text-xs text-muted-foreground">
+                            {row.last_run_at
+                              ? new Date(row.last_run_at).toLocaleTimeString("pt-BR")
+                              : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {/* Audit recente */}
             <div className="rounded-lg border border-border bg-card p-4">
