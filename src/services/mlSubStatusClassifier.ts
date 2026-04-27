@@ -420,11 +420,14 @@ export function getOrderSubstatus(
       return "in_distribution_center";
     }
 
+    // NF-e pendente — pill "NF-e para gerenciar". ML mostra esses em
+    // "Envios de hoje" (operador precisa emitir NF-e hoje). Verificado
+    // 2026-04-27: 39 NF-e em today no painel ML pra Ourinhos.
+    if (shipSubstatus === "invoice_pending") {
+      return "invoice_pending";
+    }
+
     // Ainda precisa imprimir etiqueta — vira pill "Etiqueta pronta" do ML.
-    // Antes, o today sempre caia em ready_to_send; o pill "Etiqueta pronta"
-    // e "Pronto pra coleta" filtravam o mesmo conjunto. Agora dividimos:
-    //   ready_to_print   → nao imprimiu etiqueta ainda
-    //   ready_to_send    → etiqueta ja impressa, falta dar saida na coleta
     if (shipSubstatus === "ready_to_print") {
       return "ready_to_print";
     }

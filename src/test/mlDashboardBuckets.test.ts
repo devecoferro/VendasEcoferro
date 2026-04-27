@@ -276,13 +276,17 @@ describe("classifyCrossDockingOrder — regressoes 2026-04-23", () => {
       .toBe("today");
   });
 
-  it("invoice_pending vai pra upcoming (aguardando NF)", () => {
+  it("invoice_pending vai pra today (ML mostra NF-e em PROGRAMADA Coleta)", () => {
+    // Ate 2026-04-27 ia pra upcoming. Mudanca: ML Seller Center mostra
+    // NF-e pendente em "Envios de hoje > NF-e para gerenciar" (39 orders
+    // verificados em prod Ourinhos). Sem pickup_date populado, promover
+    // pra today da match com ML e evita lista vazia ao clicar pill.
     const order = buildOrder({
       shipmentStatus: "ready_to_ship",
       shipmentSubstatus: "invoice_pending",
     });
     expect(__dashboardTestables.classifyCrossDockingOrder(order, "2026-04-23"))
-      .toBe("upcoming");
+      .toBe("today");
   });
 });
 
