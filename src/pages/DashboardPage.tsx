@@ -38,6 +38,7 @@ import {
   isOrderInvoicePending,
   isOrderReadyToPrintLabel,
   isOrderUnderReview,
+  countByPack,
   parseDate,
 } from "@/services/mercadoLivreHelpers";
 import type { MLOperationalBucket, MLOrder } from "@/services/mercadoLivreService";
@@ -408,30 +409,30 @@ export default function DashboardPage() {
     () => [
       {
         label: "Etiquetas prontas",
-        value: printableOrders.length,
-        helper: `${printableOrders.length} pedidos liberados para impressão`,
+        value: countByPack(printableOrders),
+        helper: `${countByPack(printableOrders)} envios liberados para impressão`,
         color: "bg-[#1b7a33]",
       },
       {
         label: "NF-e pendente",
-        value: invoicePendingOrders.length,
-        helper: `${invoicePendingOrders.length} pedidos aguardando faturamento`,
+        value: countByPack(invoicePendingOrders),
+        helper: `${countByPack(invoicePendingOrders)} envios aguardando faturamento (${invoicePendingOrders.length} pedidos)`,
         color: "bg-[#f59e0b]",
       },
       {
         label: "Em revisão",
-        value: underReviewOrders.length,
-        helper: `${underReviewOrders.length} pedidos exigem atenção`,
+        value: countByPack(underReviewOrders),
+        helper: `${countByPack(underReviewOrders)} envios exigem atenção`,
         color: "bg-[#e11d48]",
       },
       {
         label: "Dados fiscais disponíveis",
-        value: billingAvailableOrders.length,
-        helper: `${billingAvailableOrders.length} pedidos com billing_info válido`,
+        value: countByPack(billingAvailableOrders),
+        helper: `${countByPack(billingAvailableOrders)} envios com billing_info válido`,
         color: "bg-[#2563eb]",
       },
     ],
-    [billingAvailableOrders.length, invoicePendingOrders.length, printableOrders.length, underReviewOrders.length]
+    [billingAvailableOrders, invoicePendingOrders, printableOrders, underReviewOrders]
   );
 
   const hasOperationalData =
@@ -538,10 +539,10 @@ export default function DashboardPage() {
           />
           <StatsCard
             title="NF-e pendente"
-            value={invoicePendingOrders.length.toLocaleString("pt-BR")}
+            value={countByPack(invoicePendingOrders).toLocaleString("pt-BR")}
             icon={FileCheck2}
             accentColor="warning"
-            subtitle="Aguardando faturamento"
+            subtitle={`Aguardando faturamento (${invoicePendingOrders.length} pedidos)`}
           />
           <StatsCard
             title="Depósitos ativos"

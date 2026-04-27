@@ -649,6 +649,52 @@ export function isOrderReadyToPrintLabel(order: MLOrder): boolean {
   return true;
 }
 
+/**
+ * Retorna chave de dedup pra contar orders como envios (pack).
+ * ML Seller Center conta ENVIOS — pedidos no mesmo pack contam como 1.
+ * Prioridade: pack_id → shipping_id → order_id (fallback).
+ *
+ * Usar pra alinhar contadores do nosso painel com chip ML
+ * (sem dedup, conta orders e infla 1.5-2x os numeros).
+ */
+export function getPackDedupKey(order: MLOrder): string {
+  const raw = getRawData(order);
+  const packId = raw.pack_id ? String(raw.pack_id) : null;
+  if (packId) return `pack:${packId}`;
+  const shippingId = raw.shipping_id || (asRecord(raw.shipping)?.id as unknown);
+  if (shippingId) return `ship:${String(shippingId)}`;
+  return `order:${order.order_id}`;
+}
+
+/**
+ * Conta orders deduplicados por pack/envio. Bate com como ML Seller
+ * Center conta (ex: "68 NF-e pra gerenciar" no nosso painel = 39 no ML
+ * porque ML deduplica orders do mesmo pack).
+ */
+export function countByPack(orders: MLOrder[]): number {
+  const seen = new Set<string>();
+  for (const order of orders) {
+    seen.add(getPackDedupKey(order));
+  }
+  return seen.size;
+}
+
+/**
+ * Filtra orders mantendo so 1 por pack (o primeiro encontrado).
+ * Util pra listas/relatorios que precisam refletir count = "envios".
+ */
+export function dedupOrdersByPack(orders: MLOrder[]): MLOrder[] {
+  const seen = new Set<string>();
+  const result: MLOrder[] = [];
+  for (const order of orders) {
+    const key = getPackDedupKey(order);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(order);
+  }
+  return result;
+}
+
 export function isOrderInvoicePending(order: MLOrder): boolean {
   if (!isOrderReadyForInvoiceLabel(order)) return false;
   if (hasEmittedInvoice(order)) return false;
