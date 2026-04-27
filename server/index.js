@@ -1086,20 +1086,65 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     // Esta rotina chamava `scrapeMlSellerCenter` (DOM scraping de chips)
     // a cada 5min. Foi SUBSTITUÍDA pelo live-snapshot (XHR interception)
     // em `scrapeMlLiveSnapshot`, que é mais preciso e resiliente a
-    // mudanças de layout. A função DOM continuava rodando mas falhando
-    // com `dom_mismatch` (ML mudou estrutura) — só gerava ruído nos logs
-    // sem valor agregado.
+    // mudanças de layout.
     //
     // O live-snapshot é invocado sob demanda pelo endpoint
     // `/api/ml/live-snapshot` (usado pelo frontend) e tem seu próprio
     // auto-refresh em background via `maybeRefreshLiveSnapshotInBackground`.
+
+    // ─── Round-robin de scopes do scraper ────────────────────────
+    // Antes: só "all" era refrescado em background. Outros scopes
+    // (ourinhos/full/without_deposit) só atualizavam quando alguem
+    // abria o filtro correspondente — chip ficava STALE por horas.
+    // Operador reportou "Ourinhos nao bate" em 2026-04-26 com chip
+    // ate 17h velho.
     //
-    // Função `scrapeMlSellerCenter` e `ml_ui_chip_counts` no payload
-    // ainda existem como fallback #2 no frontend (MercadoLivrePage.tsx),
-    // mas sem este cron populando o cache, `getUiChipCounts()` retorna
-    // null → frontend cai no fallback #3 (`ml_live_chip_counts`) ou #4.
-    //
-    // Remoção completa do código legado fica para cleanup futuro.
+    // Solucao: cron 60s rotaciona entre os 4 scopes. Cada scope refresh
+    // a cada ~4min. maybeRefreshLiveSnapshotInBackground tem dedup
+    // interno (skip se cache fresh) entao o custo real e baixo.
+    const SCRAPER_SCOPES = ["all", "ourinhos", "full", "without_deposit"];
+    let scraperScopeIndex = 0;
+    let scraperRoundRobinRunning = false;
+    const SCRAPER_ROUND_ROBIN_INTERVAL_MS = 60_000;
+    const scraperRoundRobinIntervalId = setInterval(async () => {
+      if (scraperRoundRobinRunning) return;
+      scraperRoundRobinRunning = true;
+      try {
+        const scope = SCRAPER_SCOPES[scraperScopeIndex];
+        scraperScopeIndex = (scraperScopeIndex + 1) % SCRAPER_SCOPES.length;
+        const { maybeRefreshLiveSnapshotInBackground } = await import(
+          "../api/ml/_lib/seller-center-scraper.js"
+        );
+        const result = maybeRefreshLiveSnapshotInBackground(scope);
+        if (result.triggered) {
+          log.info(`[scraper-rr] disparou refresh scope="${scope}"`);
+        }
+      } catch (err) {
+        log.warn(
+          `[scraper-rr] erro`,
+          err instanceof Error ? err : new Error(String(err))
+        );
+      } finally {
+        scraperRoundRobinRunning = false;
+      }
+    }, SCRAPER_ROUND_ROBIN_INTERVAL_MS);
+    // Primeira execucao 30s apos boot (deixa scraper "all" do live-snapshot
+    // dar prioridade no inicio)
+    setTimeout(async () => {
+      try {
+        const { maybeRefreshLiveSnapshotInBackground } = await import(
+          "../api/ml/_lib/seller-center-scraper.js"
+        );
+        for (const scope of SCRAPER_SCOPES) {
+          maybeRefreshLiveSnapshotInBackground(scope);
+        }
+      } catch {
+        /* best-effort */
+      }
+    }, 30_000);
+    // Cleanup no shutdown
+    process.on("SIGTERM", () => clearInterval(scraperRoundRobinIntervalId));
+    process.on("SIGINT", () => clearInterval(scraperRoundRobinIntervalId));
   }, 10_000);
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
