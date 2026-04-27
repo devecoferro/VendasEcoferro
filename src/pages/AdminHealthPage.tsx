@@ -122,8 +122,11 @@ export default function AdminHealthPage() {
 
   useEffect(() => {
     load();
-    // Refresh 5s — usuario quer monitorar carga em tempo real (CPU/mem)
-    const interval = window.setInterval(load, 5_000);
+    // Refresh 30s — antes era 5s, mas o poll causava CPU spike repetido
+    // (Coolify reportou VPS reiniciada por carga em 2026-04-26). Carga e
+    // memoria nao mudam tao rapido a ponto de exigir 5s, e admin nao fica
+    // refrescando tanto.
+    const interval = window.setInterval(load, 30_000);
     return () => window.clearInterval(interval);
   }, [load]);
 

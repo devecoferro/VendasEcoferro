@@ -61,12 +61,17 @@ let cachedFullResult = null;
 
 // ─── P9: Warm browser pool ─────────────────────────────────────────────
 // Mantem um único browser chromium aberto entre scrapes pra economizar
-// os ~2-3s do launch. Fecha após 5min de idle pra liberar ~80MB de RAM.
+// os ~2-3s do launch. Fecha após 60s de idle pra liberar ~250MB de RAM.
 // Detecta browser morto (disconnected) e recria automaticamente.
+//
+// Why 60s (antes 5min): com round-robin de scrapes a cada 180s, idle de
+// 5min nunca disparava (browser sempre vivo, ~250MB sempre alocados).
+// 60s permite que o browser feche entre rodadas do round-robin —
+// alocado apenas durante scrape ativo + 1min, libera ~70% do tempo.
 let warmBrowser = null;
 let warmBrowserUsageCount = 0;
 let warmBrowserIdleTimer = null;
-const WARM_BROWSER_IDLE_MS = 5 * 60 * 1000;
+const WARM_BROWSER_IDLE_MS = 60 * 1000;
 
 const WARM_BROWSER_LAUNCH_ARGS = [
   "--no-sandbox",
