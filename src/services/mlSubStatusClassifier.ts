@@ -268,7 +268,31 @@ export function getOrderPrimaryBucket(order: MLOrder): ShipmentBucket | null {
     return "upcoming";
   }
 
-  // Sem pickup_date conhecido — assume upcoming (fallback conservador)
+  // Sem pickup_date conhecido — heuristica por substatus.
+  //
+  // Why: o ML API nao retorna pickup_date / lead_time pra essa conta
+  // (verificado em prod 2026-04-27: 0/148 orders ready_to_ship com
+  // qualquer date populado). Sem isso, o fallback "upcoming" jogava
+  // TODOS os orders Ourinhos em upcoming e, quando o usuario clicava
+  // em pills do bucket today (Etiqueta pronta / Pronto pra coleta /
+  // Vendas canceladas), a lista vinha vazia.
+  //
+  // Heuristica: orders que estao prontos pra serem trabalhados HOJE
+  // pelo operador (imprimir etiqueta, aguardando coleta, faturar) vao
+  // pra "today". Orders ja processados aguardando ML (in_warehouse,
+  // packed, in_packing_list) vao pra "upcoming".
+  //
+  // Imperfeito (ML usa date interna que nao temos), mas garante que
+  // pills do today tragam resultado em vez de zero.
+  const TODAY_LIKE_SUBSTATUSES = new Set([
+    "ready_to_print",      // Etiqueta pra imprimir
+    "ready_for_pickup",    // Pronto pra coleta
+    "ready_to_pack",       // Pra embalar
+    "ready_to_ship",       // ready generico
+    "buffered",            // Aguardando processamento ML
+    "invoice_pending",     // NF-e pra emitir
+  ]);
+  if (TODAY_LIKE_SUBSTATUSES.has(shipSubstatusLower)) return "today";
   return "upcoming";
 }
 
