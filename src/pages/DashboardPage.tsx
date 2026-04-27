@@ -408,30 +408,32 @@ export default function DashboardPage() {
   const operationalSummary = useMemo(
     () => [
       {
+        // Todos contadores DEDUPLICADOS POR PACK pra bater 1:1 com
+        // ML Seller Center (decisao 2026-04-27 — operador deixou claro
+        // que numeros tem que ser identicos ao ML, sem confusao).
+        // Sistema continua emitindo 1 NF por order internamente quando
+        // bulk-emit e disparado — pack dedup e SO display.
         label: "Etiquetas prontas",
         value: countByPack(printableOrders),
-        helper: `${countByPack(printableOrders)} envios (${printableOrders.length} pedidos)`,
+        helper: `${countByPack(printableOrders)} envios prontos`,
         color: "bg-[#1b7a33]",
       },
       {
-        // NF-e e por ORDER, nao por envio. 1 pack pode ter 2 orders →
-        // 2 NFs distintas. Mostrar pack count escondia trabalho real.
-        // ML mostra 39 envios mas user precisa emitir 68 NFs.
-        label: "NF-e pra emitir",
-        value: invoicePendingOrders.length,
-        helper: `${invoicePendingOrders.length} NFs a emitir (em ${countByPack(invoicePendingOrders)} envios — ML mostra envios)`,
+        label: "NF-e pendente",
+        value: countByPack(invoicePendingOrders),
+        helper: `${countByPack(invoicePendingOrders)} envios aguardando NF-e`,
         color: "bg-[#f59e0b]",
       },
       {
         label: "Em revisão",
-        value: underReviewOrders.length,
-        helper: `${underReviewOrders.length} pedidos exigem atenção`,
+        value: countByPack(underReviewOrders),
+        helper: `${countByPack(underReviewOrders)} envios em revisão`,
         color: "bg-[#e11d48]",
       },
       {
         label: "Dados fiscais disponíveis",
-        value: billingAvailableOrders.length,
-        helper: `${billingAvailableOrders.length} pedidos com billing_info válido`,
+        value: countByPack(billingAvailableOrders),
+        helper: `${countByPack(billingAvailableOrders)} envios com billing_info`,
         color: "bg-[#2563eb]",
       },
     ],
@@ -541,11 +543,11 @@ export default function DashboardPage() {
             subtitle="Prontas para impressão"
           />
           <StatsCard
-            title="NF-e pra emitir"
-            value={invoicePendingOrders.length.toLocaleString("pt-BR")}
+            title="NF-e pendente"
+            value={countByPack(invoicePendingOrders).toLocaleString("pt-BR")}
             icon={FileCheck2}
             accentColor="warning"
-            subtitle={`em ${countByPack(invoicePendingOrders)} envios (ML mostra envios)`}
+            subtitle="Aguardando faturamento"
           />
           <StatsCard
             title="Depósitos ativos"
