@@ -2,6 +2,7 @@
 // Dashboard de saúde do sistema — sync status, cache, DB stats, erros.
 // Admin-only.
 
+import os from "node:os";
 import { requireAdmin } from "../_lib/auth-server.js";
 import { db } from "../_lib/db.js";
 
@@ -80,17 +81,71 @@ export default async function handler(req, res) {
     // ignore
   }
 
-  // Uptime + memory do processo
+  // Uptime + memory do processo + CPU stats próprios
   const mem = process.memoryUsage();
+  const cpu = process.cpuUsage();
   const runtime = {
     uptime_seconds: Math.floor(process.uptime()),
     memory_mb: {
       rss: (mem.rss / 1024 / 1024).toFixed(1),
       heap_used: (mem.heapUsed / 1024 / 1024).toFixed(1),
       heap_total: (mem.heapTotal / 1024 / 1024).toFixed(1),
+      external: (mem.external / 1024 / 1024).toFixed(1),
+    },
+    cpu_seconds: {
+      user: (cpu.user / 1_000_000).toFixed(1),
+      system: (cpu.system / 1_000_000).toFixed(1),
     },
     node_version: process.version,
   };
+
+  // Stats do host (containerized — reflete VPS toda quando montagens
+  // padrao do Docker)
+  const totalMemBytes = os.totalmem();
+  const freeMemBytes = os.freemem();
+  const cpus = os.cpus() || [];
+  const host = {
+    load_avg: os.loadavg(), // [1min, 5min, 15min]
+    memory_mb: {
+      total: (totalMemBytes / 1024 / 1024).toFixed(0),
+      free: (freeMemBytes / 1024 / 1024).toFixed(0),
+      used: ((totalMemBytes - freeMemBytes) / 1024 / 1024).toFixed(0),
+      used_pct: (((totalMemBytes - freeMemBytes) / totalMemBytes) * 100).toFixed(1),
+    },
+    cpu_count: cpus.length,
+    cpu_model: cpus[0]?.model || "unknown",
+    platform: os.platform(),
+    hostname: os.hostname(),
+  };
+
+  // Stats de scrape (ultimas 24h, agrupado por scope)
+  let scrapeStats = null;
+  try {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const rows = db
+      .prepare(
+        `SELECT scope,
+                COUNT(*) AS total,
+                SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS sucessos,
+                ROUND(AVG(elapsed_ms)) AS avg_elapsed_ms,
+                MAX(captured_at) AS last_run_at
+         FROM ml_scrape_history
+         WHERE captured_at >= ?
+         GROUP BY scope
+         ORDER BY scope`
+      )
+      .all(since24h);
+    scrapeStats = rows.map((r) => ({
+      scope: r.scope,
+      total: r.total,
+      sucessos: r.sucessos,
+      success_rate: r.total > 0 ? Number((r.sucessos / r.total).toFixed(3)) : null,
+      avg_elapsed_ms: r.avg_elapsed_ms,
+      last_run_at: r.last_run_at,
+    }));
+  } catch {
+    // tabela ml_scrape_history pode nao existir ainda
+  }
 
   return res.json({
     success: true,
@@ -99,6 +154,8 @@ export default async function handler(req, res) {
     last_sync: lastSync,
     db_size: dbSize,
     runtime,
+    host,
+    scrape_stats: scrapeStats,
     recent_audit: recentAudit,
   });
 }
