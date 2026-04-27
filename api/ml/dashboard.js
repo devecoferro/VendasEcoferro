@@ -513,6 +513,13 @@ function classifyCrossDockingOrder(order, todayKey) {
   const { status, substatus } = getShipmentStatus(order);
   const dates = getOperationalDates(order);
 
+  // PRIORIDADE 1 — Reclamacao/mediacao: ML Seller Center sempre exibe em
+  // "Finalizadas > Para atender" independente do shipping status. Brief
+  // de alinhamento ML 2026-04-27.
+  if (isOrderUnderReview(order)) {
+    return "finalized";
+  }
+
   // Cancelamento: ML Seller Center UI conta cancelados de hoje em "Finalizadas".
   // Nossa classificação agora redireciona pra "finalized" e o filtro de data
   // (linha ~1983 do loop principal) mantém só os de hoje.
@@ -602,7 +609,8 @@ function classifyCrossDockingOrder(order, todayKey) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 7 ? "in_transit" : null;
+      // Brief 2026-04-27: janela ML Seller Center e ~3 dias (antes 7).
+      return shippedAge <= 3 ? "in_transit" : null;
     }
     // ALINHAMENTO ML (4a auditoria): shipped SEM substatus → "Em trânsito"
     // ML mostra esses em CARD_IN_THE_WAY "A caminho". Janela de 7 dias.
@@ -611,7 +619,8 @@ function classifyCrossDockingOrder(order, todayKey) {
         (new Date(todayKey + "T12:00:00-03:00").getTime() -
           new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
         86400000;
-      return shippedAge <= 7 ? "in_transit" : null;
+      // Brief 2026-04-27: janela ML Seller Center e ~3 dias.
+      return shippedAge <= 3 ? "in_transit" : null;
     }
     return null;
   }
@@ -661,6 +670,12 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
     dates.readyToShipDateKey ||
     dates.handlingDateKey ||
     dates.saleDateKey;
+
+  // PRIORIDADE 1 — Reclamacao/mediacao sempre vai pra "Finalizadas >
+  // Para atender" (espelha ML Seller Center). Brief 2026-04-27.
+  if (isOrderUnderReview(order)) {
+    return "finalized";
+  }
 
   // Cancelamento: ML UI conta em Finalizadas (filtro de data aplicado depois).
   const rawOrderStatus = normalizeState(
@@ -734,7 +749,8 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       const shippedAge = dates.shippedDateKey
         ? (new Date(todayKey + "T12:00:00-03:00").getTime() - new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) / 86400000
         : 999;
-      return shippedAge <= 7 ? "in_transit" : null;
+      // Brief 2026-04-27: janela ML Seller Center e ~3 dias (antes 7).
+      return shippedAge <= 3 ? "in_transit" : null;
     }
     // ALINHAMENTO ML (4a auditoria): shipped Full sem substatus → in_transit
     // (agente achou 7 pedidos Full assim → nosso classifier retornava null)
@@ -743,7 +759,8 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
         (new Date(todayKey + "T12:00:00-03:00").getTime() -
           new Date(dates.shippedDateKey + "T12:00:00-03:00").getTime()) /
         86400000;
-      return shippedAge <= 7 ? "in_transit" : null;
+      // Brief 2026-04-27: janela ML Seller Center e ~3 dias.
+      return shippedAge <= 3 ? "in_transit" : null;
     }
     return null;
   }
@@ -883,51 +900,104 @@ function classifyNativeMercadoLivreOrder(order) {
 }
 
 function buildCrossDockingSummaryRows(orders, todayKey) {
-  let cancelled = 0;
-  let overdue = 0;
-  let invoicePending = 0;
-  let ready = 0;
-  let labelsToPrint = 0;
-  let processing = 0;
-  let defaultShipping = 0;
-  let waitingPickup = 0;
-  let inTransitCollection = 0;
-  let deliveredOk = 0;
-  let notDelivered = 0;
-  let complaints = 0;
+  // Operacional (today + upcoming)
+  let cancelled = 0;            // Today: Canceladas. Nao enviar
+  let overdue = 0;              // Today: Atrasadas
+  let invoicePending = 0;       // Upcoming: NF-e para gerenciar
+  let ready = 0;                // Today: Prontas para enviar
+  let labelsToPrint = 0;        // Today: Etiquetas para imprimir
+  let processing = 0;           // Upcoming: Em processamento
+  let defaultShipping = 0;      // Upcoming: Por envio padrao
+
+  // Em transito
+  let waitingPickup = 0;        // Esperando retirada do comprador
+  let inTransitCollection = 0;  // A caminho - Coleta
+
+  // Devolucoes (Brief 2026-04-27 — ML Seller Center subdivide assim):
+  let returnsPendingReview = 0; // Today/Upcoming: Revisao pendente
+  let returnsInTransit = 0;     // Upcoming: A caminho (devolucao chegando)
+  let returnsInMlReview = 0;    // Upcoming: Em revisao pelo Mercado Livre
+
+  // Finalizadas
+  let complaints = 0;           // Com reclamacao ou mediacao
+  let delivered = 0;            // Entregues
+  let notDelivered = 0;         // Nao entregues
+  let returnsCompleted = 0;     // Devolucoes concluidas
+  let returnsIncomplete = 0;    // Devolucoes nao concluidas
+  let cancelledFinal = 0;       // Encerradas: Canceladas
 
   for (const order of orders) {
     const { status, substatus } = getShipmentStatus(order);
 
-    // Canceladas (status final)
-    if (FINAL_EXCEPTION_STATUSES.has(status) && status === "cancelled") {
-      cancelled += 1;
-      continue;
-    }
-
-    // Devoluções / reclamações (not_delivered, returned)
-    if (status === "not_delivered") {
-      notDelivered += 1;
-      continue;
-    }
-    if (status === "returned") {
+    // PRIORIDADE 1 — Reclamacao/mediacao (cross-bucket). Brief: ML
+    // Seller Center exibe sempre em "Finalizadas > Para atender".
+    if (isOrderUnderReview(order)) {
       complaints += 1;
       continue;
     }
 
-    // NF-e pendente
+    // ── Cancelados / Devolucoes finalizadas ─────────────────
+    if (status === "cancelled") {
+      // Cancelados de hoje aparecem em "Today: Canceladas. Nao enviar"
+      // mas precisam aparecer em "Finalizadas: Canceladas" tambem.
+      // O loop principal aplica filtro de data — aqui contamos os 2.
+      cancelled += 1;
+      cancelledFinal += 1;
+      continue;
+    }
+
+    if (status === "returned") {
+      // Brief: ML separa "Devolucoes concluidas" (substatus completed/
+      // delivered/concluded) vs "Devolucoes nao concluidas" (demais).
+      if (
+        substatus === "completed" ||
+        substatus === "delivered" ||
+        substatus === "concluded"
+      ) {
+        returnsCompleted += 1;
+      } else {
+        returnsIncomplete += 1;
+      }
+      continue;
+    }
+
+    if (status === "not_delivered") {
+      notDelivered += 1;
+      continue;
+    }
+
+    if (status === "delivered") {
+      delivered += 1;
+      continue;
+    }
+
+    // ── Devolucoes ATIVAS (in_return) — sub-cards ML ────────
+    if (status === "in_return") {
+      // Brief: 3 sub-status especificos do "Devolucoes" do ML
+      if (substatus === "return_pending_review" || substatus === "pending_review") {
+        returnsPendingReview += 1;
+      } else if (substatus === "ml_in_review" || substatus === "in_ml_review" || substatus === "in_review") {
+        returnsInMlReview += 1;
+      } else if (substatus === "return_in_transit") {
+        returnsInTransit += 1;
+      } else {
+        // Generico in_return sem sub-status especifico → revisao pendente
+        returnsPendingReview += 1;
+      }
+      continue;
+    }
+
+    // ── Operacional (NF-e, etiquetas, processamento) ────────
     if (isOrderInvoicePending(order)) {
       invoicePending += 1;
       continue;
     }
 
-    // Etiquetas para imprimir (ready_to_print)
     if (substatus === "ready_to_print") {
       labelsToPrint += 1;
       continue;
     }
 
-    // Em processamento (in_warehouse, ready_to_pack, packed, in_packing_list)
     if (
       substatus === "in_warehouse" ||
       substatus === "ready_to_pack" ||
@@ -938,48 +1008,57 @@ function buildCrossDockingSummaryRows(orders, todayKey) {
       continue;
     }
 
-    // Em trânsito — para retirar (waiting_for_withdrawal)
+    // ── Em transito ─────────────────────────────────────────
     if (status === "shipped" && substatus === "waiting_for_withdrawal") {
       waitingPickup += 1;
       continue;
     }
 
-    // Em trânsito — coleta (shipped normal, out_for_delivery)
     if (status === "shipped" && (substatus === "out_for_delivery" || substatus === "none")) {
       inTransitCollection += 1;
       continue;
     }
 
-    // Prontas para enviar (ready_for_pickup + NFe emitida)
+    // ── Pronto pra enviar / atrasado / default ──────────────
     if (isOrderReadyToPrintLabel(order)) {
       ready += 1;
       continue;
     }
 
-    // Por envio padrão (pending sem label)
     if (status === "pending" || substatus === "pending") {
       defaultShipping += 1;
       continue;
     }
 
-    // Atrasadas
     if (isOrderOverdue(order, todayKey)) {
       overdue += 1;
     }
   }
 
   const rows = [
-    { key: "cancelled", label: "Canceladas. Nao enviar", count: cancelled },
+    // Hoje
+    { key: "cancelled_no_send", label: "Canceladas. Nao enviar", count: cancelled },
     { key: "overdue", label: "Atrasadas. Enviar", count: overdue },
-    { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
     { key: "labels_to_print", label: "Etiquetas para imprimir", count: labelsToPrint },
+    { key: "ready", label: "Prontas para enviar", count: ready },
+    // Proximos dias
+    { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
     { key: "processing", label: "Em processamento", count: processing },
     { key: "default_shipping", label: "Por envio padrao", count: defaultShipping },
-    { key: "ready", label: "Prontas para enviar", count: ready },
+    // Devolucoes ativas (Today + Upcoming)
+    { key: "returns_pending_review", label: "Revisao pendente", count: returnsPendingReview },
+    { key: "returns_in_transit", label: "A caminho", count: returnsInTransit },
+    { key: "returns_in_ml_review", label: "Em revisao pelo Mercado Livre", count: returnsInMlReview },
+    // Em transito
     { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
     { key: "in_transit_collection", label: "A caminho - Coleta", count: inTransitCollection },
-    { key: "not_delivered", label: "Nao entregues", count: notDelivered },
+    // Finalizadas
     { key: "complaints", label: "Com reclamacao ou mediacao", count: complaints },
+    { key: "delivered", label: "Entregues", count: delivered },
+    { key: "not_delivered", label: "Nao entregues", count: notDelivered },
+    { key: "cancelled_final", label: "Canceladas", count: cancelledFinal },
+    { key: "returns_completed", label: "Devolucoes concluidas", count: returnsCompleted },
+    { key: "returns_incomplete", label: "Devolucoes nao concluidas", count: returnsIncomplete },
   ];
 
   // Retorna só linhas com contagem > 0 (igual ML Seller Center faz)
