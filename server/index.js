@@ -1099,13 +1099,19 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     // Operador reportou "Ourinhos nao bate" em 2026-04-26 com chip
     // ate 17h velho.
     //
-    // Solucao: cron 60s rotaciona entre os 4 scopes. Cada scope refresh
-    // a cada ~4min. maybeRefreshLiveSnapshotInBackground tem dedup
+    // Solucao: cron 180s rotaciona entre os 4 scopes. Cada scope refresh
+    // a cada ~12min. maybeRefreshLiveSnapshotInBackground tem dedup
     // interno (skip se cache fresh) entao o custo real e baixo.
+    //
+    // Why 180s (antes 60s): com 60s o warm browser pool nunca chegava
+    // ao limite de idle (5min antes, 60s agora) — Chromium ficava sempre
+    // alocado em memoria (~250MB constantes). Com 180s, gap entre scrapes
+    // permite browser fechar e liberar RAM. Operador pode forcar refresh
+    // sob demanda na UI se quiser dado fresco.
     const SCRAPER_SCOPES = ["all", "ourinhos", "full", "without_deposit"];
     let scraperScopeIndex = 0;
     let scraperRoundRobinRunning = false;
-    const SCRAPER_ROUND_ROBIN_INTERVAL_MS = 60_000;
+    const SCRAPER_ROUND_ROBIN_INTERVAL_MS = 180_000;
     const scraperRoundRobinIntervalId = setInterval(async () => {
       if (scraperRoundRobinRunning) return;
       scraperRoundRobinRunning = true;
