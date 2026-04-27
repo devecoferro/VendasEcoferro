@@ -564,9 +564,14 @@ function classifyCrossDockingOrder(order, todayKey) {
       return "in_transit";
     }
 
-    // invoice_pending: aguardando NF-e → "Proximos dias"
+    // invoice_pending: ML Seller Center mostra em "Envios de hoje >
+    // PROGRAMADA Coleta > NF-e para gerenciar" (verificado prod 2026-04-27,
+    // 39 NF-e em today + 28 em upcoming). Sem pickup_date populado, nao
+    // distinguimos entre "NF-e pra coleta de hoje" vs amanha — promover
+    // tudo pra today da match com o card maior do ML e evita lista vazia
+    // ao clicar pill "NF-e para gerenciar".
     if (substatus === "invoice_pending") {
-      return "upcoming";
+      return "today";
     }
 
     // in_warehouse no cross-docking (raro) → "Proximos dias"

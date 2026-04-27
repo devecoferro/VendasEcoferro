@@ -235,6 +235,19 @@ export function matchesLiveStatusFilterOnLocalOrder(
         substatus === "standard_shipping"
       );
     }
+    // Cancelada — match em qualquer bucket. ML usa "Venda cancelada.
+    // Não envie." em today (cancelled_no_send) e "Cancelada pelo
+    // comprador" em finalized (cancelled_final). Sinonimo simples
+    // colapsava em cancelled_final e clicar em today nao filtrava nada.
+    if (v.includes("cancelada") || v.includes("não envie") || v.includes("nao envie")) {
+      return substatus === "cancelled_no_send" || substatus === "cancelled_final";
+    }
+    // NF-e — pill "Pronta para emitir NF-e de venda" (scraper) ou
+    // "NF-e para gerenciar" (ML novo). Match invoice_pending em today
+    // ou upcoming.
+    if (v.includes("nf-e") || v.includes("nfe") || v.includes("emitir nf")) {
+      return substatus === "invoice_pending";
+    }
     // Fallback: tenta sinônimos primeiro, depois substring
     const synonym = resolveSynonym(filter.value);
     if (synonym) return substatus === synonym;
