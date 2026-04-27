@@ -410,25 +410,28 @@ export default function DashboardPage() {
       {
         label: "Etiquetas prontas",
         value: countByPack(printableOrders),
-        helper: `${countByPack(printableOrders)} envios liberados para impressão`,
+        helper: `${countByPack(printableOrders)} envios (${printableOrders.length} pedidos)`,
         color: "bg-[#1b7a33]",
       },
       {
-        label: "NF-e pendente",
-        value: countByPack(invoicePendingOrders),
-        helper: `${countByPack(invoicePendingOrders)} envios aguardando faturamento (${invoicePendingOrders.length} pedidos)`,
+        // NF-e e por ORDER, nao por envio. 1 pack pode ter 2 orders →
+        // 2 NFs distintas. Mostrar pack count escondia trabalho real.
+        // ML mostra 39 envios mas user precisa emitir 68 NFs.
+        label: "NF-e pra emitir",
+        value: invoicePendingOrders.length,
+        helper: `${invoicePendingOrders.length} NFs a emitir (em ${countByPack(invoicePendingOrders)} envios — ML mostra envios)`,
         color: "bg-[#f59e0b]",
       },
       {
         label: "Em revisão",
-        value: countByPack(underReviewOrders),
-        helper: `${countByPack(underReviewOrders)} envios exigem atenção`,
+        value: underReviewOrders.length,
+        helper: `${underReviewOrders.length} pedidos exigem atenção`,
         color: "bg-[#e11d48]",
       },
       {
         label: "Dados fiscais disponíveis",
-        value: countByPack(billingAvailableOrders),
-        helper: `${countByPack(billingAvailableOrders)} envios com billing_info válido`,
+        value: billingAvailableOrders.length,
+        helper: `${billingAvailableOrders.length} pedidos com billing_info válido`,
         color: "bg-[#2563eb]",
       },
     ],
@@ -538,11 +541,11 @@ export default function DashboardPage() {
             subtitle="Prontas para impressão"
           />
           <StatsCard
-            title="NF-e pendente"
-            value={countByPack(invoicePendingOrders).toLocaleString("pt-BR")}
+            title="NF-e pra emitir"
+            value={invoicePendingOrders.length.toLocaleString("pt-BR")}
             icon={FileCheck2}
             accentColor="warning"
-            subtitle={`Aguardando faturamento (${invoicePendingOrders.length} pedidos)`}
+            subtitle={`em ${countByPack(invoicePendingOrders)} envios (ML mostra envios)`}
           />
           <StatsCard
             title="Depósitos ativos"
