@@ -71,6 +71,12 @@ let cachedFullResult = null;
 let warmBrowser = null;
 let warmBrowserUsageCount = 0;
 let warmBrowserIdleTimer = null;
+// Promise compartilhada do launch em curso. Evita race condition quando
+// varios scopes chamam acquire() em paralelo (ex: boot + 30s, server
+// dispara refresh dos 4 scopes simultaneos sem await — antes do fix
+// cada chamada via warmBrowser=null e lancava um Chromium proprio,
+// vazando 3 browsers orfaos por boot).
+let warmBrowserLaunchPromise = null;
 const WARM_BROWSER_IDLE_MS = 60 * 1000;
 
 const WARM_BROWSER_LAUNCH_ARGS = [
@@ -106,14 +112,38 @@ async function acquireWarmBrowser() {
       : true);
 
   if (!isAlive) {
-    const chromium = await loadPlaywright();
-    if (!chromium) {
-      throw new Error("playwright not available — chromium.launch aborted");
+    // Serializa launches concorrentes — se outra chamada ja iniciou um
+    // launch, espera ela terminar em vez de lancar um novo Chromium em
+    // paralelo. Sem isso, 4 scopes simultaneos no boot vazavam 3
+    // browsers (verificado em producao 2026-04-27, 1.2GB RAM perdidos).
+    if (!warmBrowserLaunchPromise) {
+      warmBrowserLaunchPromise = (async () => {
+        try {
+          // Garante que browser parcialmente vivo seja fechado antes
+          // de reatribuir warmBrowser (evita reference leak).
+          if (warmBrowser) {
+            const stale = warmBrowser;
+            warmBrowser = null;
+            try {
+              await stale.close();
+            } catch {
+              // ignore — provavel que ja esteja morto
+            }
+          }
+          const chromium = await loadPlaywright();
+          if (!chromium) {
+            throw new Error("playwright not available — chromium.launch aborted");
+          }
+          warmBrowser = await chromium.launch({
+            headless: true,
+            args: WARM_BROWSER_LAUNCH_ARGS,
+          });
+        } finally {
+          warmBrowserLaunchPromise = null;
+        }
+      })();
     }
-    warmBrowser = await chromium.launch({
-      headless: true,
-      args: WARM_BROWSER_LAUNCH_ARGS,
-    });
+    await warmBrowserLaunchPromise;
   }
   warmBrowserUsageCount += 1;
   return warmBrowser;
