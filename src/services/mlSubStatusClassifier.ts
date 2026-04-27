@@ -696,6 +696,23 @@ export const SUBSTATUS_LABELS: Record<MLSubStatus, string> = {
   with_unread_messages: "Com mensagens não lidas",
 };
 
+/**
+ * Brief 2026-04-27: dicionario de traducao bucket interno → label PT-BR
+ * exibido na UI. Centraliza para evitar strings duplicadas pelos componentes.
+ *
+ * Why: o brief de alinhamento ML pediu um mapeamento explicito de
+ * "today/upcoming/in_transit/finalized/cancelled" → "Envios de Hoje/
+ * Proximos Dias/Em Transito/Finalizadas/Encerradas". Sem isso, cada
+ * componente reescrevia o label e ficava facil divergir.
+ */
+export const BUCKET_LABELS: Record<ShipmentBucket, string> = {
+  today: "Envios de Hoje",
+  upcoming: "Próximos Dias",
+  in_transit: "Em Trânsito",
+  finalized: "Finalizadas",
+  cancelled: "Encerradas",
+};
+
 export const SECTION_LABELS: Record<MLSection, string> = {
   para_enviar_coleta: "Para enviar — Coleta",
   envios_devolucoes: "Devoluções",
