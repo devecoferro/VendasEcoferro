@@ -1179,10 +1179,11 @@ export default function MercadoLivrePage() {
 
 
   const handleDepositToggle = (value: string) => {
+    // Brief 2026-04-27: selecao unica. Antes era array com toggle multiplo
+    // (clicar Ourinhos + Full mantinha os 2). Agora clicar num deposito
+    // desmarca os outros — mesmo comportamento do dropdown do ML.
     setSelectedDepositFilters((current) =>
-      current.includes(value)
-        ? current.filter((entry) => entry !== value)
-        : [...current, value]
+      current.length === 1 && current[0] === value ? [] : [value]
     );
     setOperationalFocus(null);
   };
@@ -2213,15 +2214,12 @@ export default function MercadoLivrePage() {
             )}
           </div>
 
-          {/* SUB-CLASSIFICAÇÃO AO VIVO (ML) — pills clicáveis */}
-          {scopedLiveSnapshot && (
-            <LiveSubCardsStrip
-              subCards={scopedLiveSnapshot.sub_cards}
-              bucket={shipmentFilter}
-              selectedFilter={selectedLiveStatusFilter}
-              onSelectFilter={setSelectedLiveStatusFilter}
-            />
-          )}
+          {/* SUB-CLASSIFICAÇÃO AO VIVO (ML) — pills DESATIVADAS no painel
+              principal (brief 2026-04-27). Os mesmos sub-status agora
+              vivem dentro dos cards do MLClassificationsGrid abaixo,
+              clicáveis pra filtrar a lista. As pills permanecem no
+              componente caso seja util reativar via flag em pagina de
+              diagnostico no futuro. */}
 
           {/* Cards por (deposito × section × data × sub-status), 1:1 com
               ML Seller Center. Titulos variam por deposito:
