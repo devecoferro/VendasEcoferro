@@ -300,6 +300,10 @@ export function getOrderSubstatus(
   // ── FINALIZADAS ──────────────────────────────────────────
   if (bucket === "finalized") {
     if (hasClaim) return "claim_or_mediation";
+    // Mensagens nao lidas no card "Encerradas" — segregadas do total
+    // (ex: 4 mensagens NAO contam em Entregues/Canceladas; ML soma
+    // como sub-status independente). Verificado no screenshot do ML.
+    if (orderHasUnreadMessages(order)) return "with_unread_messages";
     if (shipStatus === "delivered") return "delivered";
     if (shipStatus === "not_delivered") return "not_delivered";
     if (isCancelled) return "cancelled_final";
@@ -329,6 +333,9 @@ export function getOrderSubstatus(
     ) {
       return "waiting_buyer_pickup";
     }
+    // Mensagens nao lidas no card "A caminho" — segregadas (ex: 105
+    // Coleta + 1 mensagens = 106 total). Verificado screenshot ML.
+    if (orderHasUnreadMessages(order)) return "with_unread_messages";
     // Full em transito: shipped com logistic_type=fulfillment
     if (logisticType === "fulfillment") return "shipped_full";
     return "shipped_collection";
@@ -346,18 +353,33 @@ export function getOrderSubstatus(
       return "in_processing";
     }
 
-    // Devolucao chegando hoje — observado no mockup Ourinhos today
-    // ("Chegada hoje"). Status in_return com data de chegada == hoje.
-    if (shipStatus === "in_return" && shipSubstatus === "return_arriving_today") {
+    // Devolucoes — sub-status especificos ANTES do generico shipStatus.
+    // Why: o ML diferencia "Chegarão hoje" e "Revisão pendente" via
+    // shipSubstatus; se o generico in_return for checado primeiro,
+    // todos os pedidos in_return caem em return_pending_review e o
+    // card "Chegarão hoje" some.
+
+    // Devolucao chegando hoje
+    if (shipSubstatus === "return_arriving_today") {
       return "return_arriving_today";
     }
 
-    // Devolucoes que precisam revisao do operador hoje
+    // Devolucoes em revisao do operador
     if (
-      shipStatus === "in_return" ||
       shipSubstatus === "return_pending_review" ||
       shipSubstatus === "pending_review"
     ) {
+      return "return_pending_review";
+    }
+
+    // Devolucao em transito (ex: FULL today "Devoluções > A caminho")
+    if (shipSubstatus === "return_in_transit") {
+      return "return_in_transit";
+    }
+
+    // Generico: qualquer in_return sem sub-status especifico cai em
+    // "Revisão pendente" pra alertar operador a revisar.
+    if (shipStatus === "in_return") {
       return "return_pending_review";
     }
 
@@ -389,12 +411,15 @@ export function getOrderSubstatus(
   // ── PROXIMOS DIAS ────────────────────────────────────────
   // (Inclui Coleta + Devolucoes futuras)
   if (bucket === "upcoming") {
-    // Devolucoes
+    // Devolucoes — sub-status especificos ANTES do generico shipStatus.
+    // Why: o ML separa "Revisão pendente", "Em revisão pelo ML" e
+    // "A caminho" via shipSubstatus; se in_return for checado primeiro,
+    // os 3 sub-status colapsam em "A caminho" e os outros somem.
     if (
-      shipStatus === "in_return" ||
-      shipSubstatus === "return_in_transit"
+      shipSubstatus === "return_pending_review" ||
+      shipSubstatus === "pending_review"
     ) {
-      return "return_in_transit";
+      return "return_pending_review";
     }
     if (
       shipSubstatus === "ml_in_review" ||
@@ -403,8 +428,11 @@ export function getOrderSubstatus(
     ) {
       return "return_in_ml_review";
     }
-    if (shipSubstatus === "return_pending_review") {
-      return "return_pending_review";
+    if (
+      shipStatus === "in_return" ||
+      shipSubstatus === "return_in_transit"
+    ) {
+      return "return_in_transit";
     }
 
     // Coleta
@@ -456,7 +484,13 @@ export function getOrderSection(
 
   switch (bucket) {
     case "today":
-      if (substatus === "return_pending_review") return "envios_devolucoes";
+      if (
+        substatus === "return_pending_review" ||
+        substatus === "return_arriving_today" ||
+        substatus === "return_in_transit"
+      ) {
+        return "envios_devolucoes";
+      }
       return "para_enviar_coleta";
 
     case "upcoming":
