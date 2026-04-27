@@ -38,6 +38,7 @@ import {
   isOrderInvoicePending,
   isOrderReadyToPrintLabel,
   isOrderUnderReview,
+  countByPack,
   parseDate,
 } from "@/services/mercadoLivreHelpers";
 import type { MLOperationalBucket, MLOrder } from "@/services/mercadoLivreService";
@@ -408,14 +409,17 @@ export default function DashboardPage() {
     () => [
       {
         label: "Etiquetas prontas",
-        value: printableOrders.length,
-        helper: `${printableOrders.length} pedidos liberados para impressão`,
+        value: countByPack(printableOrders),
+        helper: `${countByPack(printableOrders)} envios (${printableOrders.length} pedidos)`,
         color: "bg-[#1b7a33]",
       },
       {
-        label: "NF-e pendente",
+        // NF-e e por ORDER, nao por envio. 1 pack pode ter 2 orders →
+        // 2 NFs distintas. Mostrar pack count escondia trabalho real.
+        // ML mostra 39 envios mas user precisa emitir 68 NFs.
+        label: "NF-e pra emitir",
         value: invoicePendingOrders.length,
-        helper: `${invoicePendingOrders.length} pedidos aguardando faturamento`,
+        helper: `${invoicePendingOrders.length} NFs a emitir (em ${countByPack(invoicePendingOrders)} envios — ML mostra envios)`,
         color: "bg-[#f59e0b]",
       },
       {
@@ -431,7 +435,7 @@ export default function DashboardPage() {
         color: "bg-[#2563eb]",
       },
     ],
-    [billingAvailableOrders.length, invoicePendingOrders.length, printableOrders.length, underReviewOrders.length]
+    [billingAvailableOrders, invoicePendingOrders, printableOrders, underReviewOrders]
   );
 
   const hasOperationalData =
@@ -537,11 +541,11 @@ export default function DashboardPage() {
             subtitle="Prontas para impressão"
           />
           <StatsCard
-            title="NF-e pendente"
+            title="NF-e pra emitir"
             value={invoicePendingOrders.length.toLocaleString("pt-BR")}
             icon={FileCheck2}
             accentColor="warning"
-            subtitle="Aguardando faturamento"
+            subtitle={`em ${countByPack(invoicePendingOrders)} envios (ML mostra envios)`}
           />
           <StatsCard
             title="Depósitos ativos"
