@@ -282,11 +282,33 @@ async function drawSaleCard(
   );
   doc.text(productLines.slice(0, 2), infoX, y0 + 12.8);
 
+  // Comprador: quando ML nao expoe first_name (privacidade do comprador),
+  // o sync de api/ml/sync.js cai no fallback `order.buyer.nickname`, o que
+  // resulta em customerName === customerNickname e a etiqueta imprime o
+  // mesmo texto duas vezes (ex: "HEMA7026655" / "HEMA7026655"). Aqui
+  // suprimimos a linha do nome quando ela e duplicada com o nickname,
+  // pra ficar visualmente igual ao modelo (nome diferente do nickname).
+  const customerName = sale.customerName || "";
+  const customerNickname = sale.customerNickname || "";
+  const nameDuplicatesNickname =
+    customerName.length > 0 &&
+    customerName.toLowerCase() === customerNickname.toLowerCase();
+
   doc.setFontSize(7.2);
-  doc.text(sale.customerName || "-", infoX, y0 + 21.8, { maxWidth: 72 });
+  doc.text(
+    nameDuplicatesNickname ? "" : customerName || "-",
+    infoX,
+    y0 + 21.8,
+    { maxWidth: 72 }
+  );
 
   doc.setFontSize(7.1);
-  doc.text(sale.customerNickname || "-", infoX, y0 + 28.6, { maxWidth: 72 });
+  doc.text(
+    customerNickname || customerName || "-",
+    infoX,
+    y0 + 28.6,
+    { maxWidth: 72 }
+  );
 
   // ── QR Venda ─────────────────────────────────────────────────────
   const saleQrSize = 19;
