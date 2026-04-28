@@ -52,6 +52,28 @@ const COL_INFO_W = 82;   // SKU / produto / comprador / QR venda
 const COL_LOC_W = 38;    // Corredor/Estante/Nível/Local + Logo Eco
 const COL_RIGHT_W = CARD_W - COL_LEFT_W - COL_INFO_W - COL_LOC_W; // QR objeto + SKU + quant + data
 
+// Grid invisivel de 8 linhas horizontais — padroniza alinhamento dos
+// textos conforme imagem-referencia do operador (linhas verdes na
+// foto eram so guia, nao aparecem no PDF). CARD_H ≈ 53mm.
+//
+//   Y_ROW_1 → SKU / topo do QR Objeto / topo do logo ML
+//   Y_ROW_2 → Titulo do produto (linha 1 de 2)
+//   Y_ROW_3 → Comprador (nome real, ou vazio se = nickname)
+//   Y_ROW_4 → Nickname
+//   Y_ROW_5 → Corredor (alinha com inicio do QR Venda+LogoEc)
+//   Y_ROW_6 → Estante / EC005 (SKU lateral direito)
+//   Y_ROW_7 → Nivel / Quant: 01
+//   Y_ROW_8 → Local / Data Envio (rodape — usa CARD_H - 3.2)
+const ROW_TOP = 5.8;
+const ROW_GAP = 6.0;
+const Y_ROW_1 = ROW_TOP;                  // 5.8
+const Y_ROW_2 = ROW_TOP + ROW_GAP;        // 11.8
+const Y_ROW_3 = ROW_TOP + ROW_GAP * 2;    // 17.8
+const Y_ROW_4 = ROW_TOP + ROW_GAP * 3;    // 23.8
+const Y_ROW_5 = ROW_TOP + ROW_GAP * 4;    // 29.8
+const Y_ROW_6 = ROW_TOP + ROW_GAP * 5;    // 35.8
+const Y_ROW_7 = ROW_TOP + ROW_GAP * 6;    // 41.8
+
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
 const ML_LOGO_URL = "/ml-logo.png";
 let ecoferroLogoDataUrlPromise: Promise<string | null> | null = null;
@@ -270,17 +292,19 @@ async function drawSaleCard(
   // ── Dados principais ─────────────────────────────────────────────
   doc.setTextColor(0, 0, 0);
 
+  // Linha 1: SKU
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8.8);
-  doc.text(`SKU: ${item.sku || "-"}`, infoX, y0 + 5.8);
+  doc.text(`SKU: ${item.sku || "-"}`, infoX, y0 + Y_ROW_1);
 
+  // Linha 2: Titulo (1 linha apenas, alinhado com Y_ROW_2)
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.3);
   const productLines = doc.splitTextToSize(
     item.itemTitle || sale.productName || "-",
     70
   );
-  doc.text(productLines.slice(0, 2), infoX, y0 + 12.8);
+  doc.text(productLines.slice(0, 1), infoX, y0 + Y_ROW_2);
 
   // Comprador: quando ML nao expoe first_name (privacidade do comprador),
   // o sync de api/ml/sync.js cai no fallback `order.buyer.nickname`, o que
@@ -294,25 +318,27 @@ async function drawSaleCard(
     customerName.length > 0 &&
     customerName.toLowerCase() === customerNickname.toLowerCase();
 
+  // Linha 3: Comprador (nome real). Vazia se duplicar nickname.
   doc.setFontSize(7.2);
   doc.text(
     nameDuplicatesNickname ? "" : customerName || "-",
     infoX,
-    y0 + 21.8,
+    y0 + Y_ROW_3,
     { maxWidth: 72 }
   );
 
+  // Linha 4: Nickname (sempre)
   doc.setFontSize(7.1);
   doc.text(
     customerNickname || customerName || "-",
     infoX,
-    y0 + 28.6,
+    y0 + Y_ROW_4,
     { maxWidth: 72 }
   );
 
-  // ── QR Venda ─────────────────────────────────────────────────────
+  // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 ───────────────
   const saleQrSize = 19;
-  const saleQrY = y0 + 31.3;
+  const saleQrY = y0 + Y_ROW_5 + 0.5;
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(5.2);
@@ -330,11 +356,11 @@ async function drawSaleCard(
     drawPlaceholder(doc, saleQrX, saleQrY, saleQrSize, saleQrSize);
   }
 
-  // ── Logo Ecoferro ────────────────────────────────────────────────
+  // ── Logo Ecoferro — alinhado com QR Venda (Y_ROW_5..Y_ROW_7) ────
   const ecoLogoData = await loadEcoferroLogoDataUrl();
   if (ecoLogoData) {
     try {
-      drawContainedImage(doc, ecoLogoData, ecoLogoX, y0 + 30.5, 21, 17);
+      drawContainedImage(doc, ecoLogoData, ecoLogoX, y0 + Y_ROW_5 - 0.3, 21, 17);
     } catch {
       // mantém silencioso para não quebrar geração do PDF
     }
@@ -364,9 +390,10 @@ async function drawSaleCard(
   doc.setFontSize(7.4);
   doc.setTextColor(0, 0, 0);
 
-  doc.text(`Corredor: ${corridor}`, stockX, y0 + 26.5);
-  doc.text(`Estante: ${shelf}`, stockX, y0 + 34.0);
-  doc.text(`Nível: ${level}`, stockX, y0 + 41.5);
+  // Linhas 5-7: Corredor / Estante / Nível (alinhados com QR Venda+Logo Ec)
+  doc.text(`Corredor: ${corridor}`, stockX, y0 + Y_ROW_5);
+  doc.text(`Estante: ${shelf}`, stockX, y0 + Y_ROW_6);
+  doc.text(`Nível: ${level}`, stockX, y0 + Y_ROW_7);
 
   // ── QR Objeto no topo direito ────────────────────────────────────
   const objectQrSize = 20;
@@ -392,15 +419,19 @@ async function drawSaleCard(
   // SKU / Quantidade / Data Envio à direita
   const rightCenterX = objectQrX + objectQrSize / 2;
 
+  // Coluna direita alinhada com Estante (Y_ROW_6) e Nível (Y_ROW_7)
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.2);
   doc.setTextColor(0, 0, 0);
-  doc.text(item.sku || "-", rightCenterX, y0 + 35.2, { align: "center" });
+  doc.text(item.sku || "-", rightCenterX, y0 + Y_ROW_6, { align: "center" });
 
   doc.setFontSize(7.2);
-  doc.text(`Quant: ${String(item.quantity ?? 1).padStart(2, "0")}`, rightCenterX, y0 + 43.5, {
-    align: "center",
-  });
+  doc.text(
+    `Quant: ${String(item.quantity ?? 1).padStart(2, "0")}`,
+    rightCenterX,
+    y0 + Y_ROW_7,
+    { align: "center" }
+  );
 
   const dataEnvioLabel = sale.expectedShippingDate
     ? `Data Envio ${sale.expectedShippingDate}`
