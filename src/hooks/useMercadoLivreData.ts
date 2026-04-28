@@ -75,7 +75,10 @@ const mercadoLivreDataCache = new Map<
 >();
 
 function buildMercadoLivreCacheKey(options: UseMercadoLivreDataOptions): string {
-  return `${options.ordersScope || "all"}:${options.ordersView || "full"}:${options.ordersLimit == null ? "all" : options.ordersLimit}`;
+  // Brief 2026-04-28: connectionId obrigatorio na chave senao 2 sellers
+  // (EcoFerro/Fantom) compartilhavam cache → mudanca de connectionId
+  // nao re-disparava o useEffect de refresh.
+  return `${options.ordersScope || "all"}:${options.ordersView || "full"}:${options.ordersLimit == null ? "all" : options.ordersLimit}:${options.connectionId || "default"}`;
 }
 
 function readMercadoLivreCache(cacheKey: string) {
@@ -227,8 +230,9 @@ export function useMercadoLivreData(
         ordersScope,
         ordersLimit: shouldPaginateOrders ? normalizedPageSize : null,
         ordersView,
+        connectionId,
       }),
-    [normalizedPageSize, ordersScope, ordersView, shouldPaginateOrders]
+    [normalizedPageSize, ordersScope, ordersView, shouldPaginateOrders, connectionId]
   );
   const initialCache = useMemo(() => readMercadoLivreCache(cacheKey), [cacheKey]);
 
