@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { toast } from "sonner";
 import { AppLayout } from "@/components/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,8 +17,10 @@ import {
   FileOutput,
   Filter,
   Link2,
+  Loader2,
   ShoppingCart,
 } from "lucide-react";
+import { startMLOAuth } from "@/services/mercadoLivreService";
 
 const shipmentFilters = [
   "Envios de hoje",
@@ -26,6 +30,27 @@ const shipmentFilters = [
 ];
 
 export default function MercadoLivreFantomPage() {
+  const [connecting, setConnecting] = useState(false);
+
+  const handleConnectFantom = async () => {
+    setConnecting(true);
+    try {
+      // Mesmo OAuth flow da EcoFerro — usa mesmo app (client_id) cadastrado
+      // em developers.mercadolivre.com.br. ML pede login; usuario entra com
+      // credenciais da conta Fantom Motoparts. Backend faz upsertConnection
+      // por seller_id, criando 2a row em ml_connections sem afetar EcoFerro.
+      // IMPORTANTE: pra autorizar com a conta Fantom, deslogue do ML no
+      // browser primeiro OU use janela anonima/incognito.
+      const url = await startMLOAuth();
+      window.location.href = url;
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Falha ao iniciar autenticacao"
+      );
+      setConnecting(false);
+    }
+  };
+
   return (
     <AppLayout>
       <div className="space-y-6">
@@ -57,13 +82,22 @@ export default function MercadoLivreFantomPage() {
 
           <div className="space-y-3 py-4">
             <p className="text-sm text-muted-foreground">
-              Esse canal replica a estrutura da EcoFerro para receber outra conta do
-              Mercado Livre no futuro. Quando voce quiser ativar, eu ligo a autenticacao,
-              sincronizacao e geracao de etiquetas separadamente.
+              Esse canal usa o <strong>mesmo app cadastrado no Mercado Livre</strong>{" "}
+              da EcoFerro, mas conecta uma conta diferente (Fantom Motoparts).
+              Os pedidos ficam separados por <code>seller_id</code> no banco.
             </p>
+            <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+              <strong>Antes de clicar:</strong> deslogue do Mercado Livre no
+              browser ou abra uma janela anônima. Senão o ML autoriza com a conta
+              que estiver logada (provavelmente a EcoFerro).
+            </div>
             <div className="flex flex-wrap gap-2">
-              <Button disabled>
-                <Link2 className="mr-2 h-4 w-4" />
+              <Button onClick={handleConnectFantom} disabled={connecting}>
+                {connecting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Link2 className="mr-2 h-4 w-4" />
+                )}
                 Conectar conta Fantom
               </Button>
               <Button disabled variant="secondary">
