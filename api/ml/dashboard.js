@@ -2301,7 +2301,13 @@ export async function buildDashboardPayload(options = {}) {
     pending: 7,
     confirmed: 7,
     handling: 7,
-    ready_to_ship: 21,
+    // ready_to_ship: 90 (era 21). Pedidos ready_to_ship podem ficar
+    // pendurados em invoice_pending por meses se o vendedor nao emite
+    // NF-e — ML mostra eles em "Envios de hoje > NF-e para gerenciar"
+    // independente da idade. Threshold 21d filtrava esses pedidos
+    // antigos e a lista clicando no card "NF-e" ficava vazia, mesmo
+    // o card mostrando 24 (verificado prod 2026-04-28).
+    ready_to_ship: 90,
     shipped: 3,       // ML entrega em 2-3 dias; 3d elimina fantasmas "shipped" já entregues
     in_transit: 2,    // Alinhado com ML live chips (age ≤ 2d para shipped_in_transit_substatuses)
     not_delivered: 5,  // Reduzido de 10 para alinhar com ML Seller Center
