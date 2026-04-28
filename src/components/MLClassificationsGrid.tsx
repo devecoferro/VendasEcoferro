@@ -218,6 +218,33 @@ export function MLClassificationsGrid({
       }
     }
 
+    // Brief 2026-04-28: sub-linhas padrao por section. Sempre exibir
+    // mesmo quando count=0 — ML Seller Center mostra "Encerradas" com
+    // 6 linhas fixas (Entregues, Nao entregues, Canceladas, Devolucoes
+    // concluidas/nao concluidas, Mensagens nao lidas) mesmo quando
+    // alguns estao zerados.
+    const STANDARD_SUBSTATUSES_BY_SECTION: Record<MLSection, MLSubStatus[]> = {
+      para_enviar_coleta: ["cancelled_no_send"],
+      envios_devolucoes: ["return_pending_review"],
+      coleta_dia: ["invoice_pending", "ready_to_print", "standard_shipping"],
+      proximos_devolucoes: [
+        "return_pending_review",
+        "return_in_transit",
+        "return_in_ml_review",
+      ],
+      para_retirar: ["waiting_buyer_pickup"],
+      a_caminho: ["shipped_collection"],
+      para_atender: ["claim_or_mediation"],
+      encerradas: [
+        "delivered",
+        "not_delivered",
+        "cancelled_final",
+        "returns_completed",
+        "returns_not_completed",
+        "with_unread_messages",
+      ],
+    };
+
     const result: SectionCard[] = [];
     for (const [key, g] of groups) {
       const substatuses: SubStatusEntry[] = [];
@@ -225,6 +252,13 @@ export function MLClassificationsGrid({
       for (const [substatus, count] of g.counts) {
         substatuses.push({ substatus, count });
         total += count;
+      }
+      // Garante sub-linhas padrao da secao (mesmo com count=0)
+      const seenSubs = new Set(substatuses.map((s) => s.substatus));
+      for (const std of STANDARD_SUBSTATUSES_BY_SECTION[g.section] || []) {
+        if (!seenSubs.has(std)) {
+          substatuses.push({ substatus: std, count: 0 });
+        }
       }
       substatuses.sort(sortSubstatuses);
 
