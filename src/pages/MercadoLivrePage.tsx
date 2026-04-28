@@ -1460,23 +1460,21 @@ export default function MercadoLivrePage() {
       }
     }
 
-    // Prioridade: snapshot > liveIds (dashboard antigo) > localScope
+    // Brief 2026-04-28: quando deposit filter ativo, PRIORIZA localScope
+    // sempre. Razao: pack_id no DB local eh null pra essa conta, entao a
+    // intersecao snapshot ∩ localScope sempre da 0 (formatos diferentes:
+    // snapshot tem pack_id puro, localScope tem "pack_id:item_id"). O
+    // snapshot eh fonte de verdade pros COUNTS (cards) mas a LISTA de
+    // pedidos vem do DB local que tem o conjunto completo + dados
+    // detalhados (NF-e emitida, etiqueta impressa, etc).
+    if (selectedDepositFilters.length > 0 && localScope.size > 0) {
+      return localScope;
+    }
     if (snapshotIds.size > 0) {
       if (selectedDepositFilters.length > 0) {
-        const intersected = new Set<string>(
-          [...snapshotIds].filter((id) => localScope.has(id))
-        );
-        if (intersected.size === 0) {
-          // Intersecção 0 (snapshot não bate com classificação local).
-          // Se localScope tem dados, usa ele (pedidos já sincronizados no DB).
-          // Senão, usa snapshotIds diretamente — o backend já filtrou pelo
-          // escopo (ourinhos/full/without_deposit), então é seguro. Sem
-          // esse segundo fallback, clicar Ourinhos+hoje mostra lista vazia
-          // quando dashboard.deposits[ourinhos].order_ids_by_bucket.today
-          // está vazio mas o snapshot LIVE diz que há pedidos.
-          return localScope.size > 0 ? localScope : snapshotIds;
-        }
-        return intersected;
+        // selectedDepositFilters > 0 mas localScope.size === 0:
+        // fallback pra snapshot (raro — depósito sem pedidos no DB).
+        return snapshotIds;
       }
       return snapshotIds;
     }
