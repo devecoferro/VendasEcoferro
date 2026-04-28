@@ -192,6 +192,32 @@ export function MLClassificationsGrid({
       g.counts.set(substatus, (g.counts.get(substatus) || 0) + 1);
     }
 
+    // Brief 2026-04-28: garante que os cards PADRAO do bucket apareçam
+    // sempre (com count 0) — espelha estrutura do ML Seller Center que
+    // mostra "Devoluções", "Para retirar", "Para atender", "Encerradas"
+    // mesmo quando vazios. Antes a UI sumia o card → operador achava
+    // que faltava feature.
+    const STANDARD_SECTIONS_BY_BUCKET: Record<ShipmentBucket, MLSection[]> = {
+      today: ["para_enviar_coleta", "envios_devolucoes"],
+      upcoming: ["proximos_devolucoes"], // coleta_dia tem pickup_groups dinamicos
+      in_transit: ["para_retirar", "a_caminho"],
+      finalized: ["para_atender", "encerradas"],
+      cancelled: [],
+    };
+    const targetDeposit: MLStoreKey =
+      deposit === "all" ? "outros" : (deposit as MLStoreKey);
+    for (const std of STANDARD_SECTIONS_BY_BUCKET[bucket] || []) {
+      const key = `${std}::::${targetDeposit}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          section: std,
+          pickupGroup: undefined,
+          inferredDeposit: targetDeposit,
+          counts: new Map(),
+        });
+      }
+    }
+
     const result: SectionCard[] = [];
     for (const [key, g] of groups) {
       const substatuses: SubStatusEntry[] = [];
