@@ -452,14 +452,16 @@ export default async function handler(request, response) {
             scope,
             limit: limit ?? DEFAULT_PAGINATION_LIMIT,
             offset,
+            connectionId,
           })
-        : getOrderSummariesByScope(scope)
+        : getOrderSummariesByScope(scope, { connectionId })
       : (() => {
           const rows = shouldPaginate
             ? getPaginatedOrderRows({
                 scope,
                 limit: limit ?? DEFAULT_PAGINATION_LIMIT,
                 offset,
+                connectionId,
               })
             : scope === "operational"
               ? getOperationalOrders({ connectionId })
@@ -473,7 +475,7 @@ export default async function handler(request, response) {
         })();
     enrichOrdersWithEmittedInvoiceFlag(scopedOrders);
     const clientOrders = scopedOrders.map((order) => shapeOrderForView(order, view));
-    const totalOrders = shouldPaginate ? countOrdersByScope(scope) : clientOrders.length;
+    const totalOrders = shouldPaginate ? countOrdersByScope(scope, { connectionId }) : clientOrders.length;
     const effectiveLimit = limit ?? clientOrders.length;
     const nextOffset =
       shouldPaginate && offset + clientOrders.length < totalOrders

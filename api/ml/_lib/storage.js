@@ -467,25 +467,30 @@ export function getOrders(options = null) {
     .map(mapOrder);
 }
 
-function getScopeFilter(scope = "all") {
+function getScopeFilter(scope = "all", connectionId = null) {
   // Piso de data aplicado a todas as consultas — vendas anteriores a
   // MIN_VISIBLE_SALE_DATE ficam invisiveis no front, mesmo que ainda
   // existam no banco.
   const dateFloorClause = `COALESCE(sale_date, '') >= ?`;
   const dateFloorParam = MIN_VISIBLE_SALE_DATE;
+  // Brief 2026-04-28 multi-seller: filtra por connection_id quando
+  // fornecido. Sem isso, summary/paginated funcs retornavam todos os
+  // sellers misturados (EcoFerro + Fantom).
+  const connectionClause = connectionId ? ` AND connection_id = ?` : "";
+  const connectionParam = connectionId ? [String(connectionId)] : [];
 
   if (String(scope || "").trim().toLowerCase() !== "operational") {
     return {
-      whereSql: `WHERE ${dateFloorClause}`,
-      params: [dateFloorParam],
+      whereSql: `WHERE ${dateFloorClause}${connectionClause}`,
+      params: [dateFloorParam, ...connectionParam],
     };
   }
 
   const placeholders = OPERATIONAL_ORDER_STATUSES.map(() => "?").join(", ");
 
   return {
-    whereSql: `WHERE ${dateFloorClause} AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})`,
-    params: [dateFloorParam, ...OPERATIONAL_ORDER_STATUSES],
+    whereSql: `WHERE ${dateFloorClause} AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})${connectionClause}`,
+    params: [dateFloorParam, ...OPERATIONAL_ORDER_STATUSES, ...connectionParam],
   };
 }
 
@@ -507,8 +512,8 @@ function sanitizePaginationOffset(offset) {
   return Math.max(0, Math.trunc(numericOffset));
 }
 
-export function countOrdersByScope(scope = "all") {
-  const { whereSql, params } = getScopeFilter(scope);
+export function countOrdersByScope(scope = "all", { connectionId = null } = {}) {
+  const { whereSql, params } = getScopeFilter(scope, connectionId);
   const row = db
     .prepare(
       `
@@ -526,8 +531,9 @@ function buildOrderSummariesQuery({
   scope = "all",
   limit = null,
   offset = 0,
+  connectionId = null,
 } = {}) {
-  const { whereSql, params } = getScopeFilter(scope);
+  const { whereSql, params } = getScopeFilter(scope, connectionId);
   const hasPagination = limit != null;
   const safeLimit = hasPagination ? sanitizePaginationLimit(limit) : null;
   const safeOffset = hasPagination ? sanitizePaginationOffset(offset) : 0;
@@ -560,8 +566,8 @@ function buildOrderSummariesQuery({
   };
 }
 
-export function getOrderSummariesByScope(scope = "all") {
-  const { sql, params } = buildOrderSummariesQuery({ scope });
+export function getOrderSummariesByScope(scope = "all", { connectionId = null } = {}) {
+  const { sql, params } = buildOrderSummariesQuery({ scope, connectionId });
   return db.prepare(sql).all(...params).map(mapSummaryOrder);
 }
 
@@ -574,11 +580,13 @@ export function getPaginatedOrderSummaries({
   scope = "all",
   limit = 300,
   offset = 0,
+  connectionId = null,
 } = {}) {
   const { sql, params } = buildOrderSummariesQuery({
     scope,
     limit,
     offset,
+    connectionId,
   });
 
   return db.prepare(sql).all(...params).map(mapSummaryOrder);
@@ -588,8 +596,9 @@ export function getPaginatedOrderRows({
   scope = "all",
   limit = 300,
   offset = 0,
+  connectionId = null,
 } = {}) {
-  const { whereSql, params } = getScopeFilter(scope);
+  const { whereSql, params } = getScopeFilter(scope, connectionId);
   const safeLimit = sanitizePaginationLimit(limit);
   const safeOffset = sanitizePaginationOffset(offset);
 
