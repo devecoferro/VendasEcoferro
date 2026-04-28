@@ -240,19 +240,44 @@ export function scopeToStoreUrlParam(scope) {
 }
 
 /**
+ * Resolve caminho do storage state pra uma connection especifica.
+ * Brief 2026-04-28 multi-seller: cada seller (EcoFerro, Fantom, etc)
+ * tem sessao Playwright propria capturada via setup-ml-scraper.mjs.
+ *
+ * Formato:
+ *   - default (EcoFerro):    ml-seller-center-state.json
+ *   - per-connection:        ml-seller-center-state-<connectionId>.json
+ *
+ * Quando connectionId eh passado, busca arquivo per-connection. Se nao
+ * existe, fallback ao default (mantendo back-compat).
+ */
+function resolveStorageStatePath(connectionId = null) {
+  if (!connectionId) return SCRAPER_STORAGE_STATE_PATH;
+  const perConnPath = SCRAPER_STORAGE_STATE_PATH.replace(
+    /\.json$/i,
+    `-${connectionId}.json`
+  );
+  if (fs.existsSync(perConnPath) && fs.statSync(perConnPath).size > 0) {
+    return perConnPath;
+  }
+  // Fallback: arquivo per-connection nao existe, usa default
+  return SCRAPER_STORAGE_STATE_PATH;
+}
+
+/**
  * Verifica se o storage state está disponível no disco.
  */
-export function isScraperConfigured() {
+export function isScraperConfigured(connectionId = null) {
   try {
-    return fs.existsSync(SCRAPER_STORAGE_STATE_PATH) &&
-      fs.statSync(SCRAPER_STORAGE_STATE_PATH).size > 0;
+    const target = resolveStorageStatePath(connectionId);
+    return fs.existsSync(target) && fs.statSync(target).size > 0;
   } catch {
     return false;
   }
 }
 
-export function getScraperStorageStatePath() {
-  return SCRAPER_STORAGE_STATE_PATH;
+export function getScraperStorageStatePath(connectionId = null) {
+  return resolveStorageStatePath(connectionId);
 }
 
 export function getLastScraperError() {
@@ -269,11 +294,14 @@ export function getCachedScraperResult() {
 
 /**
  * Carrega o storage state do disco. Retorna null se não existe ou inválido.
+ * Brief 2026-04-28: aceita connectionId opcional pra carregar storage state
+ * per-connection. Quando arquivo per-connection nao existe, usa default.
  */
-function loadStorageState() {
+function loadStorageState(connectionId = null) {
   try {
-    if (!fs.existsSync(SCRAPER_STORAGE_STATE_PATH)) return null;
-    const raw = fs.readFileSync(SCRAPER_STORAGE_STATE_PATH, "utf8");
+    const target = resolveStorageStatePath(connectionId);
+    if (!fs.existsSync(target)) return null;
+    const raw = fs.readFileSync(target, "utf8");
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     // Sanity check: storage state tem cookies e/ou origins
@@ -1096,8 +1124,9 @@ export async function scrapeMlSellerCenterFull({
   singleStore = null,
   waitMs = 8000,
   fetchDirect = false,
+  connectionId = null,
 } = {}) {
-  if (!isScraperConfigured()) {
+  if (!isScraperConfigured(connectionId)) {
     return { ok: false, error: "no_state", message: "Storage state nao configurado" };
   }
 
@@ -1106,7 +1135,7 @@ export async function scrapeMlSellerCenterFull({
     return { ok: false, error: "playwright_missing", message: "Playwright nao instalado" };
   }
 
-  const storageState = loadStorageState();
+  const storageState = loadStorageState(connectionId);
   if (!storageState) {
     return { ok: false, error: "no_state", message: "Storage state invalido" };
   }
@@ -1752,6 +1781,7 @@ export function normalizeScope(scope) {
 export async function scrapeMlLiveSnapshot({
   timeoutMs = 180_000,
   scope = "all",
+  connectionId = null,
 } = {}) {
   const normalizedScope = normalizeScope(scope);
   const storeUrlParam = scopeToStoreUrlParam(normalizedScope);
@@ -1804,6 +1834,7 @@ export async function scrapeMlLiveSnapshot({
       singleStore: storeUrlParam || "all",
       waitMs: 10_000,
       fetchDirect: false,
+      connectionId,
     });
 
     // Retry 1x se erro for "browser closed" durante uso (race do warm pool).
@@ -1818,6 +1849,7 @@ export async function scrapeMlLiveSnapshot({
         singleStore: storeUrlParam || "all",
         waitMs: 10_000,
         fetchDirect: false,
+        connectionId,
       });
     }
 
@@ -1905,10 +1937,15 @@ export async function scrapeMlLiveSnapshot({
     capturedAt: snapshot.capturedAt,
     expiresAt: Date.now() + SCRAPER_CACHE_TTL_MS,
     scope: normalizedScope,
+    connectionId,
   };
-  cachedLiveSnapshotByScope.set(normalizedScope, cacheEntry);
+  // Brief 2026-04-28 multi-seller: cache scoped por (scope, connectionId).
+  // Sem isso, FANTOM e ECOFERRO compartilhavam mesmo cache → ambas
+  // mostravam dados da conta cujo scrape rodou primeiro.
+  const cacheKey = `${normalizedScope}::${connectionId || "default"}`;
+  cachedLiveSnapshotByScope.set(cacheKey, cacheEntry);
   // Mantem alias "all" em cachedLiveSnapshot pra retrocompatibilidade
-  if (normalizedScope === "all") {
+  if (normalizedScope === "all" && !connectionId) {
     cachedLiveSnapshot = cacheEntry;
   }
 
@@ -1917,12 +1954,13 @@ export async function scrapeMlLiveSnapshot({
 
 /**
  * Retorna o ultimo live snapshot bem-sucedido (cache). Stale=true se
- * passou do TTL.
+ * passou do TTL. Brief 2026-04-28: scoped por (scope, connectionId).
  */
-export function getCachedLiveSnapshot(scope = "all") {
+export function getCachedLiveSnapshot(scope = "all", connectionId = null) {
   // scope opcional — default "all" (retrocompat)
   const normalizedScope = normalizeScope(scope);
-  const entry = cachedLiveSnapshotByScope.get(normalizedScope);
+  const cacheKey = `${normalizedScope}::${connectionId || "default"}`;
+  const entry = cachedLiveSnapshotByScope.get(cacheKey);
   if (!entry) return null;
   if (entry.expiresAt <= Date.now()) {
     return { ...entry, stale: true };
@@ -1943,32 +1981,34 @@ const lastBackgroundRefreshByScope = new Map(); // scope → timestamp
  * andamento desse escopo, dispara um scrape em background.
  * Não aguarda — retorna imediatamente. Idempotente.
  */
-export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
+export function maybeRefreshLiveSnapshotInBackground(scope = "all", connectionId = null) {
   const normalizedScope = normalizeScope(scope);
   const now = Date.now();
+  // Brief 2026-04-28 multi-seller: locks/cache por (scope, connectionId)
+  const lockKey = `${normalizedScope}::${connectionId || "default"}`;
 
   // Já tem scrape DESTE ESCOPO em andamento → não duplica
-  if (liveSnapshotInflightByScope.has(normalizedScope)) {
+  if (liveSnapshotInflightByScope.has(lockKey)) {
     return { triggered: false, reason: "scrape_in_progress", scope: normalizedScope };
   }
 
   // Cache fresh → não precisa refresh
-  const cached = cachedLiveSnapshotByScope.get(normalizedScope);
+  const cached = cachedLiveSnapshotByScope.get(lockKey);
   if (cached && cached.expiresAt > now) {
     return { triggered: false, reason: "cache_fresh", scope: normalizedScope };
   }
 
   // Throttle por escopo: evita disparos múltiplos muito rápidos (10s)
-  const lastStarted = lastBackgroundRefreshByScope.get(normalizedScope) || 0;
+  const lastStarted = lastBackgroundRefreshByScope.get(lockKey) || 0;
   if (now - lastStarted < 10_000) {
     return { triggered: false, reason: "throttled", scope: normalizedScope };
   }
 
   // Dispara scrape em background (fire-and-forget)
-  lastBackgroundRefreshByScope.set(normalizedScope, now);
-  log.info(`[live-snapshot] disparando refresh background scope="${normalizedScope}"`);
+  lastBackgroundRefreshByScope.set(lockKey, now);
+  log.info(`[live-snapshot] disparando refresh background scope="${normalizedScope}" conn="${connectionId || "default"}"`);
   const startedAt = Date.now();
-  const promise = scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope: normalizedScope })
+  const promise = scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope: normalizedScope, connectionId })
     .then(async (result) => {
       log.info(
         `[live-snapshot] refresh background scope="${normalizedScope}" concluido (${result.ok ? "ok" : "erro"})`
@@ -1999,9 +2039,9 @@ export function maybeRefreshLiveSnapshotInBackground(scope = "all") {
       return failResult;
     })
     .finally(() => {
-      liveSnapshotInflightByScope.delete(normalizedScope);
+      liveSnapshotInflightByScope.delete(lockKey);
     });
-  liveSnapshotInflightByScope.set(normalizedScope, promise);
+  liveSnapshotInflightByScope.set(lockKey, promise);
 
   return { triggered: true, scope: normalizedScope };
 }

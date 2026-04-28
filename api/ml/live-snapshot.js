@@ -55,11 +55,19 @@ export default async function handler(request, response) {
     return response.status(405).json({ success: false, error: "Use GET." });
   }
 
-  if (!isScraperConfigured()) {
+  // Brief 2026-04-28 multi-seller: connection_id seleciona qual storage
+  // state usar (EcoFerro vs Fantom). Cache, locks e scraping scoped por
+  // (scope, connectionId) — uma conta nao polui dados da outra.
+  const connectionId = request.query?.connection_id
+    ? String(request.query.connection_id).trim()
+    : null;
+
+  if (!isScraperConfigured(connectionId)) {
     return response.status(409).json({
       success: false,
-      error:
-        "Scraper nao configurado. Faca upload do storage state via /api/ml/admin/upload-scraper-state.",
+      error: connectionId
+        ? `Scraper nao configurado pra conexao ${connectionId}. Rode setup-ml-scraper.mjs --connection=${connectionId}.`
+        : "Scraper nao configurado. Faca upload do storage state via /api/ml/admin/upload-scraper-state.",
       last_error: getLastScraperError(),
     });
   }
@@ -70,15 +78,11 @@ export default async function handler(request, response) {
 
   // Tenta cache primeiro (a menos que force)
   if (!forceRun) {
-    const cached = getCachedLiveSnapshot(scope);
+    const cached = getCachedLiveSnapshot(scope, connectionId);
     if (cached) {
-      // AUTO-REFRESH em background: se cache está stale, dispara scrape
-      // novo em background (single-flight por escopo). Cliente
-      // recebe cache stale imediato e próxima request (30s depois,
-      // do polling automático) já pega dados frescos.
       let bgRefresh = null;
       if (cached.stale === true) {
-        bgRefresh = maybeRefreshLiveSnapshotInBackground(scope);
+        bgRefresh = maybeRefreshLiveSnapshotInBackground(scope, connectionId);
       }
       return response.status(200).json({
         success: true,
@@ -91,11 +95,8 @@ export default async function handler(request, response) {
         ...cached.data,
       });
     }
-    // Sem cache deste escopo → dispara scrape em background e retorna 202
-    // (Accepted — cliente deve fazer polling). Evita que o primeiro
-    // usuario do escopo trave 90s esperando.
     if (!isLiveSnapshotScrapeInProgress(scope)) {
-      maybeRefreshLiveSnapshotInBackground(scope);
+      maybeRefreshLiveSnapshotInBackground(scope, connectionId);
     }
     return response.status(202).json({
       success: true,
@@ -108,7 +109,7 @@ export default async function handler(request, response) {
   }
 
   // Scrape fresh (pode levar ate 180s)
-  const result = await scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope });
+  const result = await scrapeMlLiveSnapshot({ timeoutMs: 180_000, scope, connectionId });
 
   if (!result.ok) {
     return response.status(502).json({

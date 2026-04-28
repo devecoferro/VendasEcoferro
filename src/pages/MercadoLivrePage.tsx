@@ -633,6 +633,9 @@ export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePa
     enabled: true,
     pollingIntervalMs: 30_000,
     scope: liveSnapshotScope,
+    // Brief 2026-04-28 multi-seller: passa connection_id pro scraper
+    // escolher storage state correto (EcoFerro vs Fantom).
+    connectionId: resolvedConnectionId,
   });
 
   // ─── Filtros novos: replica visual do ML Seller Center ──────────────

@@ -343,12 +343,14 @@ export type MLSnapshotScope = "all" | "without_deposit" | "full" | "ourinhos";
  *              (Ourinhos Rua Dario Alonso).
  */
 export async function getMLLiveSnapshot(
-  options: { force?: boolean; scope?: MLSnapshotScope } = {}
+  options: { force?: boolean; scope?: MLSnapshotScope; connectionId?: string | null } = {}
 ): Promise<MLLiveSnapshotResponse> {
-  const { force = false, scope = "all" } = options;
+  const { force = false, scope = "all", connectionId = null } = options;
   const params = new URLSearchParams();
   if (force) params.set("run", "1");
   if (scope && scope !== "all") params.set("scope", scope);
+  // Brief 2026-04-28 multi-seller: connection_id pra escolher storageState
+  if (connectionId) params.set("connection_id", connectionId);
   const qs = params.toString();
   const url = `/api/ml/live-snapshot${qs ? `?${qs}` : ""}`;
 

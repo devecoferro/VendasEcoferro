@@ -10,40 +10,48 @@ import {
 // aqui evitamos múltiplas chamadas no mesmo instante.
 const FRONTEND_CACHE_TTL_MS = 15_000; // 15s
 
-const sharedSnapshotByScope = new Map<
-  MLSnapshotScope,
+// Brief 2026-04-28 multi-seller: cache scoped por (scope, connectionId)
+// pra evitar cross-contaminacao quando 2 paginas (EcoFerro/Fantom) usam
+// hooks distintos.
+const sharedSnapshotByKey = new Map<
+  string,
   { expiresAt: number; data: MLLiveSnapshotResponse }
 >();
-const inflightPromiseByScope = new Map<
-  MLSnapshotScope,
+const inflightPromiseByKey = new Map<
+  string,
   Promise<MLLiveSnapshotResponse>
 >();
 
+function buildSnapshotKey(scope: MLSnapshotScope, connectionId: string | null): string {
+  return `${scope}::${connectionId || "default"}`;
+}
+
 async function fetchAndCache(
   scope: MLSnapshotScope,
-  force: boolean
+  force: boolean,
+  connectionId: string | null
 ): Promise<MLLiveSnapshotResponse> {
+  const key = buildSnapshotKey(scope, connectionId);
   if (force) {
-    sharedSnapshotByScope.delete(scope);
+    sharedSnapshotByKey.delete(key);
   }
-  const cached = sharedSnapshotByScope.get(scope);
+  const cached = sharedSnapshotByKey.get(key);
   if (!force && cached && cached.expiresAt > Date.now()) {
     return cached.data;
   }
-  // Dedup: se já tem uma chamada em andamento, reusa.
-  const inflight = inflightPromiseByScope.get(scope);
+  const inflight = inflightPromiseByKey.get(key);
   if (inflight && !force) {
     return inflight;
   }
-  const promise = getMLLiveSnapshot({ force, scope }).then((data) => {
-    sharedSnapshotByScope.set(scope, {
+  const promise = getMLLiveSnapshot({ force, scope, connectionId }).then((data) => {
+    sharedSnapshotByKey.set(key, {
       expiresAt: Date.now() + FRONTEND_CACHE_TTL_MS,
       data,
     });
-    inflightPromiseByScope.delete(scope);
+    inflightPromiseByKey.delete(key);
     return data;
   });
-  inflightPromiseByScope.set(scope, promise);
+  inflightPromiseByKey.set(key, promise);
   return promise;
 }
 
@@ -54,6 +62,8 @@ export interface UseMLLiveSnapshotOptions {
   pollingIntervalMs?: number;
   /** Escopo do snapshot. Default "all" (agregado global). */
   scope?: MLSnapshotScope;
+  /** Brief 2026-04-28 multi-seller: connection_id pra escolher storage state */
+  connectionId?: string | null;
 }
 
 export interface UseMLLiveSnapshotReturn {
@@ -72,15 +82,16 @@ export interface UseMLLiveSnapshotReturn {
 export function useMLLiveSnapshot(
   options: UseMLLiveSnapshotOptions = {}
 ): UseMLLiveSnapshotReturn {
-  const { enabled = true, pollingIntervalMs = 0, scope = "all" } = options;
+  const { enabled = true, pollingIntervalMs = 0, scope = "all", connectionId = null } = options;
+  const cacheKey = buildSnapshotKey(scope, connectionId);
 
   const [snapshot, setSnapshot] = useState<MLLiveSnapshotResponse | null>(
-    () => sharedSnapshotByScope.get(scope)?.data ?? null
+    () => sharedSnapshotByKey.get(cacheKey)?.data ?? null
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
-  const initialLoadedRef = useRef(sharedSnapshotByScope.has(scope));
+  const initialLoadedRef = useRef(sharedSnapshotByKey.has(cacheKey));
 
   useEffect(() => {
     mountedRef.current = true;
@@ -95,7 +106,7 @@ export function useMLLiveSnapshot(
       setLoading(true);
       setError(null);
       try {
-        const data = await fetchAndCache(scope, force);
+        const data = await fetchAndCache(scope, force, connectionId);
         if (!mountedRef.current) return;
         setSnapshot(data);
         initialLoadedRef.current = true;
@@ -110,20 +121,18 @@ export function useMLLiveSnapshot(
         }
       }
     },
-    [scope]
+    [scope, connectionId]
   );
 
-  // Quando o escopo muda, atualiza snapshot pro cache novo (se existir) e
-  // dispara fetch.
+  // Quando o escopo OU connectionId muda, atualiza snapshot pro cache novo
+  // (se existir) e dispara fetch.
   useEffect(() => {
     if (!enabled) return;
-    // Reset snapshot ao trocar escopo pra evitar mostrar dados do escopo
-    // anterior enquanto carrega novo.
-    const cachedNew = sharedSnapshotByScope.get(scope);
+    const cachedNew = sharedSnapshotByKey.get(cacheKey);
     setSnapshot(cachedNew?.data ?? null);
     initialLoadedRef.current = !!cachedNew;
     load(false);
-  }, [enabled, scope, load]);
+  }, [enabled, cacheKey, load]);
 
   useEffect(() => {
     if (!enabled || pollingIntervalMs <= 0) return;
