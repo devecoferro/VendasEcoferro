@@ -1282,6 +1282,131 @@ let cachedLiveSnapshot = null; // alias pro escopo "all"
  * Extrai contadores dos segments do event-request pequeno.
  * Retorna { today, upcoming, in_transit, finalized } ou null.
  */
+/**
+ * Engenharia reversa 2026-04-28: ML retorna nos XHRs do event-request
+ * dois bricks com counts EXATOS (mesma fonte que a UI dele renderiza):
+ *   - dashboard_operations_card (id: CARD_*, count, label, tag)
+ *   - dashboard_operations_task (id: TASK_*-CARD_*, count, label, filters[2]=TASK_KEY)
+ *
+ * Tasks sao filhos do card na arvore de bricks.
+ *
+ * Mapping TASK_KEY -> MLSubStatus (do app) — ver
+ * docs/ml-bricks-reverse-engineered.md
+ */
+const ML_TASK_TO_SUBSTATUS = {
+  TASK_CANCELLED_DONT_DISPATCH: "cancelled_no_send",
+  TASK_READY_TO_DISPATCH: "ready_to_send",
+  TASK_READY_TO_PRINT: "ready_to_print",
+  TASK_INVOICES_TO_BE_MANAGED: "invoice_pending",
+  TASK_TRANSPORTATION_TO_BE_ASSIGNED: "in_processing",
+  TASK_TRANSPORTATION_SLOW_DELIVERY_TO_BE_ASSIGNED: "standard_shipping",
+  TASK_ARRIVING_TODAY: "return_arriving_today",
+  TASK_PENDING_REVIEW: "return_pending_review",
+  TASK_RETURN_IN_THE_WAY: "return_in_transit",
+  TASK_IN_REVIEW_WH: "return_in_ml_review",
+  TASK_PENDING_BUYER_WITHDRAW: "waiting_buyer_pickup",
+  TASK_CROSS_DOCKING: "shipped_collection",
+  TASK_FULL: "shipped_full",
+  TASK_FULFILLMENT: "in_distribution_center",
+  TASK_WITH_CLAIMS_OR_MEDIATIONS: "claim_or_mediation",
+  TASK_DELIVERED: "delivered",
+  TASK_NOT_DELIVERED: "not_delivered",
+  TASK_CANCELLED: "cancelled_final",
+  TASK_RETURNS_COMPLETED: "returns_completed",
+  TASK_RETURNS_NOT_COMPLETED: "returns_not_completed",
+  UNREAD_MESSAGES: "with_unread_messages",
+};
+
+const ML_TAB_TO_BUCKET = {
+  TAB_TODAY: "today",
+  TAB_NEXT_DAYS: "upcoming",
+  TAB_IN_THE_WAY: "in_transit",
+  TAB_FINISHED: "finalized",
+};
+
+/**
+ * Extrai cards + tasks dos XHRs do event-request.
+ * Retorna: { today: [...], upcoming: [...], in_transit: [...], finalized: [...] }
+ * Cada card: { card_id, label, tag, total, tasks: [{ task_key, label, count, substatus }] }
+ */
+function extractCardsByTabFromXhrs(xhrs) {
+  const result = { today: [], upcoming: [], in_transit: [], finalized: [] };
+  // Dedup: o mesmo card pode aparecer em multiplos XHRs (cada navegacao
+  // entre tabs/stores re-dispara). Mantemos o ultimo visto por card_id.
+  const seen = new Map(); // card_id -> { bucket, idx em result[bucket] }
+
+  for (const x of xhrs) {
+    if (!x?.url || !x.url.includes("event-request")) continue;
+    if (!x.body) continue;
+
+    const stack = [x.body];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+
+      if (cur.uiType === "dashboard_operations_card" && cur.data) {
+        const cardId = cur.id || "";
+        const filters = Array.isArray(cur.data.filters) ? cur.data.filters : [];
+        const tabKey = filters.find((f) => typeof f === "string" && f.startsWith("TAB_"));
+        const bucket = tabKey ? ML_TAB_TO_BUCKET[tabKey] : null;
+        if (!bucket) continue;
+
+        const tasks = [];
+        const subStack = Array.isArray(cur.bricks) ? [...cur.bricks] : [];
+        while (subStack.length) {
+          const sub = subStack.pop();
+          if (!sub || typeof sub !== "object") continue;
+          if (sub.uiType === "dashboard_operations_task" && sub.data) {
+            const subFilters = Array.isArray(sub.data.filters) ? sub.data.filters : [];
+            const taskKey = subFilters.find(
+              (f) => typeof f === "string" && (f.startsWith("TASK_") || f === "UNREAD_MESSAGES")
+            );
+            const count = parseInt(String(sub.data.count || "0"), 10) || 0;
+            tasks.push({
+              task_key: taskKey || null,
+              label: sub.data.label || null,
+              count,
+              substatus: taskKey ? ML_TASK_TO_SUBSTATUS[taskKey] || null : null,
+            });
+          }
+          if (Array.isArray(sub.bricks)) for (const b of sub.bricks) subStack.push(b);
+        }
+
+        const total = parseInt(String(cur.data.count || "0"), 10) || 0;
+        const card = {
+          card_id: cardId.split("-")[0] || cardId, // ex: "CARD_CROSS_DOCKING_TODAY"
+          card_id_full: cardId,
+          label: cur.data.label || null,
+          tag: cur.data.tag || null,
+          total,
+          tasks,
+        };
+
+        // Dedup por card_id_full (preserva o ultimo visto, geralmente o mais fresco)
+        const seenKey = `${bucket}::${card.card_id_full}`;
+        if (seen.has(seenKey)) {
+          const prev = seen.get(seenKey);
+          result[prev.bucket][prev.idx] = card;
+        } else {
+          result[bucket].push(card);
+          seen.set(seenKey, { bucket, idx: result[bucket].length - 1 });
+        }
+        // continua varrendo, mas nao desce em cur.bricks (ja varremos as tasks)
+        continue;
+      }
+
+      if (Array.isArray(cur)) {
+        for (const v of cur) stack.push(v);
+      } else if (cur.bricks) {
+        for (const b of cur.bricks) stack.push(b);
+      } else {
+        for (const v of Object.values(cur)) stack.push(v);
+      }
+    }
+  }
+  return result;
+}
+
 function extractCountersFromXhrs(xhrs) {
   // Agrega counters de TODOS os XHRs (não retorna no primeiro match).
   //
@@ -1722,6 +1847,11 @@ export async function scrapeMlLiveSnapshot({
   const counters = extractCountersFromXhrs(allXhrs);
   const ordersByTab = extractOrdersByTab(allXhrs);
   const subCards = aggregateSubCards(ordersByTab);
+  // Engenharia reversa 2026-04-28: ML retorna cards (CARD_CROSS_DOCKING_*,
+  // CARD_RETURNS_*, etc) e tasks (TASK_CANCELLED_DONT_DISPATCH, etc) com
+  // counts EXATOS no payload de event-request. Esses sao os MESMOS dados
+  // que ML usa pra renderizar o painel — match 1:1 garantido.
+  const cardsByTab = extractCardsByTabFromXhrs(allXhrs);
 
   // xhr_signatures: paths unicos (sem query string) dos XHRs interceptados,
   // normalizados (IDs numericos -> :id) pra usar em deteccao de drift sem
@@ -1750,6 +1880,7 @@ export async function scrapeMlLiveSnapshot({
     capturedAt: new Date().toISOString(),
     counters: counters || { today: 0, upcoming: 0, in_transit: 0, finalized: 0 },
     sub_cards: subCards,
+    cards_by_tab: cardsByTab,
     orders: ordersByTab,
     xhr_signatures: xhrSignatures,
     stats: {

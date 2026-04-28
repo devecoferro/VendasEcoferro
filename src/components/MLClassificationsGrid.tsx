@@ -18,6 +18,7 @@ import { useMemo } from "react";
 import { HelpCircle, MessageSquare } from "lucide-react";
 import type { MLOrder } from "@/services/mercadoLivreService";
 import type { ShipmentBucket } from "@/services/mercadoLivreHelpers";
+import type { MLLiveSnapshotCardsByTab } from "@/services/mlLiveSnapshotService";
 import {
   type MLSubStatus,
   type MLSection,
@@ -49,6 +50,9 @@ interface MLClassificationsGridProps {
   onSelectSubStatus: (substatus: MLSubStatus | null) => void;
   selectedPickupGroup: string | null;
   onSelectPickupGroup: (group: string | null) => void;
+  /** Cards + tasks parseados dos bricks ML. Quando presente, os counts
+   * vem direto do ML (match 1:1). Engenharia reversa 2026-04-28. */
+  cardsByTab?: MLLiveSnapshotCardsByTab | null;
 }
 
 interface SubStatusEntry {
@@ -111,6 +115,21 @@ function sortSubstatuses(a: SubStatusEntry, b: SubStatusEntry): number {
   return b.count - a.count;
 }
 
+// Mapping ML CARD_ID → MLSection (engenharia reversa 2026-04-28).
+// Cobre todos os card IDs documentados em ml-bricks-reverse-engineered.md.
+const ML_CARD_ID_TO_SECTION: Record<string, MLSection> = {
+  CARD_CROSS_DOCKING_TODAY: "para_enviar_coleta",
+  CARD_FULL: "para_enviar_coleta",
+  CARD_RETURNS_TODAY: "envios_devolucoes",
+  CARD_CROSS_DOCKING_NEXT_DAYS: "coleta_dia",
+  CARD_CROSS_DOCKING_AFTER_NEXT_DAY: "coleta_dia",
+  CARD_RETURNS_NEXT_DAYS: "proximos_devolucoes",
+  CARD_WAITING_FOR_WITHDRAWAL: "para_retirar",
+  CARD_IN_THE_WAY: "a_caminho",
+  CARD_SALES_TO_ATTEND_FINISHED: "para_atender",
+  CARD_CLOSED_SALES_FINISHED: "encerradas",
+};
+
 // Ordena section pra "Para enviar" vir antes de "Devoluções", etc.
 const SECTION_DISPLAY_ORDER: MLSection[] = [
   "para_enviar_coleta",
@@ -147,8 +166,53 @@ export function MLClassificationsGrid({
   onSelectSubStatus,
   selectedPickupGroup,
   onSelectPickupGroup,
+  cardsByTab,
 }: MLClassificationsGridProps) {
   const cards = useMemo<SectionCard[]>(() => {
+    // Engenharia reversa 2026-04-28: quando cardsByTab esta disponivel
+    // (ML retornou bricks dashboard_operations_card no event-request),
+    // usamos esses dados DIRETAMENTE — match 1:1 com ML Seller Center.
+    const mlCards = cardsByTab?.[bucket];
+    if (mlCards && mlCards.length > 0) {
+      const targetDeposit: MLStoreKey =
+        deposit === "all" ? "outros" : (deposit as MLStoreKey);
+      const result: SectionCard[] = [];
+      for (const mlCard of mlCards) {
+        const section = ML_CARD_ID_TO_SECTION[mlCard.card_id];
+        if (!section) continue;
+        const substatuses: SubStatusEntry[] = [];
+        for (const task of mlCard.tasks) {
+          if (!task.substatus) continue;
+          substatuses.push({
+            substatus: task.substatus as MLSubStatus,
+            count: task.count,
+          });
+        }
+        substatuses.sort(sortSubstatuses);
+
+        // Pickup group: extrair de label "Coleta | Amanhã" ou "A partir de X"
+        let pickupGroup: string | undefined = undefined;
+        if (section === "coleta_dia" && mlCard.label) {
+          const match = mlCard.label.match(/^Coleta\s*\|\s*(.+)$/);
+          if (match) pickupGroup = match[1].trim();
+        }
+
+        result.push({
+          key: `${mlCard.card_id_full}::${targetDeposit}`,
+          section,
+          subtitle: mlCard.tag || undefined,
+          title: mlCard.label || section,
+          total: mlCard.total,
+          substatuses,
+          pickupGroup,
+          inferredDeposit: targetDeposit,
+        });
+      }
+      result.sort(sortCards);
+      return result;
+    }
+
+    // Fallback: classificacao local quando nao temos dados do ML
     // Agrupa: section + (pickup_date pra upcoming) + inferredDeposit
     const groups = new Map<
       string,
@@ -283,7 +347,7 @@ export function MLClassificationsGrid({
 
     result.sort(sortCards);
     return result;
-  }, [orders, bucket, deposit]);
+  }, [orders, bucket, deposit, cardsByTab]);
 
   if (cards.length === 0) {
     return (

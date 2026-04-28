@@ -58,6 +58,41 @@ export interface MLLiveSnapshotSubCards {
   finalized: MLLiveSnapshotSubCardFinalized;
 }
 
+/**
+ * Engenharia reversa 2026-04-28: ML retorna no event-request bricks
+ * `dashboard_operations_card` (cards "Coleta", "Devoluções", "Para retirar"
+ * etc) e `dashboard_operations_task` (sub-status com counts EXATOS).
+ * Esses sao os MESMOS dados que ML usa pra renderizar — match 1:1.
+ *
+ * task_key mapeia 1:1 pra MLSubStatus do app via tabela em
+ * docs/ml-bricks-reverse-engineered.md.
+ */
+export interface MLLiveSnapshotTask {
+  task_key: string | null;
+  label: string | null;
+  count: number;
+  /** MLSubStatus correspondente, ou null se task_key for desconhecido. */
+  substatus: string | null;
+}
+
+export interface MLLiveSnapshotCard {
+  /** Ex: "CARD_CROSS_DOCKING_TODAY" (sem suffix de data). */
+  card_id: string;
+  /** Ex: "CARD_CROSS_DOCKING_TODAY-2026-04-28T00:00@..." (com suffix). */
+  card_id_full: string;
+  label: string | null;
+  tag: string | null;
+  total: number;
+  tasks: MLLiveSnapshotTask[];
+}
+
+export interface MLLiveSnapshotCardsByTab {
+  today: MLLiveSnapshotCard[];
+  upcoming: MLLiveSnapshotCard[];
+  in_transit: MLLiveSnapshotCard[];
+  finalized: MLLiveSnapshotCard[];
+}
+
 export interface MLLiveSnapshotOrder {
   pack_id: string;
   order_id: string;
@@ -104,6 +139,10 @@ export interface MLLiveSnapshotResponse {
   captured_at: string;
   counters: MLLiveSnapshotCounters;
   sub_cards: MLLiveSnapshotSubCards;
+  /** Cards + tasks parseados dos bricks ML (counts exatos). Pode ser
+   * undefined quando o scraper roda contra ML schema antigo ou snapshot
+   * em cache de versao anterior. */
+  cards_by_tab?: MLLiveSnapshotCardsByTab;
   orders: MLLiveSnapshotOrdersByTab;
   stats: MLLiveSnapshotStats;
 }

@@ -2239,6 +2239,7 @@ export default function MercadoLivrePage() {
             onSelectSubStatus={setSelectedSubStatus}
             selectedPickupGroup={selectedPickupGroup}
             onSelectPickupGroup={setSelectedPickupGroup}
+            cardsByTab={scopedLiveSnapshot?.cards_by_tab ?? null}
           />
         </div>
 
