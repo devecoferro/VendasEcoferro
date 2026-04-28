@@ -17,6 +17,9 @@ interface UseMercadoLivreDataOptions {
   ordersLimit?: number | null;
   ordersView?: "full" | "dashboard";
   autoLoadAllPages?: boolean;
+  /** Brief 2026-04-28 multi-seller fase 2: filtra pedidos por
+   * conexao ML (EcoFerro vs Fantom). Quando ausente, retorna todos. */
+  connectionId?: string | null;
 }
 
 interface SyncOptions {
@@ -213,6 +216,7 @@ export function useMercadoLivreData(
     ordersLimit = null,
     ordersView = "full",
     autoLoadAllPages = false,
+    connectionId = null,
   } = options;
   const shouldPaginateOrders =
     typeof ordersLimit === "number" && Number.isFinite(ordersLimit) && ordersLimit > 0;
@@ -295,6 +299,7 @@ export function useMercadoLivreData(
             limit: shouldPaginateOrders ? normalizedPageSize : undefined,
             offset: 0,
             view: ordersView,
+            connectionId,
           }),
           getMLDashboard(),
           getMLConnectionStatus(),
@@ -412,6 +417,7 @@ export function useMercadoLivreData(
           limit: shouldPaginateOrders ? normalizedPageSize : undefined,
           offset: currentPagination.next_offset,
           view: ordersView,
+          connectionId,
         });
 
         if (requestVersionRef.current !== requestVersion) {
