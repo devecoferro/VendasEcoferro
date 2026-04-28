@@ -2376,11 +2376,16 @@ export async function buildDashboardPayload(options = {}) {
       if (bucket === "finalized") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
+        // Brief 2026-04-28: ML schema novo (x-format-new) nao retorna
+        // status_history. Usamos last_updated do shipment como fallback
+        // (data da ultima mudanca de status — em terminal states corresponde
+        // ao momento de delivered/cancelled/etc). sale_date e last resort.
         const exceptionDateKey =
           getDateKey(statusHistory.date_cancelled) ||
           getDateKey(statusHistory.date_not_delivered) ||
           getDateKey(statusHistory.date_returned) ||
           getDateKey(statusHistory.date_delivered) ||
+          getDateKey(snapshot.last_updated) ||
           getDateKey(order.sale_date);
         if (!exceptionDateKey) {
           continue;
@@ -2399,7 +2404,9 @@ export async function buildDashboardPayload(options = {}) {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
         const cancelDateKey =
-          getDateKey(statusHistory.date_cancelled) || getDateKey(order.sale_date);
+          getDateKey(statusHistory.date_cancelled) ||
+          getDateKey(snapshot.last_updated) ||
+          getDateKey(order.sale_date);
         if (!cancelDateKey) {
           continue;
         }
