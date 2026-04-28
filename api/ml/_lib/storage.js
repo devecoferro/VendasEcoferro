@@ -240,7 +240,39 @@ function buildOrderReferenceSummariesQuery(scope = "all") {
   };
 }
 
+/**
+ * Brief 2026-04-28 multi-seller fase 1: getLatestConnection() agora retorna
+ * a MAIS ANTIGA (oldest), nao a mais nova.
+ *
+ * Motivo: o app foi escrito assumindo 1 conexao ML so. Quando uma 2a conta
+ * eh conectada (ex: Fantom Motoparts em 2026-04-28), a "latest" pelo
+ * created_at passa a ser a 2a, quebrando todos os 17+ fluxos que
+ * dependiam de EcoFerro (dashboard, sync, claims, NF-e, etc).
+ *
+ * Mantemos o NOME getLatestConnection pra back-compat com 17 callers
+ * sem precisar reescrever cada um. Semantica nova: "default connection
+ * = EcoFerro (oldest)". Pra Fantom usar especifico, usar
+ * getConnectionBySellerId() ou getNewestConnection().
+ */
 export function getLatestConnection() {
+  const row = db
+    .prepare(`SELECT * FROM ml_connections ORDER BY datetime(created_at) ASC LIMIT 1`)
+    .get();
+
+  return mapConnection(row);
+}
+
+/**
+ * Alias semanticamente correto pra getLatestConnection() — retorna a
+ * conexao "default" (mais antiga, EcoFerro hoje). Use em codigo novo.
+ */
+export const getDefaultConnection = getLatestConnection;
+
+/**
+ * Retorna a conexao MAIS RECENTEMENTE conectada (created_at DESC).
+ * Util pra mostrar "conta acabou de conectar" em UIs de status.
+ */
+export function getNewestConnection() {
   const row = db
     .prepare(`SELECT * FROM ml_connections ORDER BY datetime(created_at) DESC LIMIT 1`)
     .get();
