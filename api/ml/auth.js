@@ -8,6 +8,7 @@ import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import {
   deleteConnection,
   getLatestConnection,
+  listConnections,
   upsertConnection,
 } from "./_lib/storage.js";
 import { refreshMercadoLivreToken } from "./_lib/mercado-livre.js";
@@ -113,6 +114,14 @@ export default async function handler(request, response) {
     if (action === "status") {
       return response.status(200).json({
         connection: sanitizeConnection(getLatestConnection()),
+      });
+    }
+
+    // Brief 2026-04-28 multi-seller fase 2: lista todas as conexoes
+    // (EcoFerro + Fantom + futuras) pra frontend escolher escopo.
+    if (action === "list") {
+      return response.status(200).json({
+        connections: listConnections().map(sanitizeConnection),
       });
     }
 

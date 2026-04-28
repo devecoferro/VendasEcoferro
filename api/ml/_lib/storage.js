@@ -621,19 +621,39 @@ export function getPaginatedOrderRows({
     .map(mapOrder);
 }
 
-export function getOperationalOrders(limit = null) {
+/**
+ * Brief 2026-04-28 multi-seller fase 2: aceita opcional connectionId.
+ * @param {Object|number|null} options - se number/null, eh tratado como
+ *   limit (back-compat). Se objeto, usa { limit, connectionId }.
+ */
+export function getOperationalOrders(options = null) {
+  let limit = null;
+  let connectionId = null;
+  if (options && typeof options === "object" && !Array.isArray(options)) {
+    limit = options.limit ?? null;
+    connectionId = options.connectionId ?? null;
+  } else {
+    limit = options;
+  }
+
   const placeholders = OPERATIONAL_ORDER_STATUSES.map(() => "?").join(", ");
   const statusParams = [...OPERATIONAL_ORDER_STATUSES];
+  const params = [MIN_VISIBLE_SALE_DATE, ...statusParams];
+  let connectionClause = "";
+  if (connectionId) {
+    connectionClause = " AND connection_id = ?";
+    params.push(String(connectionId));
+  }
 
   if (limit == null) {
     return db
       .prepare(
         `SELECT * FROM ml_orders
          WHERE COALESCE(sale_date, '') >= ?
-           AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
+           AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})${connectionClause}
          ORDER BY datetime(sale_date) DESC`
       )
-      .all(MIN_VISIBLE_SALE_DATE, ...statusParams)
+      .all(...params)
       .map(mapOrder);
   }
 
@@ -645,11 +665,11 @@ export function getOperationalOrders(limit = null) {
     .prepare(
       `SELECT * FROM ml_orders
        WHERE COALESCE(sale_date, '') >= ?
-         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})
+         AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), order_status, '')) IN (${placeholders})${connectionClause}
        ORDER BY datetime(sale_date) DESC
        LIMIT ?`
     )
-    .all(MIN_VISIBLE_SALE_DATE, ...statusParams, safeLimit)
+    .all(...params, safeLimit)
     .map(mapOrder);
 }
 

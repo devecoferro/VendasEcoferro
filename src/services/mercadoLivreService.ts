@@ -826,6 +826,31 @@ export async function getMLConnectionStatus(): Promise<MLConnection | null> {
   return data?.connection ?? null;
 }
 
+/**
+ * Brief 2026-04-28 multi-seller fase 2: lista todas as conexoes
+ * (EcoFerro + Fantom + futuras) pra UI escolher escopo.
+ */
+export async function listMLConnections(): Promise<MLConnection[]> {
+  const { response, data } = await fetchJsonWithTimeout<{
+    connections?: MLConnection[];
+    error?: string;
+  }>(
+    "/api/ml/auth",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "list" }),
+    },
+    "Timeout ao listar conexoes do Mercado Livre."
+  );
+
+  if (!response.ok) {
+    throw new Error(data?.error || "Nao foi possivel listar conexoes.");
+  }
+
+  return Array.isArray(data?.connections) ? data.connections : [];
+}
+
 export async function startMLOAuth(): Promise<string> {
   const { redirectUri, state, codeChallenge } = await createMLOAuthSession();
   const { response, data } = await fetchJsonWithTimeout<{ url?: string; error?: string }>(
@@ -968,6 +993,9 @@ interface GetMLOrdersOptions {
   limit?: number | null;
   offset?: number;
   view?: "full" | "dashboard";
+  /** Brief 2026-04-28 multi-seller fase 2: filtra pedidos por
+   * conexao ML (EcoFerro vs Fantom). Quando ausente, retorna todos. */
+  connectionId?: string | null;
 }
 
 export async function getMLOrdersPage(
@@ -989,6 +1017,10 @@ export async function getMLOrdersPage(
 
   if (options.view && options.view !== "full") {
     params.set("view", options.view);
+  }
+
+  if (options.connectionId) {
+    params.set("connection_id", options.connectionId);
   }
 
   const url = params.size > 0 ? `/api/ml/orders?${params.toString()}` : "/api/ml/orders";
