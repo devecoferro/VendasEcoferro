@@ -420,6 +420,12 @@ export default async function handler(request, response) {
     await requireAuthenticatedProfile(request);
 
     const scope = String(request.query.scope || "all").trim().toLowerCase();
+    // Brief 2026-04-28 multi-seller fase 2: connection_id filtra pedidos
+    // por conexao ML (EcoFerro vs Fantom). Sem o param, retorna todos
+    // (back-compat).
+    const connectionId = request.query.connection_id
+      ? String(request.query.connection_id).trim()
+      : null;
     const hasExplicitLimit =
       request.query.limit != null && String(request.query.limit).trim() !== "";
     const hasExplicitOffset =
@@ -429,7 +435,7 @@ export default async function handler(request, response) {
       : null;
     const offset = hasExplicitOffset ? sanitizePaginationOffset(request.query.offset) : 0;
     const view = String(request.query.view || "full").trim().toLowerCase();
-    const cacheKey = getCacheKey({ limit, offset, scope, view });
+    const cacheKey = getCacheKey({ limit, offset, scope, view, connectionId });
     const cachedPayload = readOrdersCache(cacheKey);
     if (cachedPayload) {
       return response.status(200).json(cachedPayload);
@@ -453,8 +459,8 @@ export default async function handler(request, response) {
                 offset,
               })
             : scope === "operational"
-              ? getOperationalOrders()
-              : getOrders();
+              ? getOperationalOrders({ connectionId })
+              : getOrders({ connectionId });
           const consolidatedOrders = consolidateOrders(rows);
           return shouldPaginate
             ? consolidatedOrders
