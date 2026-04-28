@@ -299,8 +299,11 @@ function isOperationalOrder(order) {
   );
 }
 
-function getCacheKey({ limit, offset = 0, scope, view }) {
-  return `${scope || "all"}:${view || "full"}:${limit == null ? "all" : limit}:${offset}`;
+function getCacheKey({ limit, offset = 0, scope, view, connectionId }) {
+  // Brief 2026-04-28: connectionId obrigatorio na chave senao 2 sellers
+  // (EcoFerro/Fantom) compartilhavam cache → ambos retornavam mesmo
+  // resultado mesmo com filtro diferente.
+  return `${scope || "all"}:${view || "full"}:${limit == null ? "all" : limit}:${offset}:${connectionId || "default"}`;
 }
 
 function readOrdersCache(key) {
