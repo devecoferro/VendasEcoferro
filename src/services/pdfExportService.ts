@@ -340,16 +340,24 @@ async function drawSaleCard(
     }
   }
 
+  // Corredor / Estante / Nivel: vem APENAS do cadastro em /stock
+  // (ml_stock_location), via fetchStockLocationsBySku → applyLocationsToSale.
+  // SKU sem cadastro → campos ficam vazios (label sem valor, igual ao modelo).
   const corridor = item.locationCorridor || sale.locationCorridor || "";
   const shelf = item.locationShelf || sale.locationShelf || "";
   const level = item.locationLevel || sale.locationLevel || "";
-  const localNotes = item.locationNotes || sale.locationNotes || "";
+
+  // Local: nome do deposito do pedido (ex: "Ourinhos Rua Dario Alonso",
+  // "FULL", "Sem deposito"). Vem de sale.depositLabel, populado em
+  // mapMLOrderToSaleData a partir do deposit_snapshot do raw_data.
+  // Se nao houver deposito identificado, fica em branco.
+  const localDeposito = sale.depositLabel || "";
 
   // Local no rodapé central
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.3);
   doc.setTextColor(0, 0, 0);
-  doc.text(`Local: ${localNotes}`, ecoLogoX - 5, y0 + CARD_H - 3.2);
+  doc.text(`Local: ${localDeposito}`, ecoLogoX - 5, y0 + CARD_H - 3.2);
 
   // ── Campos de estoque ────────────────────────────────────────────
   doc.setFont("helvetica", "normal");
