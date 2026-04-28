@@ -276,13 +276,15 @@ app.use((req, res, next) => {
         // imgs: self + data: + ML CDN (já whitelisted)
         "img-src 'self' data: blob: https://http2.mlstatic.com https://*.mlstatic.com",
         // style-src: unsafe-inline inevitável pra Radix/Shadcn (tentativa de
-        // substituir por nonces exigiria CSS-in-JS refactor, alto risco UI)
-        "style-src 'self' 'unsafe-inline'",
+        // substituir por nonces exigiria CSS-in-JS refactor, alto risco UI).
+        // fonts.googleapis.com permitido pra @import de Inter/JetBrains Mono.
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         // script-src: ESTRITO — só same-origin, sem unsafe-inline/eval
         "script-src 'self'",
         // connect-src: só ML API + same-origin (bloqueia exfiltração anônima)
         "connect-src 'self' https://api.mercadolibre.com",
-        "font-src 'self' data:",
+        // font-src: self + data: + Google Fonts CDN (Inter/JetBrains Mono)
+        "font-src 'self' data: https://fonts.gstatic.com",
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",
