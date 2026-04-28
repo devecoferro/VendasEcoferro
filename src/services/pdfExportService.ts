@@ -306,31 +306,46 @@ async function drawSaleCard(
   );
   doc.text(productLines.slice(0, 1), infoX, y0 + Y_ROW_2);
 
-  // Comprador: quando ML nao expoe first_name (privacidade do comprador),
-  // o sync de api/ml/sync.js cai no fallback `order.buyer.nickname`, o que
-  // resulta em customerName === customerNickname e a etiqueta imprime o
-  // mesmo texto duas vezes (ex: "HEMA7026655" / "HEMA7026655"). Aqui
-  // suprimimos a linha do nome quando ela e duplicada com o nickname,
-  // pra ficar visualmente igual ao modelo (nome diferente do nickname).
+  // Saneamento do customerName em casos de privacidade do comprador:
+  //
+  // 1. Duplicado com nickname (ex: "HEMA7026655" / "HEMA7026655")
+  //    Causa: ML nao expoe first_name → sync usa nickname como fallback.
+  //
+  // 2. customerName e um ID interno do ML (ex: "TS20241225130437")
+  //    Causa: shipment.receiver_name as vezes vem com codigo "TS" +
+  //    14 digitos quando privacidade ativada. O sync ate ja foi corrigido
+  //    pra usar first_name primeiro, mas orders gravados antes do fix
+  //    ainda tem esse lixo no DB.
+  //
+  // Em ambos os casos, esconde a linha do nome — etiqueta mostra so
+  // o nickname, que e suficiente pra identificar o comprador.
   const customerName = sale.customerName || "";
   const customerNickname = sale.customerNickname || "";
   const nameDuplicatesNickname =
     customerName.length > 0 &&
     customerName.toLowerCase() === customerNickname.toLowerCase();
+  // ID interno do ML: "TS" + 10+ digitos (timestamp), ou string toda
+  // numerica/maiuscula sem espaco com 8+ chars.
+  const looksLikeMlInternalId =
+    /^TS\d{10,}$/i.test(customerName) ||
+    (/^[A-Z0-9]{8,}$/.test(customerName) && !customerName.includes(" "));
+  const hideCustomerName = nameDuplicatesNickname || looksLikeMlInternalId;
 
-  // Linha 3: Comprador (nome real). Vazia se duplicar nickname.
+  // Linha 3: Comprador (nome real). Vazia se duplicar nickname OU se
+  // for ID interno do ML (TS+digits, etc.).
   doc.setFontSize(7.2);
   doc.text(
-    nameDuplicatesNickname ? "" : customerName || "-",
+    hideCustomerName ? "" : customerName || "-",
     infoX,
     y0 + Y_ROW_3,
     { maxWidth: 72 }
   );
 
-  // Linha 4: Nickname (sempre)
+  // Linha 4: Nickname. Se customerName parece ID, fallback so pro
+  // nickname (sem repetir o lixo).
   doc.setFontSize(7.1);
   doc.text(
-    customerNickname || customerName || "-",
+    customerNickname || (hideCustomerName ? "-" : customerName || "-"),
     infoX,
     y0 + Y_ROW_4,
     { maxWidth: 72 }

@@ -566,8 +566,12 @@ export async function runMercadoLivreSync({
         const buyerNameFromOrder = order.buyer?.first_name
           ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
           : null;
+        // Precedencia: first_name + last_name PRIMEIRO. Antes era
+        // shipmentReceiverName, mas o ML as vezes coloca um ID interno
+        // ali (ex: "TS20241225130437") quando privacidade do comprador
+        // esta ativada — resultado: etiqueta imprime ID em vez do nome.
         const buyerName =
-          shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+          buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
         const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
 
         if (orderItems.length === 0) return null;
@@ -1050,8 +1054,11 @@ export async function refreshMLOrdersByIds({ connectionId, orderIds }) {
           const buyerNameFromOrder = order.buyer?.first_name
             ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
             : null;
+          // Precedencia: first_name + last_name PRIMEIRO. Mesmo motivo
+          // do site anterior (linha ~574): receiver_name as vezes vem com
+          // um ID interno do ML quando privacidade ativada.
           const buyerName =
-            shipmentReceiverName || buyerNameFromOrder || order.buyer?.nickname || null;
+            buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
           const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
           if (orderItems.length === 0) return [];
 
