@@ -904,7 +904,7 @@ function classifyNativeMercadoLivreOrder(order) {
   return null;
 }
 
-function buildCrossDockingSummaryRows(orders, todayKey) {
+function buildCrossDockingSummaryRows(orders, todayKey, activeBucket = null) {
   // Operacional (today + upcoming)
   let cancelled = 0;            // Today: Canceladas. Nao enviar
   let overdue = 0;              // Today: Atrasadas
@@ -1014,12 +1014,24 @@ function buildCrossDockingSummaryRows(orders, todayKey) {
     }
 
     // ── Em transito ─────────────────────────────────────────
-    if (status === "shipped" && substatus === "waiting_for_withdrawal") {
+    // Para retirar (esperando retirada do comprador no ponto)
+    if (substatus === "waiting_for_withdrawal") {
       waitingPickup += 1;
       continue;
     }
 
-    if (status === "shipped" && (substatus === "out_for_delivery" || substatus === "none")) {
+    // A caminho (Coleta) — ML Seller Center mostra in_hub, in_packing_list,
+    // picked_up, out_for_delivery, e shipped sem substatus como "A caminho".
+    // Brief 2026-04-27: in_transit so deve exibir "A caminho" e "Para retirar".
+    if (
+      substatus === "in_hub" ||
+      substatus === "in_packing_list" ||
+      substatus === "picked_up" ||
+      substatus === "out_for_delivery" ||
+      substatus === "soon_deliver" ||
+      substatus === "dropped_off" ||
+      (status === "shipped" && (substatus === "none" || !substatus))
+    ) {
       inTransitCollection += 1;
       continue;
     }
@@ -1040,34 +1052,83 @@ function buildCrossDockingSummaryRows(orders, todayKey) {
     }
   }
 
-  const rows = [
-    // Hoje
+  // Brief 2026-04-27: rows por bucket. Antes era bucket-agnostico e o
+  // mesmo substatus (ex: in_packing_list) virava "Em processamento" no
+  // today E no in_transit, gerando duplicidade visual.
+
+  // Hoje (Coleta + Devolucoes)
+  if (activeBucket === "today") {
+    return [
+      { key: "cancelled_no_send", label: "Canceladas. Nao enviar", count: cancelled },
+      { key: "overdue", label: "Atrasadas. Enviar", count: overdue },
+      { key: "labels_to_print", label: "Etiquetas para imprimir", count: labelsToPrint },
+      { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
+      { key: "ready", label: "Prontas para enviar", count: ready },
+      { key: "returns_pending_review", label: "Revisao pendente", count: returnsPendingReview },
+    ].filter((r) => r.count > 0);
+  }
+
+  // Proximos dias (Coleta futura + Devolucoes futuras)
+  if (activeBucket === "upcoming") {
+    return [
+      { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
+      { key: "labels_to_print", label: "Etiquetas para imprimir", count: labelsToPrint },
+      { key: "processing", label: "Em processamento", count: processing },
+      { key: "default_shipping", label: "Por envio padrao", count: defaultShipping },
+      { key: "returns_pending_review", label: "Revisao pendente", count: returnsPendingReview },
+      { key: "returns_in_transit", label: "A caminho", count: returnsInTransit },
+      { key: "returns_in_ml_review", label: "Em revisao pelo Mercado Livre", count: returnsInMlReview },
+    ].filter((r) => r.count > 0);
+  }
+
+  // Em transito (Para retirar + A caminho)
+  if (activeBucket === "in_transit") {
+    return [
+      { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
+      { key: "in_transit_collection", label: "A caminho - Coleta", count: inTransitCollection },
+    ].filter((r) => r.count > 0);
+  }
+
+  // Finalizadas (Para atender + Encerradas)
+  if (activeBucket === "finalized") {
+    return [
+      { key: "complaints", label: "Com reclamacao ou mediacao", count: complaints },
+      { key: "delivered", label: "Entregues", count: delivered },
+      { key: "not_delivered", label: "Nao entregues", count: notDelivered },
+      { key: "cancelled_final", label: "Canceladas", count: cancelledFinal },
+      { key: "returns_completed", label: "Devolucoes concluidas", count: returnsCompleted },
+      { key: "returns_incomplete", label: "Devolucoes nao concluidas", count: returnsIncomplete },
+    ].filter((r) => r.count > 0);
+  }
+
+  // Cancelled bucket (legado — quase nunca usado, mas evita rows vazias)
+  if (activeBucket === "cancelled") {
+    return [
+      { key: "cancelled_final", label: "Canceladas", count: cancelledFinal },
+    ].filter((r) => r.count > 0);
+  }
+
+  // Fallback: retorna tudo (compat retrocompativel quando bucket=null)
+  return [
     { key: "cancelled_no_send", label: "Canceladas. Nao enviar", count: cancelled },
     { key: "overdue", label: "Atrasadas. Enviar", count: overdue },
     { key: "labels_to_print", label: "Etiquetas para imprimir", count: labelsToPrint },
     { key: "ready", label: "Prontas para enviar", count: ready },
-    // Proximos dias
     { key: "invoice_pending", label: "NF-e para gerenciar", count: invoicePending },
     { key: "processing", label: "Em processamento", count: processing },
     { key: "default_shipping", label: "Por envio padrao", count: defaultShipping },
-    // Devolucoes ativas (Today + Upcoming)
     { key: "returns_pending_review", label: "Revisao pendente", count: returnsPendingReview },
     { key: "returns_in_transit", label: "A caminho", count: returnsInTransit },
     { key: "returns_in_ml_review", label: "Em revisao pelo Mercado Livre", count: returnsInMlReview },
-    // Em transito
     { key: "waiting_pickup", label: "Esperando retirada do comprador", count: waitingPickup },
     { key: "in_transit_collection", label: "A caminho - Coleta", count: inTransitCollection },
-    // Finalizadas
     { key: "complaints", label: "Com reclamacao ou mediacao", count: complaints },
     { key: "delivered", label: "Entregues", count: delivered },
     { key: "not_delivered", label: "Nao entregues", count: notDelivered },
     { key: "cancelled_final", label: "Canceladas", count: cancelledFinal },
     { key: "returns_completed", label: "Devolucoes concluidas", count: returnsCompleted },
     { key: "returns_incomplete", label: "Devolucoes nao concluidas", count: returnsIncomplete },
-  ];
-
-  // Retorna só linhas com contagem > 0 (igual ML Seller Center faz)
-  return rows.filter((r) => r.count > 0);
+  ].filter((r) => r.count > 0);
 }
 
 function buildFulfillmentSummaryRows(orders, activeBucket) {
@@ -2382,7 +2443,8 @@ export async function buildDashboardPayload(options = {}) {
                 )
               : buildCrossDockingSummaryRows(
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.today.includes(order.id)),
-                  todayKey
+                  todayKey,
+                  "today"
                 ),
           upcoming:
             deposit.logistic_type === "fulfillment"
@@ -2392,7 +2454,8 @@ export async function buildDashboardPayload(options = {}) {
                 )
               : buildCrossDockingSummaryRows(
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.upcoming.includes(order.id)),
-                  todayKey
+                  todayKey,
+                  "upcoming"
                 ),
           in_transit:
             deposit.logistic_type === "fulfillment"
@@ -2402,7 +2465,8 @@ export async function buildDashboardPayload(options = {}) {
                 )
               : buildCrossDockingSummaryRows(
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.in_transit.includes(order.id)),
-                  todayKey
+                  todayKey,
+                  "in_transit"
                 ),
           finalized:
             deposit.logistic_type === "fulfillment"
@@ -2412,7 +2476,8 @@ export async function buildDashboardPayload(options = {}) {
                 )
               : buildCrossDockingSummaryRows(
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.finalized.includes(order.id)),
-                  todayKey
+                  todayKey,
+                  "finalized"
                 ),
           cancelled:
             deposit.logistic_type === "fulfillment"
@@ -2422,7 +2487,8 @@ export async function buildDashboardPayload(options = {}) {
                 )
               : buildCrossDockingSummaryRows(
                   deposit._orders.filter((order) => deposit.order_ids_by_bucket.cancelled.includes(order.id)),
-                  todayKey
+                  todayKey,
+                  "cancelled"
                 ),
         };
 
