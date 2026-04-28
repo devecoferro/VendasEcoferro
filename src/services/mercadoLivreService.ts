@@ -1078,7 +1078,12 @@ export async function getMLOrders(options: GetMLOrdersOptions = {}): Promise<MLO
   return response.orders;
 }
 
-export async function getMLDashboard(): Promise<MLDashboardResponse> {
+export async function getMLDashboard(
+  options: { connectionId?: string | null } = {}
+): Promise<MLDashboardResponse> {
+  const url = options.connectionId
+    ? `/api/ml/dashboard?connection_id=${encodeURIComponent(options.connectionId)}`
+    : "/api/ml/dashboard";
   const { response, data } = await fetchJsonWithTimeout<{
     backend_secure?: boolean;
     generated_at?: string;
@@ -1094,7 +1099,7 @@ export async function getMLDashboard(): Promise<MLDashboardResponse> {
     ml_live_chip_order_ids_by_bucket?: MLLiveChipOrderIdsByBucket;
     error?: string;
   }>(
-    "/api/ml/dashboard",
+    url,
     {},
     "Timeout ao carregar o painel operacional do Mercado Livre.",
     ML_DASHBOARD_TIMEOUT_MS

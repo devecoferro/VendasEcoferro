@@ -301,7 +301,7 @@ export function useMercadoLivreData(
             view: ordersView,
             connectionId,
           }),
-          getMLDashboard(),
+          getMLDashboard({ connectionId }),
           getMLConnectionStatus(),
         ]);
 

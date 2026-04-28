@@ -1,5 +1,5 @@
 import { db } from "../_lib/db.js";
-import { getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
+import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
@@ -113,10 +113,13 @@ const calendarFormatter = new Intl.DateTimeFormat("en-CA", {
   month: "2-digit",
   day: "2-digit",
 });
-let dashboardCache = null;
+// Cache scoped por connectionId (key: connectionId ou "default").
+// Brief 2026-04-28 multi-seller fase 2: 2 sellers compartilhavam o mesmo
+// cache, ambos retornavam o mesmo payload.
+let dashboardCacheByConnection = new Map();
 
 export function invalidateDashboardCache() {
-  dashboardCache = null;
+  dashboardCacheByConnection.clear();
   liveChipDetailedCache.clear();
 }
 
@@ -408,24 +411,27 @@ function enrichOrdersWithEmittedInvoiceFlag(orders) {
   }
 }
 
-function readDashboardCache() {
-  if (!dashboardCache) {
+function readDashboardCache(connectionId = null) {
+  const key = connectionId || "default";
+  const entry = dashboardCacheByConnection.get(key);
+  if (!entry) {
     return null;
   }
 
-  if (dashboardCache.expiresAt <= Date.now()) {
-    dashboardCache = null;
+  if (entry.expiresAt <= Date.now()) {
+    dashboardCacheByConnection.delete(key);
     return null;
   }
 
-  return dashboardCache.payload;
+  return entry.payload;
 }
 
-function writeDashboardCache(payload) {
-  dashboardCache = {
+function writeDashboardCache(payload, connectionId = null) {
+  const key = connectionId || "default";
+  dashboardCacheByConnection.set(key, {
     payload,
     expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
-  };
+  });
 }
 
 function isOrderReadyForInvoiceLabel(order) {
@@ -2248,15 +2254,20 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
 
 export async function buildDashboardPayload(options = {}) {
   const allowCache = options.allowCache !== false;
+  // Brief 2026-04-28 multi-seller: aceita connectionId pra dashboard
+  // scoped por seller (EcoFerro vs Fantom). Default = EcoFerro.
+  const requestedConnectionId = options.connectionId || null;
 
   if (allowCache) {
-    const cachedPayload = readDashboardCache();
+    const cachedPayload = readDashboardCache(requestedConnectionId);
     if (cachedPayload) {
       return cachedPayload;
     }
   }
 
-  const baseConnection = getLatestConnection();
+  const baseConnection = requestedConnectionId
+    ? getConnectionById(requestedConnectionId)
+    : getLatestConnection();
   const sellerCenterMirrorOverview = getSellerCenterMirrorOverview(
     baseConnection?.seller_id || null
   );
@@ -2274,7 +2285,7 @@ export async function buildDashboardPayload(options = {}) {
     };
 
     if (allowCache) {
-      writeDashboardCache(emptyPayload);
+      writeDashboardCache(emptyPayload, requestedConnectionId);
     }
 
     return emptyPayload;
@@ -2817,7 +2828,7 @@ export async function buildDashboardPayload(options = {}) {
   };
 
   if (allowCache) {
-    writeDashboardCache(payload);
+    writeDashboardCache(payload, requestedConnectionId);
   }
 
   return payload;
@@ -2830,7 +2841,15 @@ export default async function handler(request, response) {
 
   try {
     await requireAuthenticatedProfile(request);
-    const payload = await buildDashboardPayload({ allowCache: true });
+    // Brief 2026-04-28 multi-seller fase 2: query param connection_id
+    // escopa o dashboard pra um seller especifico (EcoFerro vs Fantom).
+    const connectionId = request.query.connection_id
+      ? String(request.query.connection_id).trim()
+      : null;
+    const payload = await buildDashboardPayload({
+      allowCache: true,
+      connectionId,
+    });
     return response.status(200).json(payload);
   } catch (error) {
     return response.status(500).json({
