@@ -717,7 +717,11 @@ export const BUCKET_LABELS: Record<ShipmentBucket, string> = {
 };
 
 export const SECTION_LABELS: Record<MLSection, string> = {
-  para_enviar_coleta: "Para enviar — Coleta",
+  // Brief 2026-04-28: alinhar com Seller Center — "Coleta" nao
+  // "Para enviar — Coleta". O titulo final eh sempre dinamico via
+  // getMLCardTitle (ex: "PROGRAMADA Coleta | 12 h - 14 h" no today),
+  // este SECTION_LABELS so eh fallback raro.
+  para_enviar_coleta: "Coleta",
   envios_devolucoes: "Devoluções",
   coleta_dia: "Coleta", // sufixado dinamicamente com " | Quarta-feira" etc
   proximos_devolucoes: "Devoluções",
