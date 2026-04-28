@@ -509,7 +509,15 @@ function FilterOriginBadge({
 // VirtualizedOrderList extraído pra src/components/VirtualizedOrderList.tsx (sprint 2 P2).
 
 
-export default function MercadoLivrePage() {
+interface MercadoLivrePageProps {
+  /** Brief 2026-04-28 multi-seller fase 2 UI: filtra todos os dados
+   * (pedidos, dashboard, etiquetas) por conexao ML especifica. Quando
+   * undefined, opera com a conexao default (EcoFerro). Usado pela
+   * MercadoLivreFantomPage que passa o connectionId da Fantom. */
+  connectionId?: string | null;
+}
+
+export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePageProps = {}) {
   const navigate = useNavigate();
   const { setResults } = useExtraction();
   const { currentUser, canAccessLocation } = useAuth();
@@ -537,6 +545,7 @@ export default function MercadoLivrePage() {
     ordersLimit: 5000,
     ordersView: "dashboard",
     autoLoadAllPages: true,
+    connectionId,
   });
 
   // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
