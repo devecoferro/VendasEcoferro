@@ -308,35 +308,46 @@ const SECTIONS: ManualSection[] = [
         </Tip>
 
         <h3 className="mt-6 text-[17px] font-bold text-[#333]">
-          Sub-classificações (cards abaixo dos chips)
+          Cards de classificação (mesma estrutura do ML)
         </h3>
         <p className="mt-2 text-[14px] leading-relaxed text-[#333]">
-          Ao escolher um chip (ex: <strong>Envios de hoje</strong>),
-          aparecem cards coloridos abaixo com os sub-status:
+          Ao abrir uma aba (ex: <strong>Envios de hoje</strong>),
+          aparecem os mesmos cards do ML Seller Center, com sub-linhas
+          clicáveis que filtram a lista abaixo:
         </p>
         <ul className="mt-2 list-disc pl-6 text-[14px] leading-relaxed text-[#333]">
           <li>
-            <strong>Para enviar — Coleta</strong>: etiquetas prontas
-            esperando o motorista
+            <strong>Coleta</strong> (em Envios de hoje, título completo
+            "PROGRAMADA Coleta | 12 h – 14 h"): NF-e para gerenciar,
+            Etiquetas para imprimir, Prontas para enviar, Canceladas.
+            Não enviar (vermelho)
           </li>
           <li>
-            <strong>Envios de devoluções</strong>: produtos voltando
-            pra revisão
+            <strong>Devoluções</strong> (em Envios de hoje e Próximos
+            dias): Revisão pendente (vermelho), A caminho, Em revisão
+            pelo Mercado Livre
           </li>
           <li>
-            <strong>Coleta do dia</strong>: produtos que o motorista
-            leva hoje
+            <strong>Coleta | Amanhã</strong> e <strong>Coleta | A
+            partir de [data]</strong> (em Próximos dias): NF-e para
+            gerenciar, Etiquetas para imprimir, Por envio padrão
           </li>
           <li>
-            <strong>Próximas coletas</strong>: agrupados por data (22,
-            23, 24 de abril...)
+            <strong>Para retirar</strong> (em Em trânsito): Esperando
+            retirada do comprador
           </li>
           <li>
-            <strong>Para retirar</strong>: comprador vai buscar no
-            ponto
+            <strong>A caminho</strong> (em Em trânsito): Coleta, Full,
+            Com mensagens não lidas
           </li>
           <li>
-            <strong>A caminho</strong>: já com o motorista
+            <strong>Para atender</strong> (em Finalizadas): Com
+            reclamação ou mediação (vermelho)
+          </li>
+          <li>
+            <strong>Encerradas</strong> (em Finalizadas): Entregues,
+            Não entregues, Canceladas, Devoluções concluídas, Devoluções
+            não concluídas, Com mensagens não lidas
           </li>
         </ul>
         <p className="mt-2 text-[14px] leading-relaxed text-[#333]">
