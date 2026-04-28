@@ -191,37 +191,59 @@ async function getShipmentSnapshot(accessToken, shippingId, cache) {
     );
     if (!shipmentResponse.ok) return null;
     const p = await shipmentResponse.json();
+    // Engenharia reversa 2026-04-28: schema x-format-new NAO retorna
+    // status_history nem shipping_option. Os dados estao em:
+    //   - p.lead_time.estimated_delivery_limit.date (delivery deadline)
+    //   - p.lead_time.estimated_delivery_final.date
+    //   - p.lead_time.buffering.date (ready_to_ship: quando ML expede)
+    //   - p.last_updated (proxy pra date_delivered/cancelled em terminal)
+    //   - p.date_created (data de criacao do shipment)
+    // Mantemos status_history pra back-compat, populando date_delivered/
+    // _cancelled/_returned/_not_delivered = last_updated quando status
+    // for terminal (essa eh a aproximacao ML mostra na UI).
+    const lastUpdated = p?.last_updated ?? null;
+    const statusFinal = p?.status ?? null;
     return {
       id: p?.id ?? null,
-      status: p?.status ?? null,
+      status: statusFinal,
       substatus: p?.substatus ?? null,
       logistic_type: p?.logistic_type ?? null,
       mode: p?.mode ?? null,
       receiver_name: p?.receiver_address?.receiver_name || p?.receiver_name || null,
+      last_updated: lastUpdated,
+      date_created: p?.date_created ?? null,
       status_history: {
         date_handling: p?.status_history?.date_handling ?? null,
         date_ready_to_ship: p?.status_history?.date_ready_to_ship ?? null,
-        date_shipped: p?.status_history?.date_shipped ?? null,
-        date_delivered: p?.status_history?.date_delivered ?? null,
-        date_cancelled: p?.status_history?.date_cancelled ?? null,
-        date_returned: p?.status_history?.date_returned ?? null,
-        date_not_delivered: p?.status_history?.date_not_delivered ?? null,
+        date_shipped: p?.status_history?.date_shipped ?? (statusFinal === "shipped" ? lastUpdated : null),
+        date_delivered: p?.status_history?.date_delivered ?? (statusFinal === "delivered" ? lastUpdated : null),
+        date_cancelled: p?.status_history?.date_cancelled ?? (statusFinal === "cancelled" ? lastUpdated : null),
+        date_returned: p?.status_history?.date_returned ?? (statusFinal === "returned" ? lastUpdated : null),
+        date_not_delivered: p?.status_history?.date_not_delivered ?? (statusFinal === "not_delivered" ? lastUpdated : null),
       },
       shipping_option: {
-        name: p?.shipping_option?.name ?? null,
-        estimated_delivery_limit: p?.shipping_option?.estimated_delivery_limit?.date ?? null,
-        estimated_delivery_final: p?.shipping_option?.estimated_delivery_final?.date ?? null,
+        name: p?.shipping_option?.name ?? p?.lead_time?.shipping_method?.name ?? null,
+        estimated_delivery_limit:
+          p?.shipping_option?.estimated_delivery_limit?.date ??
+          p?.lead_time?.estimated_delivery_limit?.date ??
+          null,
+        estimated_delivery_final:
+          p?.shipping_option?.estimated_delivery_final?.date ??
+          p?.lead_time?.estimated_delivery_final?.date ??
+          null,
       },
-      // Datas do shipping_option usadas pelo ColetasPanel pra agrupar
+      // Datas do lead_time usadas pelo ColetasPanel pra agrupar
       // orders por data (Amanhã / A partir de X).
-      // - estimated_schedule_limit: data agendada de COLETA pelo ML
-      //   (null pra sellers que não usam flex-delivery — caso desta conta)
-      // - estimated_delivery_limit: data limite de ENTREGA ao comprador
-      //   (populado em 100% dos orders ready_to_ship — usado como
-      //    fallback/proxy pra coleta; a coleta acontece uns 2-3 dias antes)
       lead_time: {
-        estimated_schedule_limit: p?.shipping_option?.estimated_schedule_limit?.date ?? null,
-        estimated_delivery_limit: p?.shipping_option?.estimated_delivery_limit?.date ?? null,
+        estimated_schedule_limit:
+          p?.shipping_option?.estimated_schedule_limit?.date ??
+          p?.lead_time?.estimated_schedule_limit?.date ??
+          null,
+        estimated_delivery_limit:
+          p?.shipping_option?.estimated_delivery_limit?.date ??
+          p?.lead_time?.estimated_delivery_limit?.date ??
+          null,
+        buffering: p?.lead_time?.buffering?.date ?? null,
       },
     };
   });
