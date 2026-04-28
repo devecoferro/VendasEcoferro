@@ -90,6 +90,7 @@ import {
   type MLOrder,
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
+  listMLConnections,
 } from "@/services/mercadoLivreService";
 // ColetasPanel removido do render em commit b88cf61. Import tambem
 // removido (sprint 2.4 cleanup) — estava causando import morto.
@@ -521,6 +522,36 @@ export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePa
   const navigate = useNavigate();
   const { setResults } = useExtraction();
   const { currentUser, canAccessLocation } = useAuth();
+
+  // Brief 2026-04-28 multi-seller fase 2: quando connectionId nao eh
+  // passado (rota /mercado-livre sem prop), busca a conexao da EcoFerro
+  // dinamicamente. Sem isso, /api/ml/orders sem connection_id retorna
+  // TODOS os pedidos (incluindo Fantom) e a pagina mostra mistura.
+  const [resolvedConnectionId, setResolvedConnectionId] = useState<string | null>(
+    connectionId
+  );
+  useEffect(() => {
+    if (connectionId) {
+      setResolvedConnectionId(connectionId);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await listMLConnections();
+        const eco = all.find((c) =>
+          (c.seller_nickname || "").toLowerCase().includes("ecoferro")
+        );
+        if (!cancelled && eco) setResolvedConnectionId(eco.id);
+      } catch {
+        // best-effort — fallback pra default backend (oldest = ECOFERRO)
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionId]);
+
   const {
     connection,
     orders,
@@ -545,7 +576,7 @@ export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePa
     ordersLimit: 5000,
     ordersView: "dashboard",
     autoLoadAllPages: true,
-    connectionId,
+    connectionId: resolvedConnectionId,
   });
 
   // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
