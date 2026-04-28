@@ -27,13 +27,27 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(projectRoot, "data");
 
-const STATE_PATH = path.join(DATA_DIR, "playwright", "ml-seller-center-state.json");
+// Brief 2026-04-28 multi-seller: aceita --connection=<id> pra capturar
+// storage state per-seller (EcoFerro, Fantom, etc).
+const argv = process.argv.slice(2);
+const connArg = argv.find((a) => a.startsWith("--connection="));
+const connectionId = connArg ? connArg.split("=", 2)[1] : null;
+
+const STATE_FILENAME = connectionId
+  ? `ml-seller-center-state-${connectionId}.json`
+  : "ml-seller-center-state.json";
+const STATE_PATH = path.join(DATA_DIR, "playwright", STATE_FILENAME);
 const ML_BASE = "https://www.mercadolivre.com.br/vendas/omni/lista";
 
 async function main() {
   console.log("═══════════════════════════════════════════════════════");
   console.log("  SETUP — Scraper do ML Seller Center");
   console.log("═══════════════════════════════════════════════════════");
+  if (connectionId) {
+    console.log(`  Connection ID: ${connectionId}`);
+  } else {
+    console.log(`  (sem --connection — salvando como state DEFAULT/EcoFerro)`);
+  }
   console.log(`Storage state será salvo em:\n  ${STATE_PATH}\n`);
 
   // Cria diretório se não existe
@@ -64,10 +78,13 @@ async function main() {
   console.log(`Navegando para ${ML_BASE}…`);
   await page.goto(ML_BASE);
 
+  const accountLabel = connectionId
+    ? `a conta vinculada à connection ${connectionId} (Fantom Motoparts ou similar)`
+    : "a conta ECOFERRO";
   console.log("\n───────────────────────────────────────────────────────");
   console.log("  PRÓXIMOS PASSOS (NO BROWSER ABERTO):");
   console.log("───────────────────────────────────────────────────────");
-  console.log("  1. Faça login no Mercado Livre com a conta ECOFERRO");
+  console.log(`  1. Faça login no Mercado Livre com ${accountLabel}`);
   console.log("  2. Complete MFA se pedir (aprovação via celular)");
   console.log("  3. Aguarde carregar a tela de Vendas");
   console.log("  4. Quando ver os chips (Envios hoje, etc.),");
@@ -86,14 +103,19 @@ async function main() {
 
   console.log(`\n✅ Storage state salvo em:\n   ${STATE_PATH}\n`);
   console.log("PRÓXIMOS PASSOS:");
-  console.log("  - Copie esse arquivo para a VPS (mesmo caminho no DATA_DIR)");
-  console.log("  - Exemplo via SSH:");
+  console.log("  - Copie esse arquivo para a VPS no mesmo caminho.");
+  console.log("  - Exemplo via SSH (ajuste se DATA_DIR for diferente):");
   console.log(
-    `    scp ${STATE_PATH} root@77.37.69.102:/data/vendas-ecoferro-vps/data/playwright/\n`
+    `    scp ${STATE_PATH} root@77.37.69.102:/tmp/ && \\`
   );
   console.log(
-    "  - Após isso, o scraper começa a rodar automaticamente em ~5min\n"
+    `    ssh root@77.37.69.102 "docker cp /tmp/${STATE_FILENAME} \\$(docker ps -q -f name=m1b5cfm30arif8y7bia20bwo):/app/data/playwright/${STATE_FILENAME}"\n`
   );
+  console.log("  - Após isso, o scraper começa a rodar automaticamente.");
+  if (connectionId) {
+    console.log(`  - O endpoint /api/ml/live-snapshot?connection_id=${connectionId} vai usar este state.`);
+  }
+  console.log();
 
   await browser.close();
   process.exit(0);
