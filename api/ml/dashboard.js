@@ -2368,10 +2368,11 @@ export async function buildDashboardPayload(options = {}) {
         bucket = "upcoming";
       }
 
-      // Finalizadas: mostra APENAS finalizações de HOJE (alinhado com ML UI).
-      // Observação real: ML chip "Finalizadas" mostra 10 enquanto tabela
-      // do último mês tem 1200+. O chip é restrito ao dia atual.
-      // Antes usávamos 7 dias → app inflava pra 73 vs ML 10.
+      // Finalizadas: ML Seller Center exibe finalizacoes ate ~2 dias atras
+      // (brief 2026-04-28). Antes era so HOJE → Ourinhos finalized = 22
+      // (so reclamacoes), faltavam Entregues/Nao entregues/Devolucoes etc.
+      // Janela de 2 dias inclui ontem + hoje + (ate 2d atras), espelhando
+      // o que o ML mostra quando o operador abre Finalizadas.
       if (bucket === "finalized") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
@@ -2381,18 +2382,32 @@ export async function buildDashboardPayload(options = {}) {
           getDateKey(statusHistory.date_returned) ||
           getDateKey(statusHistory.date_delivered) ||
           getDateKey(order.sale_date);
-        if (!exceptionDateKey || exceptionDateKey !== todayKey) {
-          continue; // Só conta finalizações do dia atual
+        if (!exceptionDateKey) {
+          continue;
+        }
+        const ageDays =
+          (new Date(todayKey + "T12:00:00-03:00").getTime() -
+            new Date(exceptionDateKey + "T12:00:00-03:00").getTime()) /
+          86400000;
+        if (!Number.isFinite(ageDays) || ageDays < 0 || ageDays > 2) {
+          continue; // fora da janela de 2 dias
         }
       }
 
-      // Canceladas: mesma janela (só hoje) alinhada com ML UI.
+      // Canceladas: mesma janela de 2 dias.
       if (bucket === "cancelled") {
         const snapshot = getShipmentSnapshot(order);
         const statusHistory = snapshot.status_history || {};
         const cancelDateKey =
           getDateKey(statusHistory.date_cancelled) || getDateKey(order.sale_date);
-        if (!cancelDateKey || cancelDateKey !== todayKey) {
+        if (!cancelDateKey) {
+          continue;
+        }
+        const ageDays =
+          (new Date(todayKey + "T12:00:00-03:00").getTime() -
+            new Date(cancelDateKey + "T12:00:00-03:00").getTime()) /
+          86400000;
+        if (!Number.isFinite(ageDays) || ageDays < 0 || ageDays > 2) {
           continue;
         }
       }
