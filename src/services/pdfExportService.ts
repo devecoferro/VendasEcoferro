@@ -308,28 +308,31 @@ async function drawSaleCard(
 
   // Saneamento do customerName em casos de privacidade do comprador:
   //
-  // 1. Duplicado com nickname (ex: "HEMA7026655" / "HEMA7026655")
-  //    Causa: ML nao expoe first_name → sync usa nickname como fallback.
+  // ID interno ML aparece quando ML retorna codigo de privacidade
+  // (ex: "TS20241225130437", "GORO20240118090752"). Caracteristica:
+  // tem MISTURA de letras + digitos (geralmente prefixo curto + timestamp).
   //
-  // 2. customerName e um ID interno do ML (ex: "TS20241225130437")
-  //    Causa: shipment.receiver_name as vezes vem com codigo "TS" +
-  //    14 digitos quando privacidade ativada. O sync ate ja foi corrigido
-  //    pra usar first_name primeiro, mas orders gravados antes do fix
-  //    ainda tem esse lixo no DB.
+  // Nomes reais de pessoa (mesmo em UPPERCASE sem acento, ex:
+  // "DARLYVANGAMACABRAL", "JOSADAILTONFERNANDES") NAO devem ser
+  // confundidos com IDs — esses tem so letras, sem digitos.
   //
-  // Em ambos os casos, esconde a linha do nome — etiqueta mostra so
-  // o nickname, que e suficiente pra identificar o comprador.
+  // Antes a regex /^[A-Z0-9]{8,}\$/ marcava qualquer string uppercase
+  // sem espaco como ID, escondendo nomes reais da etiqueta.
   const customerName = sale.customerName || "";
   const customerNickname = sale.customerNickname || "";
-  const nameDuplicatesNickname =
-    customerName.length > 0 &&
-    customerName.toLowerCase() === customerNickname.toLowerCase();
-  // ID interno do ML: "TS" + 10+ digitos (timestamp), ou string toda
-  // numerica/maiuscula sem espaco com 8+ chars.
+  // ID interno do ML: requer tanto letras QUANTO digitos no nome.
+  // Ex: TS20241225130437, GORO20240118090752, RG20241016084812.
+  // Nomes reais (DARLYVANGAMACABRAL) so tem letras → NAO sao flagados.
   const looksLikeMlInternalId =
     /^TS\d{10,}$/i.test(customerName) ||
-    (/^[A-Z0-9]{8,}$/.test(customerName) && !customerName.includes(" "));
-  const hideCustomerName = nameDuplicatesNickname || looksLikeMlInternalId;
+    (customerName.length >= 8 &&
+      !customerName.includes(" ") &&
+      /[A-Z]/.test(customerName) &&
+      /\d{4,}/.test(customerName));
+  // Esconde apenas IDs internos. Nomes duplicados com nickname agora
+  // tambem sao mostrados — melhor mostrar o nome (mesmo igual ao nick)
+  // do que deixar o operador sem informacao do comprador.
+  const hideCustomerName = looksLikeMlInternalId;
 
   // Linha 3: Comprador (nome real). Vazia se duplicar nickname OU se
   // for ID interno do ML (TS+digits, etc.).
