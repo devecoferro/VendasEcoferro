@@ -529,34 +529,57 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
   };
 }
 
-// Brief 2026-04-29: derivacao do NOME REAL do comprador.
-// O campo persistido `buyer_name` na nossa DB pode vir igual ao
-// nickname (ex: pedido #2000016193697340 onde ML retorna apenas
-// `buyer.nickname` e nao first_name/last_name no objeto buyer raiz).
-// O nome real fica em `raw_data.billing_info_snapshot.buyer.billing_info`
-// como `name` + `last_name`. Quando essas chaves existem e somam um
-// texto que NAO eh igual ao nickname, retornamos elas. Senao mantemos
-// o buyer_name (back-compat com pedidos onde ML ja popula o nome).
-function extractRealCustomerName(
-  order: MLOrder,
-  fallback: string
-): string {
+// Brief 2026-04-29 v3: derivacao do NOME REAL do comprador.
+// Cascata de fontes (em ordem de confianca). NUNCA retorna o nickname
+// como fallback — quando nada bate retorna string vazia, e o renderizador
+// mostra "Cliente nao informado".
+//
+// Por que mudou: pedidos como #2000016193697340 vinham apenas com
+// `buyer.nickname` no objeto buyer raiz; o adapter caia no fallback
+// `buyer_name` que era o proprio nickname, fazendo nome=nickname na UI.
+function extractRealCustomerName(order: MLOrder): string {
   const raw = (order.raw_data || {}) as Record<string, unknown>;
-  const snapshot = raw.billing_info_snapshot as
-    | { buyer?: { billing_info?: { name?: unknown; last_name?: unknown } } }
-    | undefined;
-  const billing = snapshot?.buyer?.billing_info;
-  const name = typeof billing?.name === "string" ? billing.name.trim() : "";
-  const lastName = typeof billing?.last_name === "string" ? billing.last_name.trim() : "";
-  const composed = [name, lastName].filter(Boolean).join(" ").trim();
-  if (!composed) return fallback;
-  // Caso ML tenha duplicado nickname → name/last_name (raro), mantem fallback.
-  const nick = (order.buyer_nickname || "").trim().toLowerCase();
-  if (composed.toLowerCase() === nick) return fallback;
-  // Title-case suave: "FILIPE DE SOUZA" → "Filipe De Souza".
-  return composed
-    .toLowerCase()
-    .replace(/(^|\s)([a-zà-ú])/g, (_, sep, ch) => sep + ch.toUpperCase());
+  const dig = (path: string): string => {
+    const parts = path.split(".");
+    let cur: unknown = raw;
+    for (const p of parts) {
+      if (!cur || typeof cur !== "object") return "";
+      cur = (cur as Record<string, unknown>)[p];
+    }
+    return typeof cur === "string" ? cur.trim() : "";
+  };
+  const nickLower = (order.buyer_nickname || "").trim().toLowerCase();
+  const isReal = (s: string): boolean =>
+    Boolean(s) && s.toLowerCase() !== nickLower;
+  const titleCase = (s: string): string =>
+    s
+      .toLowerCase()
+      .replace(/(^|\s)([a-zà-ú])/g, (_, sep, ch) => sep + ch.toUpperCase());
+
+  // Fonte mais confiavel: nota fiscal (billing_info_snapshot).
+  const biName = dig("billing_info_snapshot.buyer.billing_info.name");
+  const biLast = dig("billing_info_snapshot.buyer.billing_info.last_name");
+  const biComposed = [biName, biLast].filter(Boolean).join(" ").trim();
+  if (isReal(biComposed)) return titleCase(biComposed);
+
+  // Outras fontes (ordem do briefing): root buyer, shipping receiver, etc.
+  const buyerFirstLast = [dig("buyer.first_name"), dig("buyer.last_name")]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  const candidates = [
+    dig("buyer.name"),
+    dig("buyer.full_name"),
+    dig("shipping.receiver_address.receiver_name"),
+    buyerFirstLast,
+    dig("cliente_nome"),
+  ];
+  for (const c of candidates) {
+    if (isReal(c)) return titleCase(c);
+  }
+
+  // Nada usavel → retorna vazio (renderizador exibe "Cliente nao informado")
+  return "";
 }
 
 // Extrai sla_snapshot.expected_date do raw_data do ML e formata como
@@ -631,7 +654,7 @@ export function mapMLOrderToSaleData(order: MLOrder) {
     saleNumber: order.sale_number || order.order_id,
     saleDate,
     saleTime,
-    customerName: extractRealCustomerName(order, order.buyer_name || ""),
+    customerName: extractRealCustomerName(order),
     customerNickname: order.buyer_nickname || "",
     productName,
     sku,

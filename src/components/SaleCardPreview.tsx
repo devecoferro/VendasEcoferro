@@ -352,7 +352,7 @@ export function SaleCardPreview({
                           NIVEL : {item.locationLevel || sale.locationLevel || ""}
                         </p>
                         <p className="text-[14px] leading-tight mt-1">
-                          LOCAL : {item.locationNotes || sale.locationNotes || ""}
+                          LOCAL : {sale.depositLabel || ""}
                         </p>
                       </div>
                     </div>
