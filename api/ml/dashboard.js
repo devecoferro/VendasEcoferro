@@ -2594,8 +2594,15 @@ export async function buildDashboardPayload(options = {}) {
   let mlLiveChipOrderIds = null;
   let mlBucketByMlOrderId = null; // ml_order_id → bucket (pra override)
   try {
-    const allConnections = listConnections().filter((c) => c?.id);
-    const detailedPromises = allConnections.map((c) =>
+    // Bug 2026-04-29: agregar TODAS as conexoes inflava ml_live_chip_counts
+    // com pedidos Fantom enquanto deposits/allOrders eram so da baseConnection
+    // (Ecoferro). Resultado: drift falso de ~189 pedidos no auto-heal porque
+    // ML knows about both, mas allOrders so via Ecoferro. Override perdia
+    // os Fantom (nao em allOrders) → "missing" → loop de auto/hard-heal.
+    // Fix: escopar a base connection — chip e deposits agora batem 1:1.
+    // Pra ver chips Fantom, frontend deve passar requestedConnectionId=fantomId.
+    const targetConnections = baseConnection?.id ? [baseConnection] : [];
+    const detailedPromises = targetConnections.map((c) =>
       fetchMLLiveChipBucketsDetailed(c).catch(() => null)
     );
     const detailedResults = (await Promise.all(detailedPromises)).filter(Boolean);

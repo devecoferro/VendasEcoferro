@@ -4,7 +4,7 @@ import {
   invalidateDashboardCache,
 } from "./dashboard.js";
 import { runActiveOrdersRefresh, refreshMLOrdersByIds } from "./sync.js";
-import { listConnections } from "./_lib/storage.js";
+import { getLatestConnection, listConnections } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { db } from "../_lib/db.js";
 
@@ -177,10 +177,17 @@ export async function computeChipCountsDiff(options = {}) {
  *  - total_divergent: total de pedidos divergentes
  */
 export async function computeOrdersDivergence(options = {}) {
-  const { fresh = true, limit = 500 } = options;
+  const { fresh = true, limit = 500, connectionId = null } = options;
   const timestamp = new Date().toISOString();
 
-  const connections = listConnections().filter((c) => c?.id);
+  // Bug 2026-04-29 multi-seller: agregar todas as conexoes (Ecoferro+Fantom)
+  // gerava 189 missing→bucket falsos porque payload.deposits so cobre a base
+  // connection. Agora compara apenas o escopo da connection base (default ou
+  // explicitamente passada) — alinhado com como o dashboard renderiza.
+  const baseConnection = connectionId
+    ? listConnections().find((c) => c.id === connectionId) || null
+    : getLatestConnection();
+  const connections = baseConnection?.id ? [baseConnection] : [];
   if (connections.length === 0) {
     return {
       timestamp,
