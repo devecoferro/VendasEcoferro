@@ -75,8 +75,16 @@ const Y_ROW_6 = ROW_TOP + ROW_GAP * 5;    // 35.8
 const Y_ROW_7 = ROW_TOP + ROW_GAP * 6;    // 41.8
 
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
+const FANTOM_LOGO_URL = "/fantom-logo.png";
 const ML_LOGO_URL = "/ml-logo.png";
+
+// Brief 2026-04-29: brand-aware label. Default "ecoferro" mantem
+// comportamento legado (ReviewPage, etc). MercadoLivreFantomPage
+// passa "fantom" pra trocar SO o logo no canto da etiqueta.
+export type LabelBrand = "ecoferro" | "fantom";
+
 let ecoferroLogoDataUrlPromise: Promise<string | null> | null = null;
+let fantomLogoDataUrlPromise: Promise<string | null> | null = null;
 let mlLogoDataUrlPromise: Promise<string | null> | null = null;
 
 // Hosts ML que o backend /api/ml/image-proxy aceita (ver api/ml/image-proxy.js).
@@ -126,6 +134,19 @@ async function loadEcoferroLogoDataUrl(): Promise<string | null> {
     ecoferroLogoDataUrlPromise = loadImageAsDataUrl(ECOFERRO_LOGO_URL);
   }
   return ecoferroLogoDataUrlPromise;
+}
+
+async function loadFantomLogoDataUrl(): Promise<string | null> {
+  if (!fantomLogoDataUrlPromise) {
+    fantomLogoDataUrlPromise = loadImageAsDataUrl(FANTOM_LOGO_URL);
+  }
+  return fantomLogoDataUrlPromise;
+}
+
+async function loadBrandLogoDataUrl(brand: LabelBrand): Promise<string | null> {
+  return brand === "fantom"
+    ? loadFantomLogoDataUrl()
+    : loadEcoferroLogoDataUrl();
 }
 
 async function loadMlLogoDataUrl(): Promise<string | null> {
@@ -213,7 +234,8 @@ async function drawSaleCard(
   sale: SaleData,
   item: SaleItemData,
   x0: number,
-  y0: number
+  y0: number,
+  brand: LabelBrand = "ecoferro"
 ) {
   /**
    * Layout ajustado para ficar visualmente igual ao modelo enviado:
@@ -377,11 +399,11 @@ async function drawSaleCard(
     drawPlaceholder(doc, saleQrX, saleQrY, saleQrSize, saleQrSize);
   }
 
-  // ── Logo Ecoferro — alinhado com QR Venda (Y_ROW_5..Y_ROW_7) ────
-  const ecoLogoData = await loadEcoferroLogoDataUrl();
-  if (ecoLogoData) {
+  // ── Logo da marca (Ecoferro ou Fantom) — alinhado com QR Venda ──
+  const brandLogoData = await loadBrandLogoDataUrl(brand);
+  if (brandLogoData) {
     try {
-      drawContainedImage(doc, ecoLogoData, ecoLogoX, y0 + Y_ROW_5 - 0.3, 21, 17);
+      drawContainedImage(doc, brandLogoData, ecoLogoX, y0 + Y_ROW_5 - 0.3, 21, 17);
     } catch {
       // mantém silencioso para não quebrar geração do PDF
     }
@@ -496,7 +518,10 @@ function createA4Doc(): jsPDF {
   return new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 }
 
-export async function exportSalePdf(sale: SaleData): Promise<void> {
+export async function exportSalePdf(
+  sale: SaleData,
+  brand: LabelBrand = "ecoferro"
+): Promise<void> {
   const doc = createA4Doc();
   const units = expandSaleToRenderableUnits(sale);
 
@@ -507,13 +532,16 @@ export async function exportSalePdf(sale: SaleData): Promise<void> {
       doc.addPage();
     }
     const offsetY = MARGIN_Y + posInPage * (CARD_H + GAP);
-    await drawSaleCard(doc, units[index].sale, units[index].item, MARGIN_X, offsetY);
+    await drawSaleCard(doc, units[index].sale, units[index].item, MARGIN_X, offsetY, brand);
   }
 
   doc.save(getFileName(sale));
 }
 
-export async function exportBatchPdf(sales: SaleData[]): Promise<void> {
+export async function exportBatchPdf(
+  sales: SaleData[],
+  brand: LabelBrand = "ecoferro"
+): Promise<void> {
   const doc = createA4Doc();
   const units = sales.flatMap((sale) => expandSaleToRenderableUnits(sale));
 
@@ -524,7 +552,7 @@ export async function exportBatchPdf(sales: SaleData[]): Promise<void> {
       doc.addPage();
     }
     const offsetY = MARGIN_Y + posInPage * (CARD_H + GAP);
-    await drawSaleCard(doc, units[index].sale, units[index].item, MARGIN_X, offsetY);
+    await drawSaleCard(doc, units[index].sale, units[index].item, MARGIN_X, offsetY, brand);
   }
 
   const today = new Date().toISOString().slice(0, 10);

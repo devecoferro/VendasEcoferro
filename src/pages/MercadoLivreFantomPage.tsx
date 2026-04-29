@@ -96,5 +96,5 @@ export default function MercadoLivreFantomPage() {
     );
   }
 
-  return <MercadoLivrePage connectionId={fantomConn.id} />;
+  return <MercadoLivrePage connectionId={fantomConn.id} brand="fantom" />;
 }

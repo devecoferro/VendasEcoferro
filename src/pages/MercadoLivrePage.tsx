@@ -94,7 +94,7 @@ import {
 } from "@/services/mercadoLivreService";
 // ColetasPanel removido do render em commit b88cf61. Import tambem
 // removido (sprint 2.4 cleanup) — estava causando import morto.
-import { exportSalePdf } from "@/services/pdfExportService";
+import { exportSalePdf, type LabelBrand } from "@/services/pdfExportService";
 import { enrichSalesWithLocations, fetchStockLocationsBySku } from "@/lib/stockLocation";
 import {
   mergeLabelPdfs,
@@ -516,9 +516,16 @@ interface MercadoLivrePageProps {
    * undefined, opera com a conexao default (EcoFerro). Usado pela
    * MercadoLivreFantomPage que passa o connectionId da Fantom. */
   connectionId?: string | null;
+  /** Brief 2026-04-29: marca da etiqueta interna (so afeta o logo no
+   * canto da etiqueta gerada). MercadoLivreFantomPage passa "fantom"
+   * para usar /fantom-logo.png. Default "ecoferro" mantem o logo Eco. */
+  brand?: LabelBrand;
 }
 
-export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePageProps = {}) {
+export default function MercadoLivrePage({
+  connectionId = null,
+  brand = "ecoferro",
+}: MercadoLivrePageProps = {}) {
   const navigate = useNavigate();
   const { setResults } = useExtraction();
   const { currentUser, canAccessLocation } = useAuth();
@@ -893,7 +900,7 @@ export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePa
       const packOrders = findOrdersInSamePack(order, permittedOrdersRef.current);
       const sale = mapUnifiedPackSaleData(packOrders);
       const enriched = await enrichSaleWithLocations(sale);
-      await exportSalePdf(enriched);
+      await exportSalePdf(enriched, brand);
     } catch (caughtError) {
       toast.error(
         caughtError instanceof Error
@@ -901,7 +908,7 @@ export default function MercadoLivrePage({ connectionId = null }: MercadoLivrePa
           : "Falha ao gerar a etiqueta interna Ecoferro."
       );
     }
-  }, [enrichSaleWithLocations]);
+  }, [enrichSaleWithLocations, brand]);
 
   const handlePrintMlLabelsAndNFeBulk = useCallback(
     async (ordersToPrint: MLOrder[]) => {
