@@ -72,38 +72,45 @@ interface SectionCard {
   inferredDeposit: MLStoreKey;
 }
 
-// Ordem dos sub-status dentro de cada card — match com ML Seller Center.
+// Ordem dos sub-status dentro de cada card — match exato com ML Seller
+// Center conforme prints de referencia 2026-04-28 (Classificacao ML/).
 // Sub-status nao listados aparecem no final por ordem de contagem.
+//
+// Ajuste 2026-04-29: invoice_pending movido pra posicao 2 (logo apos
+// cancelled_no_send) — print 022517 mostra ML PROGRAMADA Coleta como:
+//   Canceladas. Nao enviar > NF-e para gerenciar > Etiquetas para
+//   imprimir > Com mensagens nao lidas.
 const SUBSTATUS_DISPLAY_ORDER: MLSubStatus[] = [
-  // Today > Para enviar — ordem espelha o ML Seller Center:
-  // Canceladas, Etiqueta pra imprimir, Prontas pra enviar, No CD
-  "cancelled_no_send",
-  "ready_to_print",
-  "ready_to_send",
-  "in_distribution_center",
-  // Upcoming > Coleta
-  "invoice_pending",
+  // Today > Para enviar — ordem do ML print 022517 (Ourinhos)
+  // e 022652 (Full):
+  "cancelled_no_send",       // Canceladas. Não enviar
+  "invoice_pending",         // NF-e para gerenciar
+  "ready_to_print",          // Etiquetas para imprimir
+  "ready_to_send",           // Prontas para enviar
+  "in_distribution_center",  // No centro de distribuição (Full)
+  // Upcoming > Coleta — print 022537:
   "printed_ready_to_send",
   "in_processing",
-  "standard_shipping",
-  // Today > Devoluções
+  "standard_shipping",       // Por envio padrão
+  // Today > Devoluções — print 022517:
   "return_arriving_today",
-  "return_pending_review",
-  // Upcoming > Devoluções
-  "return_in_transit",
-  "return_in_ml_review",
-  // In transit
-  "waiting_buyer_pickup",
-  "shipped_collection",
-  "shipped_full",
-  // Finalized
-  "claim_or_mediation",
-  "delivered",
-  "not_delivered",
-  "cancelled_final",
-  "returns_completed",
-  "returns_not_completed",
-  "with_unread_messages",
+  "return_pending_review",   // Revisão pendente
+  // Upcoming > Devoluções — prints 022133, 022537, 022731:
+  "return_in_transit",       // A caminho (devoluções)
+  "return_in_ml_review",     // Em revisão pelo Mercado Livre
+  // In transit — prints 022153, 022558, 022749:
+  "waiting_buyer_pickup",    // Esperando retirada do comprador
+  "shipped_collection",      // Coleta
+  "shipped_full",            // Full
+  // Finalized > Para atender — prints 022233, 022620, 022821:
+  "claim_or_mediation",      // Com reclamação ou mediação
+  // Finalized > Encerradas — print 022620:
+  "delivered",               // Entregues
+  "not_delivered",           // Não entregues
+  "cancelled_final",         // Canceladas
+  "returns_completed",       // Devoluções concluídas
+  "returns_not_completed",   // Devoluções não concluídas
+  "with_unread_messages",    // Com mensagens não lidas (sempre por ultimo)
 ];
 
 function sortSubstatuses(a: SubStatusEntry, b: SubStatusEntry): number {
