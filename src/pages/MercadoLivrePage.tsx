@@ -81,6 +81,8 @@ import {
   mapMLOrderToSaleData,
   mapUnifiedPackSaleData,
   findOrdersInSamePack,
+  findOrdersForSameBuyer,
+  mapUnifiedBuyerSaleData,
   getOrderPackId,
   markLabelsAsPrinted,
   markLabelsAsUnprinted,
@@ -895,10 +897,24 @@ export default function MercadoLivrePage({
 
   const handlePrintInternalLabelEcoferro = useCallback(async (order: MLOrder) => {
     try {
-      // Busca todos os orders do mesmo pack e unifica em uma só etiqueta.
-      // Se não tem pack ou tem só 1 order no pack, comporta-se normal.
-      const packOrders = findOrdersInSamePack(order, permittedOrdersRef.current);
-      const sale = mapUnifiedPackSaleData(packOrders);
+      // Estrategia de agrupamento (briefing 2026-04-29):
+      //   1. Se tem pack_id → unifica orders do MESMO pack (logica antiga).
+      //   2. Se NAO tem pack → tenta unificar orders do MESMO comprador
+      //      com mesmo prazo de envio (buyer-grouping).
+      //   3. Senao → etiqueta individual.
+      const allOrders = permittedOrdersRef.current;
+      const packOrders = findOrdersInSamePack(order, allOrders);
+
+      let sale: ReturnType<typeof mapMLOrderToSaleData>;
+      if (packOrders.length > 1) {
+        sale = mapUnifiedPackSaleData(packOrders);
+      } else {
+        const buyerOrders = findOrdersForSameBuyer(order, allOrders);
+        sale = buyerOrders.length > 1
+          ? mapUnifiedBuyerSaleData(buyerOrders)
+          : mapMLOrderToSaleData(order);
+      }
+
       const enriched = await enrichSaleWithLocations(sale);
       await exportSalePdf(enriched, brand);
     } catch (caughtError) {

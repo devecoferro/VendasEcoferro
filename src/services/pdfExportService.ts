@@ -252,10 +252,8 @@ async function drawSaleCard(
 
   const pad = 3;
 
-  // ── Borda laranja quadrada ───────────────────────────────────────
-  doc.setDrawColor(ORANGE_R, ORANGE_G, ORANGE_B);
-  doc.setLineWidth(0.45);
-  doc.rect(x0, y0, CARD_W, CARD_H, "S");
+  // ── Borda removida (briefing 2026-04-29): etiqueta SEM moldura
+  // laranja, alinhamento via grade invisivel apenas. ───────────────
 
   // Áreas base em mm dentro do card — posicionamento conforme imagem
   // de referencia "Etiqueta Programa - 01 SEM linhas.png" (2026-04-29).
@@ -433,10 +431,13 @@ async function drawSaleCard(
   doc.setFontSize(7.4);
   doc.setTextColor(0, 0, 0);
 
-  // Linhas 5-7: Corredor / Estante / Nível (alinhados com QR Venda+Logo Ec)
-  doc.text(`Corredor: ${corridor}`, stockX, y0 + Y_ROW_5);
-  doc.text(`Estante: ${shelf}`, stockX, y0 + Y_ROW_6);
-  doc.text(`Nível: ${level}`, stockX, y0 + Y_ROW_7);
+  // Linhas 5-7: Corredor / Estante / Nível (alinhados com QR Venda+Logo Ec).
+  // maxWidth=26mm garante que valores longos (ex: "AAA-99-B") nao
+  // invadem a area do QR Objeto que comeca em ~x0+167.
+  const STOCK_MAX_W = 26;
+  doc.text(`Corredor: ${corridor}`, stockX, y0 + Y_ROW_5, { maxWidth: STOCK_MAX_W });
+  doc.text(`Estante: ${shelf}`, stockX, y0 + Y_ROW_6, { maxWidth: STOCK_MAX_W });
+  doc.text(`Nível: ${level}`, stockX, y0 + Y_ROW_7, { maxWidth: STOCK_MAX_W });
 
   // ── QR Objeto no topo direito ────────────────────────────────────
   const objectQrSize = 20;

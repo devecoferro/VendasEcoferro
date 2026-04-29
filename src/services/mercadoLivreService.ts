@@ -638,6 +638,109 @@ export function findOrdersInSamePack(
   return same.length > 0 ? same : [targetOrder];
 }
 
+// Brief 2026-04-29: agrupamento por COMPRADOR (sem pack_id). Quando o
+// mesmo buyer compra multiplas vendas separadas com mesmo prazo de
+// envio, consolida tudo numa etiqueta unica pra simplificar a expedicao.
+//
+// Criterios pra unificar (TODOS precisam bater):
+//   - mesmo buyer_name (case-insensitive)
+//   - mesmo buyer_nickname (case-insensitive)
+//   - mesma expected_shipping_date (so a parte da data, ignora hora)
+//   - NENHUM tem pack_id (orders com pack ja sao agrupados por pack)
+//
+// Status divergente NAO bloqueia o agrupamento — operador imprime tudo
+// e separa fisicamente. Para nao agrupar status divergente, filtre
+// antes de chamar essa funcao.
+function normalizeBuyerKey(s: string | null | undefined): string {
+  return (s || "").trim().toLowerCase();
+}
+
+function getOrderShippingDateKey(order: MLOrder): string {
+  // Usa expectedShippingDate quando disponivel, senao fallback pra
+  // sale_date (ambos como YYYY-MM-DD pra agrupamento por dia).
+  const expected = extractExpectedShippingDate(order);
+  if (expected) return expected.slice(0, 10);
+  return (order.sale_date || "").slice(0, 10);
+}
+
+export function findOrdersForSameBuyer(
+  targetOrder: MLOrder,
+  allOrders: MLOrder[]
+): MLOrder[] {
+  // Se ja tem pack, deixa o pack-grouping cuidar — nao mistura logicas.
+  if (getOrderPackId(targetOrder)) return [targetOrder];
+
+  const targetName = normalizeBuyerKey(targetOrder.buyer_name);
+  const targetNick = normalizeBuyerKey(targetOrder.buyer_nickname);
+  const targetShipKey = getOrderShippingDateKey(targetOrder);
+
+  // Buyer "anonimo" (sem nome E sem nick) nao agrupa — risco de
+  // misturar pedidos de pessoas diferentes.
+  if (!targetName && !targetNick) return [targetOrder];
+
+  const same = allOrders.filter((o) => {
+    if (getOrderPackId(o)) return false;
+    if (normalizeBuyerKey(o.buyer_name) !== targetName) return false;
+    if (normalizeBuyerKey(o.buyer_nickname) !== targetNick) return false;
+    if (getOrderShippingDateKey(o) !== targetShipKey) return false;
+    return true;
+  });
+
+  return same.length > 0 ? same : [targetOrder];
+}
+
+// Unifica orders do MESMO comprador (sem pack) em uma unica SaleData.
+// Mesma logica de mapUnifiedPackSaleData mas usa "+N" no saleNumber
+// para nao explodir o footer da etiqueta com IDs gigantes concatenados.
+export function mapUnifiedBuyerSaleData(orders: MLOrder[]): ReturnType<typeof mapMLOrderToSaleData> {
+  if (orders.length === 0) throw new Error("Nenhum pedido para unificar");
+  if (orders.length === 1) return mapMLOrderToSaleData(orders[0]);
+
+  const base = orders[0];
+  const baseSale = mapMLOrderToSaleData(base);
+
+  const allGroupedItems: SaleItemData[] = [];
+  const allSaleNumbers: string[] = [];
+
+  for (const order of orders) {
+    const sale = mapMLOrderToSaleData(order);
+    allGroupedItems.push(...(sale.groupedItems || []));
+    const num = order.sale_number || order.order_id;
+    if (num) allSaleNumbers.push(num);
+  }
+
+  const unifiedMap = new Map<string, SaleItemData>();
+  for (const item of allGroupedItems) {
+    const key = `${item.sku || item.itemTitle}::${item.variation || ""}`;
+    const existing = unifiedMap.get(key);
+    if (existing) {
+      existing.quantity += item.quantity || 1;
+      existing.amount = (existing.amount || 0) + (item.amount || 0);
+    } else {
+      unifiedMap.set(key, { ...item });
+    }
+  }
+  const unifiedItems = Array.from(unifiedMap.values());
+
+  // saleNumber compacto: "<primeiro> +N" pra caber no footer (CARD_W
+  // tem ~38mm de largura na coluna esquerda). Ex: "2000016102974372 +2".
+  const firstNumber = allSaleNumbers[0] || baseSale.saleNumber || "";
+  const extras = allSaleNumbers.length - 1;
+  const compactSaleNumber = extras > 0 ? `${firstNumber} +${extras}` : firstNumber;
+
+  return {
+    ...baseSale,
+    saleNumber: compactSaleNumber,
+    saleQrcodeValue: firstNumber, // QR aponta pra primeira venda
+    productName: unifiedItems.length > 1
+      ? `Pacote com ${unifiedItems.length} produtos`
+      : unifiedItems[0]?.itemTitle || baseSale.productName,
+    sku: unifiedItems[0]?.sku || baseSale.sku,
+    quantity: unifiedItems.reduce((sum, i) => sum + (i.quantity || 1), 0),
+    groupedItems: unifiedItems,
+  };
+}
+
 // Unifica múltiplos orders do MESMO pack em uma única SaleData.
 // Todos os items dos pedidos viram groupedItems da mesma etiqueta.
 // Mantém dados do buyer (comprador) — nunca do receiver.
