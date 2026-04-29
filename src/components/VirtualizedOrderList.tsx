@@ -226,10 +226,14 @@ const OrderCard = memo(function OrderCard({
             <Button
               className="h-11 w-full rounded-lg bg-[#22c55e] px-4 text-[14px] font-semibold text-white shadow-[0_1px_3px_rgba(34,197,94,0.28)] transition hover:bg-[#16a34a] hover:shadow-[0_2px_6px_rgba(34,197,94,0.4)] disabled:cursor-not-allowed disabled:bg-[#f1f1f1] disabled:text-[#a0a0a0] disabled:shadow-none sm:w-auto sm:text-sm"
               onClick={() => onPrintInternalLabel(order)}
-              title="Etiqueta interna com logo Ecoferro"
+              title={
+                brand === "fantom"
+                  ? "Etiqueta interna com logo Fantom"
+                  : "Etiqueta interna com logo Ecoferro"
+              }
             >
               <Tag className="mr-1.5 h-4 w-4 sm:mr-2" />
-              Etiqueta Ecoferro
+              {brand === "fantom" ? "Etiqueta Fantom" : "Etiqueta Ecoferro"}
             </Button>
             <Button
               variant="outline"

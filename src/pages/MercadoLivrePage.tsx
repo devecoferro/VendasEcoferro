@@ -921,7 +921,7 @@ export default function MercadoLivrePage({
       toast.error(
         caughtError instanceof Error
           ? caughtError.message
-          : "Falha ao gerar a etiqueta interna Ecoferro."
+          : `Falha ao gerar a etiqueta interna ${brand === "fantom" ? "Fantom" : "Ecoferro"}.`
       );
     }
   }, [enrichSaleWithLocations, brand]);
@@ -2591,7 +2591,7 @@ export default function MercadoLivrePage({
                 <Tag className="mr-1.5 h-4 w-4" />
                 <span className="truncate">
                   {isOperationalListFullyLoaded
-                    ? `Etiquetas Ecoferro${selectedEcoferroCount > 0 ? ` (${selectedEcoferroCount})` : ""}`
+                    ? `Etiquetas ${brand === "fantom" ? "Fantom" : "Ecoferro"}${selectedEcoferroCount > 0 ? ` (${selectedEcoferroCount})` : ""}`
                     : `Carregando base completa${selectedEcoferroCount > 0 ? ` (${selectedEcoferroCount})` : ""}`}
                 </span>
               </Button>
