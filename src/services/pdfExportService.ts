@@ -52,16 +52,16 @@ const COL_INFO_W = 82;   // SKU / produto / comprador / QR venda
 const COL_LOC_W = 38;    // Corredor/Estante/Nível/Local + Logo Eco
 const COL_RIGHT_W = CARD_W - COL_LEFT_W - COL_INFO_W - COL_LOC_W; // QR objeto + SKU + quant + data
 
-// Grid invisivel de 8 linhas horizontais — padroniza alinhamento dos
-// textos conforme imagem-referencia do operador (linhas verdes na
-// foto eram so guia, nao aparecem no PDF). CARD_H ≈ 53mm.
+// Grid invisivel de 8 linhas horizontais — padroniza alinhamento
+// conforme imagem-referencia "Etiqueta Programa - 01 SEM linhas.png".
+// CARD_H ≈ 53mm.
 //
 //   Y_ROW_1 → SKU / topo do QR Objeto / topo do logo ML
 //   Y_ROW_2 → Titulo do produto (linha 1 de 2)
-//   Y_ROW_3 → Comprador (nome real, ou vazio se = nickname)
+//   Y_ROW_3 → Comprador (nome real)
 //   Y_ROW_4 → Nickname
-//   Y_ROW_5 → Corredor (alinha com inicio do QR Venda+LogoEc)
-//   Y_ROW_6 → Estante / EC005 (SKU lateral direito)
+//   Y_ROW_5 → Corredor (alinha com inicio do QR Venda+LogoEco)
+//   Y_ROW_6 → Estante / SKU lateral direito (C4)
 //   Y_ROW_7 → Nivel / Quant: 01
 //   Y_ROW_8 → Local / Data Envio (rodape — usa CARD_H - 3.2)
 const ROW_TOP = 5.8;
@@ -235,13 +235,16 @@ async function drawSaleCard(
   doc.setLineWidth(0.45);
   doc.rect(x0, y0, CARD_W, CARD_H, "S");
 
-  // Áreas base em mm dentro do card
+  // Áreas base em mm dentro do card — posicionamento conforme imagem
+  // de referencia "Etiqueta Programa - 01 SEM linhas.png" (2026-04-29).
+  // QR Venda + Logo Eco ficam no MEIO do card (rows 5-7), com
+  // Corredor/Estante/Nivel ao LADO (mesma Y), nao abaixo.
   const leftX = x0 + 4;
-  const infoX = x0 + 45;
-  const saleQrX = x0 + 90;
-  const ecoLogoX = x0 + 116;
-  const stockX = x0 + 139;
-  const rightX = x0 + CARD_W - 31;
+  const infoX = x0 + 45;            // C2: SKU/titulo/comprador/nickname
+  const saleQrX = x0 + 90;          // QR Venda alinhado rows 5-7
+  const ecoLogoX = x0 + 116;        // Logo Eco a direita do QR Venda
+  const stockX = x0 + 139;          // Corredor/Estante/Nivel ao lado do Logo Eco
+  const rightX = x0 + CARD_W - 31;  // C4: QR Objeto + SKU + Quant + DataEnvio
 
   // ── Logo Mercado Livre ───────────────────────────────────────────
   const mlLogoData = await loadMlLogoDataUrl();
@@ -354,7 +357,7 @@ async function drawSaleCard(
     { maxWidth: 72 }
   );
 
-  // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 ───────────────
+  // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 (meio do card) ─
   const saleQrSize = 19;
   const saleQrY = y0 + Y_ROW_5 + 0.5;
 
@@ -397,7 +400,7 @@ async function drawSaleCard(
   // Se nao houver deposito identificado, fica em branco.
   const localDeposito = sale.depositLabel || "";
 
-  // Local no rodapé central
+  // Local no rodapé central, abaixo do bloco Logo Eco
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.3);
   doc.setTextColor(0, 0, 0);
@@ -421,7 +424,7 @@ async function drawSaleCard(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(5.2);
   doc.setTextColor(145, 145, 145);
-  doc.text("QR  Objeto", objectQrX + objectQrSize / 2, y0 + 4.2, { align: "center" });
+  doc.text("QR Objeto", objectQrX + objectQrSize / 2, y0 + 4.2, { align: "center" });
 
   const objectQrData = await generateQRCodeDataUrl(sale.qrcodeValue || item.sku || "");
   if (objectQrData) {
