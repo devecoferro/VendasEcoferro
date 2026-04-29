@@ -252,9 +252,58 @@ function enrichOrdersWithEmittedInvoiceFlag(orders) {
   }
 }
 
+// 2026-04-29: pre-computa o nome real do comprador no servidor, antes de
+// pickClientRawData reduzir o raw_data. Eh exatamente a mesma cascata que
+// extractRealCustomerName em src/services/mercadoLivreService.ts — mas o
+// backend tem o raw INTEIRO aqui, garantindo que campos ausentes/strippados
+// no FE (view=dashboard, cache stale, race com sync de billing_info_snapshot)
+// nao gerem "Cliente nao informado" na etiqueta.
+function computeBuyerRealName(rawData, columnNickname) {
+  if (!rawData || typeof rawData !== "object") return "";
+  const dig = (path) => {
+    const parts = path.split(".");
+    let cur = rawData;
+    for (const p of parts) {
+      if (!cur || typeof cur !== "object") return "";
+      cur = cur[p];
+    }
+    return typeof cur === "string" ? cur.trim() : "";
+  };
+  const nickLower = String(columnNickname || "").trim().toLowerCase();
+  const isReal = (s) => Boolean(s) && s.toLowerCase() !== nickLower;
+  const titleCase = (s) =>
+    s.toLowerCase().replace(/(^|\s)([a-zà-ú])/g, (_, sep, ch) => sep + ch.toUpperCase());
+
+  // 1) NF-e (mais confiavel — fonte fiscal)
+  const biName = dig("billing_info_snapshot.buyer.billing_info.name");
+  const biLast = dig("billing_info_snapshot.buyer.billing_info.last_name");
+  const biComposed = [biName, biLast].filter(Boolean).join(" ").trim();
+  if (isReal(biComposed)) return titleCase(biComposed);
+
+  // 2) Outras fontes
+  const buyerFL = [dig("buyer.first_name"), dig("buyer.last_name")]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  const cands = [
+    dig("buyer.name"),
+    dig("buyer.full_name"),
+    dig("shipping.receiver_address.receiver_name"),
+    buyerFL,
+    dig("cliente_nome"),
+  ];
+  for (const c of cands) if (isReal(c)) return titleCase(c);
+  return "";
+}
+
 function sanitizeOrderForClient(order) {
+  // CRITICO: computa buyer_real_name ANTES de pickClientRawData. Em algumas
+  // views (dashboard) o billing_info_snapshot e reduzido a {__has_data:true}
+  // — ai a cascata client-side falha. Aqui temos o raw inteiro.
+  const realName = computeBuyerRealName(order.raw_data, order.buyer_nickname);
   return {
     ...order,
+    buyer_real_name: realName || null,
     raw_data: pickClientRawData(order.raw_data),
   };
 }
@@ -273,6 +322,7 @@ function shapeOrderForView(order, view = "full") {
     sale_date: sanitizedOrder.sale_date,
     buyer_name: sanitizedOrder.buyer_name,
     buyer_nickname: sanitizedOrder.buyer_nickname,
+    buyer_real_name: sanitizedOrder.buyer_real_name,
     item_title: sanitizedOrder.item_title,
     item_id: sanitizedOrder.item_id,
     product_image_url: sanitizedOrder.product_image_url,

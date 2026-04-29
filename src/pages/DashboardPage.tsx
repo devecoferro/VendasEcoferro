@@ -863,7 +863,16 @@ export default function DashboardPage() {
                           {order.item_title || "Produto sem título"}
                         </p>
                         <p className="mt-1 text-sm text-[#6b7280]">
-                          {order.buyer_name || order.buyer_nickname || "Comprador não identificado"}
+                          {/* 2026-04-29: order.buyer_name (coluna DB) era populada com
+                              nickname quando ML masca first_name/last_name → exibia nickname.
+                              order.buyer_real_name vem pré-computado do backend via cascata
+                              (billing_info > buyer.name > shipping.receiver > nickname). */}
+                          {order.buyer_real_name ||
+                            (order.buyer_name && order.buyer_name !== order.buyer_nickname
+                              ? order.buyer_name
+                              : null) ||
+                            order.buyer_nickname ||
+                            "Comprador não identificado"}
                         </p>
                       </div>
                     </div>

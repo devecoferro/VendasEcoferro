@@ -566,12 +566,21 @@ export async function runMercadoLivreSync({
         const buyerNameFromOrder = order.buyer?.first_name
           ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
           : null;
-        // Precedencia: first_name + last_name PRIMEIRO. Antes era
-        // shipmentReceiverName, mas o ML as vezes coloca um ID interno
-        // ali (ex: "TS20241225130437") quando privacidade do comprador
-        // esta ativada — resultado: etiqueta imprime ID em vez do nome.
+        // 2026-04-29: ML mascara first_name/last_name em muitos pedidos —
+        // resultado: caia em order.buyer?.nickname e a coluna buyer_name
+        // virava nickname, fazendo DashboardPage e picking-list mostrarem
+        // nickname onde deveriam mostrar nome real. Agora prefere
+        // billing_info_snapshot (NF-e) que tem o nome fiscal correto.
+        const billingInfoData = billingInfoSnapshot?.data || {};
+        const billingFullName = (() => {
+          const n = billingInfoData?.buyer?.billing_info?.name;
+          const ln = billingInfoData?.buyer?.billing_info?.last_name;
+          const composed = [n, ln].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
+          return composed || null;
+        })();
+        // Precedencia: NF-e > first_name+last_name > shipment receiver > nickname.
         const buyerName =
-          buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
+          billingFullName || buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
         const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
 
         if (orderItems.length === 0) return null;
@@ -1054,11 +1063,17 @@ export async function refreshMLOrdersByIds({ connectionId, orderIds }) {
           const buyerNameFromOrder = order.buyer?.first_name
             ? `${order.buyer.first_name} ${order.buyer.last_name || ""}`.trim()
             : null;
-          // Precedencia: first_name + last_name PRIMEIRO. Mesmo motivo
-          // do site anterior (linha ~574): receiver_name as vezes vem com
-          // um ID interno do ML quando privacidade ativada.
+          // 2026-04-29: prefere billing_info (NF-e) sobre first_name —
+          // ML mascara first_name/last_name na maior parte dos pedidos.
+          const billingInfoData = billingInfoSnapshot?.data || {};
+          const billingFullName = (() => {
+            const n = billingInfoData?.buyer?.billing_info?.name;
+            const ln = billingInfoData?.buyer?.billing_info?.last_name;
+            const composed = [n, ln].filter((x) => typeof x === "string" && x.trim()).join(" ").trim();
+            return composed || null;
+          })();
           const buyerName =
-            buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
+            billingFullName || buyerNameFromOrder || shipmentReceiverName || order.buyer?.nickname || null;
           const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
           if (orderItems.length === 0) return [];
 

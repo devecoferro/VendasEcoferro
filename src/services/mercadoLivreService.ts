@@ -30,6 +30,17 @@ export interface MLOrder {
   amount: number | null;
   order_status: string | null;
   raw_data: Record<string, unknown> | null;
+  /**
+   * Nome real do comprador pré-computado pelo backend via cascata
+   * (billing_info_snapshot → buyer.name → shipping.receiver_name → ...).
+   * Adicionado em 2026-04-29 (commit pós-8ace453) pra resolver bug de
+   * "Cliente não informado" na etiqueta quando o FE recebia raw_data
+   * com billing_info_snapshot reduzido (view=dashboard) ou ausente
+   * (race entre webhook e sync).
+   * Quando null/empty, FE faz fallback pra cascata local em
+   * extractRealCustomerName.
+   */
+  buyer_real_name?: string | null;
   items: MLOrderItem[];
   /**
    * ISO-8601 UTC da ultima vez que a etiqueta deste pedido foi impressa.
@@ -543,6 +554,16 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
 // `buyer.nickname` no objeto buyer raiz; o adapter caia no fallback
 // `buyer_name` que era o proprio nickname, fazendo nome=nickname na UI.
 function extractRealCustomerName(order: MLOrder): string {
+  // 2026-04-29: backend pré-computa via mesma cascata em
+  // api/ml/orders.js#computeBuyerRealName e envia como buyer_real_name.
+  // Quando presente, é a fonte autoritativa — independe de o FE ter
+  // recebido billing_info_snapshot ou estar com cache stale. Fallback
+  // pra cascata local quando o campo não vier (servidor antigo, etc).
+  const precomputed = order.buyer_real_name;
+  if (typeof precomputed === "string" && precomputed.trim()) {
+    return precomputed.trim();
+  }
+
   const raw = (order.raw_data || {}) as Record<string, unknown>;
   const dig = (path: string): string => {
     const parts = path.split(".");
