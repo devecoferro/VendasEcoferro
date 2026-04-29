@@ -334,53 +334,22 @@ async function drawSaleCard(
   );
   doc.text(productLines.slice(0, 1), infoX, y0 + Y_ROW_2);
 
-  // Saneamento do customerName em casos de privacidade do comprador:
-  //
-  // ID interno ML aparece quando ML retorna codigo de privacidade
-  // (ex: "TS20241225130437", "GORO20240118090752"). Caracteristica:
-  // tem MISTURA de letras + digitos (geralmente prefixo curto + timestamp).
-  //
-  // Nomes reais de pessoa (mesmo em UPPERCASE sem acento, ex:
-  // "DARLYVANGAMACABRAL", "JOSADAILTONFERNANDES") NAO devem ser
-  // confundidos com IDs — esses tem so letras, sem digitos.
-  //
-  // Antes a regex /^[A-Z0-9]{8,}\$/ marcava qualquer string uppercase
-  // sem espaco como ID, escondendo nomes reais da etiqueta.
-  const customerName = sale.customerName || "";
-  const customerNickname = sale.customerNickname || "";
-  // ID interno do ML: requer tanto letras QUANTO digitos no nome.
-  // Ex: TS20241225130437, GORO20240118090752, RG20241016084812.
-  // Nomes reais (DARLYVANGAMACABRAL) so tem letras → NAO sao flagados.
-  const looksLikeMlInternalId =
-    /^TS\d{10,}$/i.test(customerName) ||
-    (customerName.length >= 8 &&
-      !customerName.includes(" ") &&
-      /[A-Z]/.test(customerName) &&
-      /\d{4,}/.test(customerName));
-  // Esconde apenas IDs internos. Nomes duplicados com nickname agora
-  // tambem sao mostrados — melhor mostrar o nome (mesmo igual ao nick)
-  // do que deixar o operador sem informacao do comprador.
-  const hideCustomerName = looksLikeMlInternalId;
+  // Briefing 2026-04-29: comprador SEMPRE mostra ambas as linhas (nome
+  // + nickname). Sem heuristica de "ID interno ML" — operador prefere
+  // ver o que ML mandou (mesmo TS-ID) a perder a informacao. Quando o
+  // campo nao vem, usa fallback explicito.
+  const customerNameRaw = (sale.customerName || "").trim();
+  const customerNickRaw = (sale.customerNickname || "").trim();
+  const customerNameLine = customerNameRaw || "Cliente não informado";
+  const customerNickLine = customerNickRaw || "Nickname não informado";
 
-  // Linha 3: Comprador (nome real). Vazia se duplicar nickname OU se
-  // for ID interno do ML (TS+digits, etc.).
+  // Linha 3: Nome do comprador
   doc.setFontSize(7.2);
-  doc.text(
-    hideCustomerName ? "" : customerName || "-",
-    infoX,
-    y0 + Y_ROW_3,
-    { maxWidth: 72 }
-  );
+  doc.text(customerNameLine, infoX, y0 + Y_ROW_3, { maxWidth: 72 });
 
-  // Linha 4: Nickname. Se customerName parece ID, fallback so pro
-  // nickname (sem repetir o lixo).
+  // Linha 4: Nickname
   doc.setFontSize(7.1);
-  doc.text(
-    customerNickname || (hideCustomerName ? "-" : customerName || "-"),
-    infoX,
-    y0 + Y_ROW_4,
-    { maxWidth: 72 }
-  );
+  doc.text(customerNickLine, infoX, y0 + Y_ROW_4, { maxWidth: 72 });
 
   // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 (meio do card) ─
   const saleQrSize = 19;

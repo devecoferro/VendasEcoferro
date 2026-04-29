@@ -50,6 +50,8 @@ export interface VirtualizedOrderListProps {
   onPrintMlLabel: (order: MLOrder) => void;
   generatingNFeForOrderId: string | null;
   printingLabelForOrderId: string | null;
+  /** Brief 2026-04-29: brand-aware preview na listagem. Default "ecoferro". */
+  brand?: "ecoferro" | "fantom";
 }
 
 // P8: row memoizada — skip re-render quando o order, seleção e estados de
@@ -66,6 +68,7 @@ interface OrderCardProps {
   onPrintInternalLabel: (order: MLOrder) => void;
   onGenerateNFe: (order: MLOrder) => void;
   onPrintMlLabel: (order: MLOrder) => void;
+  brand: "ecoferro" | "fantom";
 }
 
 const OrderCard = memo(function OrderCard({
@@ -78,6 +81,7 @@ const OrderCard = memo(function OrderCard({
   onPrintInternalLabel,
   onGenerateNFe,
   onPrintMlLabel,
+  brand,
 }: OrderCardProps) {
   const deposit = getDepositInfo(order);
   const shipment = getShipmentPresentation(order);
@@ -249,7 +253,7 @@ const OrderCard = memo(function OrderCard({
       </div>
 
       <div className="px-2 pb-3 sm:px-5 sm:pb-5">
-        <SaleCardPreview sale={mapMLOrderToSaleData(order)} mode="embedded" />
+        <SaleCardPreview sale={mapMLOrderToSaleData(order)} mode="embedded" brand={brand} />
       </div>
     </article>
   );
@@ -265,6 +269,7 @@ export function VirtualizedOrderList({
   onPrintMlLabel,
   generatingNFeForOrderId,
   printingLabelForOrderId,
+  brand = "ecoferro",
 }: VirtualizedOrderListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Offset do container em relacao ao topo do documento — o windowVirtualizer
@@ -339,6 +344,7 @@ export function VirtualizedOrderList({
                 onPrintInternalLabel={onPrintInternalLabel}
                 onGenerateNFe={onGenerateNFe}
                 onPrintMlLabel={onPrintMlLabel}
+                brand={brand}
               />
             </div>
           );

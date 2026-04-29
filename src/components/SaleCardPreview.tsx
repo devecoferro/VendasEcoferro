@@ -14,9 +14,19 @@ interface SaleCardPreviewProps {
   // ConferenciaVendaPage, onde a foto grande do anuncio ja e' exibida
   // lado-a-lado na coluna esquerda — a thumbnail seria redundante.
   hideProductImage?: boolean;
+  // Brief 2026-04-29: brand-aware. Default "ecoferro" mantem logo Eco,
+  // "fantom" troca pra logo Fantom (pagina /mercado-livre-fantom).
+  brand?: "ecoferro" | "fantom";
 }
 
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
+const FANTOM_LOGO_URL = "/fantom-logo.png";
+
+// Briefing 2026-04-29: comprador SEMPRE mostra ambas as linhas (nome +
+// nickname). Quando algum campo nao vem da API, usa fallback explicito
+// pra deixar claro pro operador que o dado esta faltando.
+const CUSTOMER_NAME_FALLBACK = "Cliente não informado";
+const CUSTOMER_NICKNAME_FALLBACK = "Nickname não informado";
 
 function CodePlaceholder({ label, compact = false }: { label: string; compact?: boolean }) {
   return (
@@ -195,8 +205,11 @@ export function SaleCardPreview({
   sale,
   mode = "default",
   hideProductImage = false,
+  brand = "ecoferro",
 }: SaleCardPreviewProps) {
   const productImageSrc = sale.productImageData || sale.productImageUrl;
+  const brandLogoUrl = brand === "fantom" ? FANTOM_LOGO_URL : ECOFERRO_LOGO_URL;
+  const brandLogoAlt = brand === "fantom" ? "Logo Fantom Motoparts" : "Logo EcoFerro";
   const isPrintMode = mode === "print";
   const groupedItems = sale.groupedItems || [];
   const labelObservation = sale.labelObservation?.trim() || "";
@@ -272,15 +285,24 @@ export function SaleCardPreview({
                       </p>
                     </div>
 
+                    {/* Comprador: nome + nickname SEMPRE em linhas distintas
+                        (briefing 2026-04-29). Sem substituicao entre eles —
+                        fallback explicito quando a API nao retorna o dado. */}
                     <div>
-                      <p className="truncate text-[18px] font-bold leading-none text-slate-900">
-                        {sale.customerName || "-"}
+                      <p
+                        className="truncate text-[18px] font-bold leading-none text-slate-900"
+                        title={sale.customerName || CUSTOMER_NAME_FALLBACK}
+                      >
+                        {sale.customerName?.trim() || CUSTOMER_NAME_FALLBACK}
                       </p>
                     </div>
 
                     <div>
-                      <p className="truncate text-[16px] font-bold leading-none text-slate-500">
-                        {sale.customerNickname || "-"}
+                      <p
+                        className="truncate text-[16px] font-bold leading-none text-slate-500"
+                        title={sale.customerNickname || CUSTOMER_NICKNAME_FALLBACK}
+                      >
+                        {sale.customerNickname?.trim() || CUSTOMER_NICKNAME_FALLBACK}
                       </p>
                     </div>
 
@@ -312,8 +334,8 @@ export function SaleCardPreview({
 
                       <div className="flex min-h-[104px] items-end justify-center pb-1 md:justify-start">
                         <img
-                          src={ECOFERRO_LOGO_URL}
-                          alt="Logo EcoFerro"
+                          src={brandLogoUrl}
+                          alt={brandLogoAlt}
                           className="h-[68px] w-[96px] object-contain"
                         />
                       </div>

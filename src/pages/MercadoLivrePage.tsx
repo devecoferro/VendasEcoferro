@@ -2739,6 +2739,7 @@ export default function MercadoLivrePage({
               onPrintMlLabel={handlePrintSingleOrderMlLabel}
               generatingNFeForOrderId={generatingNFeForOrderId}
               printingLabelForOrderId={printingLabelForOrderId}
+              brand={brand}
             />
 
             {ordersPagination.has_more && (
