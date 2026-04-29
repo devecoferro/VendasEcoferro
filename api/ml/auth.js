@@ -7,6 +7,7 @@ import { APP_BASE_URL } from "../_lib/app-config.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import {
   deleteConnection,
+  getConnectionById,
   getLatestConnection,
   listConnections,
   upsertConnection,
@@ -112,8 +113,14 @@ export default async function handler(request, response) {
     } = body;
 
     if (action === "status") {
+      // Brief 2026-04-29: connection_id opcional pra suportar multi-seller.
+      // Sem connection_id → retorna a conexao default (back-compat).
+      // Com connection_id → retorna a conexao especifica (Fantom, etc.).
+      const conn = connection_id
+        ? getConnectionById(connection_id)
+        : getLatestConnection();
       return response.status(200).json({
-        connection: sanitizeConnection(getLatestConnection()),
+        connection: sanitizeConnection(conn),
       });
     }
 

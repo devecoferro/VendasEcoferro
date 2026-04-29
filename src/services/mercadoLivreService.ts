@@ -909,7 +909,17 @@ async function parseErrorMessage(
   return data?.details || data?.error || data?.message || fallbackMessage;
 }
 
-export async function getMLConnectionStatus(): Promise<MLConnection | null> {
+export async function getMLConnectionStatus(
+  connectionId?: string | null
+): Promise<MLConnection | null> {
+  // Brief 2026-04-29: passa connection_id quando disponivel pra retornar
+  // a conexao especifica (Fantom em /mercado-livre-fantom). Sem isso
+  // syncNow() acabava usando o connection.id da conexao default (EcoFerro)
+  // mesmo na pagina da Fantom.
+  const requestBody = connectionId
+    ? { action: "status", connection_id: connectionId }
+    : { action: "status" };
+
   const { response, data } = await fetchJsonWithTimeout<{ connection?: MLConnection | null; error?: string }>(
     "/api/ml/auth",
     {
@@ -917,7 +927,7 @@ export async function getMLConnectionStatus(): Promise<MLConnection | null> {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ action: "status" }),
+      body: JSON.stringify(requestBody),
     },
     "Timeout ao consultar o status da conexao do Mercado Livre."
   );

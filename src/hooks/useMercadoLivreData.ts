@@ -306,7 +306,7 @@ export function useMercadoLivreData(
             connectionId,
           }),
           getMLDashboard({ connectionId }),
-          getMLConnectionStatus(),
+          getMLConnectionStatus(connectionId),
         ]);
 
         if (requestVersionRef.current !== requestVersion) {
