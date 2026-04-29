@@ -1136,16 +1136,18 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
         scraperRoundRobinRunning = false;
       }
     }, SCRAPER_ROUND_ROBIN_INTERVAL_MS);
-    // Primeira execucao 30s apos boot (deixa scraper "all" do live-snapshot
-    // dar prioridade no inicio)
+    // Primeira execucao 30s apos boot — aquece SO o scope "all" (mais
+    // usado pelo dashboard). Outros scopes vao rotacionar pelo round-robin
+    // a cada 180s. Antes disparava os 4 em paralelo num for-loop sem
+    // delay (boot+30s = 4 scrapes simultaneos), brigando pela 1 vCPU do
+    // VPS — cada scrape virava 3+ min e travava a partir dali (race do
+    // warm pool, browser-closed em cascata). Fix 2026-04-29.
     setTimeout(async () => {
       try {
         const { maybeRefreshLiveSnapshotInBackground } = await import(
           "../api/ml/_lib/seller-center-scraper.js"
         );
-        for (const scope of SCRAPER_SCOPES) {
-          maybeRefreshLiveSnapshotInBackground(scope);
-        }
+        maybeRefreshLiveSnapshotInBackground("all");
       } catch {
         /* best-effort */
       }

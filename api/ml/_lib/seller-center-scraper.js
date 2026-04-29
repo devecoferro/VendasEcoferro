@@ -1983,6 +1983,15 @@ export function getCachedLiveSnapshot(scope = "all", connectionId = null) {
 const liveSnapshotInflightByScope = new Map(); // scope → Promise
 const lastBackgroundRefreshByScope = new Map(); // scope → timestamp
 
+// Limite global de scrapes concorrentes. VPS tem 1 vCPU; scrapes
+// paralelos brigam por CPU e cada um demora 3+ min em vez de 90s,
+// piling up em cascata. Default 1 (serial). Override pra ambientes
+// com mais cores: ML_SCRAPER_MAX_CONCURRENT=2 etc.
+const MAX_CONCURRENT_SCRAPES = Math.max(
+  1,
+  parseInt(process.env.ML_SCRAPER_MAX_CONCURRENT || "1", 10) || 1
+);
+
 /**
  * Se cache do escopo está stale (ou não existe) E não há scrape em
  * andamento desse escopo, dispara um scrape em background.
@@ -1997,6 +2006,22 @@ export function maybeRefreshLiveSnapshotInBackground(scope = "all", connectionId
   // Já tem scrape DESTE ESCOPO em andamento → não duplica
   if (liveSnapshotInflightByScope.has(lockKey)) {
     return { triggered: false, reason: "scrape_in_progress", scope: normalizedScope };
+  }
+
+  // Limite GLOBAL de scrapes concorrentes (todas as combinacoes
+  // scope×connection). Protege a 1 vCPU do VPS contra paralelismo
+  // descontrolado. Caller pode tentar de novo no proximo tick do RR.
+  if (liveSnapshotInflightByScope.size >= MAX_CONCURRENT_SCRAPES) {
+    const inflight = Array.from(liveSnapshotInflightByScope.keys());
+    log.info(
+      `[live-snapshot] skip scope="${normalizedScope}" — limite global ${liveSnapshotInflightByScope.size}/${MAX_CONCURRENT_SCRAPES} (inflight: ${inflight.join(",")})`
+    );
+    return {
+      triggered: false,
+      reason: "global_concurrency_limit",
+      scope: normalizedScope,
+      inflight,
+    };
   }
 
   // Cache fresh → não precisa refresh
