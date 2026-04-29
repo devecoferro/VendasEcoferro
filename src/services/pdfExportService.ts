@@ -252,8 +252,13 @@ async function drawSaleCard(
 
   const pad = 3;
 
-  // ── Borda removida (briefing 2026-04-29): etiqueta SEM moldura
-  // laranja, alinhamento via grade invisivel apenas. ───────────────
+  // ── Borda preta fina (briefing 2026-04-29 v2) ────────────────────
+  // Briefing inicial pediu laranja → depois "remover" → agora "preta
+  // fina". Mantemos o ultimo pedido. Espessura 0.3mm pra ficar
+  // discreta sem desalinhar a grade.
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.3);
+  doc.rect(x0, y0, CARD_W, CARD_H, "S");
 
   // Áreas base em mm dentro do card — posicionamento conforme imagem
   // de referencia "Etiqueta Programa - 01 SEM linhas.png" (2026-04-29).
