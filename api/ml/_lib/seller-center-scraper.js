@@ -423,10 +423,12 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
   }
 
   let browser;
+  let context;
+  let page;
   try {
     // P9: reusa browser warm (economiza ~2-3s do launch).
     browser = await acquireWarmBrowser();
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -434,7 +436,7 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
       locale: "pt-BR",
       timezoneId: "America/Sao_Paulo",
     });
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // Timeout global da operação
     const navPromise = page.goto(ML_VENDAS_URL, {
@@ -494,6 +496,11 @@ export async function scrapeMlSellerCenter({ timeoutMs = 45_000 } = {}) {
     log.error("Scraper falhou", err instanceof Error ? err : new Error(String(err)));
     return { ok: false, ...errorInfo };
   } finally {
+    // Bug 2026-04-29: page/context não eram fechados — vazavam renderers
+    // (11 chromes vivos no VPS, idades 1-13min). Browser fica no warm pool;
+    // page/context têm que ir embora.
+    if (page) await page.close().catch(() => {});
+    if (context) await context.close().catch(() => {});
     if (browser) {
       // P9: devolve pro pool em vez de fechar.
       releaseWarmBrowser();
@@ -1148,6 +1155,8 @@ export async function scrapeMlSellerCenterFull({
   }
 
   let browser;
+  let context;
+  let page;
   const captures = {};
   try {
     // P9 — warm pool: reusa browser entre scrapes pra economizar ~2-3s
@@ -1155,7 +1164,7 @@ export async function scrapeMlSellerCenterFull({
     // > 5min pra liberar ~80MB de RAM quando nao ha atividade.
     browser = await acquireWarmBrowser();
     // Viewport menor (1280x720 vs 1920x1080) reduz memoria do renderer
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState,
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1170,7 +1179,7 @@ export async function scrapeMlSellerCenterFull({
       "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,mp4,webm}",
       (route) => route.abort()
     );
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // Verifica sessao com 1a navegacao
     const probeUrl = ML_VENDAS_URL;
@@ -1258,6 +1267,9 @@ export async function scrapeMlSellerCenterFull({
     log.error("[full-scrape] falhou", err instanceof Error ? err : new Error(String(err)));
     return { ok: false, ...errorInfo };
   } finally {
+    // Bug 2026-04-29: page/context não eram fechados — vazavam renderers.
+    if (page) await page.close().catch(() => {});
+    if (context) await context.close().catch(() => {});
     if (browser) {
       // P9: nao fechamos o browser aqui — fica no warm pool. Reset do
       // timer de idle: se ninguem pedir scrape em 5min, o pool fecha.

@@ -29,12 +29,13 @@ const RECOVERY_TOPICS = ["orders_v2", "shipments", "post_purchase", "invoices"];
 
 /**
  * Busca notificacoes perdidas pra um topic especifico via ML API.
- * Retorna array de payloads (mesmo shape do webhook normal).
+ * Retorna { items, status } — status permite ao caller distinguir 401
+ * (token bad — abortar polling do seller) de outros erros transitorios.
  */
 async function fetchMissedFeedsForTopic(accessToken, topic) {
   if (!ML_CLIENT_ID) {
     log.warn("ML_CLIENT_ID nao configurado — recovery desativado");
-    return [];
+    return { items: [], status: 0 };
   }
 
   const url = `https://api.mercadolibre.com/missed_feeds?app_id=${encodeURIComponent(ML_CLIENT_ID)}&topic=${encodeURIComponent(topic)}`;
@@ -47,19 +48,19 @@ async function fetchMissedFeedsForTopic(accessToken, topic) {
         topic,
         status: response.status,
       });
-      return [];
+      return { items: [], status: response.status };
     }
     const data = await response.json();
     // Schema: array de notificacoes ou objeto { messages: [...] }
-    if (Array.isArray(data)) return data;
-    if (Array.isArray(data?.messages)) return data.messages;
-    return [];
+    if (Array.isArray(data)) return { items: data, status: 200 };
+    if (Array.isArray(data?.messages)) return { items: data.messages, status: 200 };
+    return { items: [], status: 200 };
   } catch (err) {
     log.error(
       `Erro ao buscar missed_feeds topic=${topic}`,
       err instanceof Error ? err : new Error(String(err))
     );
-    return [];
+    return { items: [], status: 0 };
   }
 }
 
@@ -148,10 +149,25 @@ export async function recoverMissedFeeds() {
       if (!validConn?.access_token) continue;
 
       for (const topic of RECOVERY_TOPICS) {
-        const notifications = await fetchMissedFeedsForTopic(
+        const { items: notifications, status } = await fetchMissedFeedsForTopic(
           validConn.access_token,
           topic
         );
+        // 401: token bad apesar do refresh. ML rejeitou — refresh_token
+        // tambem expirou ou conexao revogada. Pula os outros 3 topics
+        // (mesmo seller, mesmo token, mesmo 401) e marca o erro pra log.
+        if (status === 401) {
+          errors.push({
+            seller_id: conn.seller_id,
+            connection_id: conn.id,
+            reason: "token_unauthorized",
+            topic,
+          });
+          log.warn(
+            `seller=${conn.seller_id} (conn=${conn.id}) retornou 401 no topic ${topic} — abortando recovery dos demais topics. Reconectar a conta.`
+          );
+          break;
+        }
         if (notifications.length === 0) continue;
 
         totalRecovered += notifications.length;

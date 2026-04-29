@@ -474,6 +474,11 @@ export interface MLNFeResponse {
 const ML_REMOTE_TIMEOUT_MS = 8000;
 const ML_ORDERS_TIMEOUT_MS = 30000;
 const ML_SYNC_TIMEOUT_MS = 120000; // 2min — sync full pode puxar muitas paginas
+// Bug 2026-04-29: VPS de 1 vCPU sob carga (auto-heal loop + scraper leak)
+// fazia /api/ml/auth action=list (rota trivial, so SQLite) demorar 15s.
+// 8s estourava na UI mostrando "Conta Fantom nao conectada". Margem
+// generosa enquanto backend nao estabiliza.
+const ML_LIST_CONNECTIONS_TIMEOUT_MS = 20000;
 const ML_DASHBOARD_TIMEOUT_MS = 45000;
 
 function padDatePart(value: number): string {
@@ -1007,7 +1012,8 @@ export async function listMLConnections(): Promise<MLConnection[]> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "list" }),
     },
-    "Timeout ao listar conexoes do Mercado Livre."
+    "Timeout ao listar conexoes do Mercado Livre.",
+    ML_LIST_CONNECTIONS_TIMEOUT_MS
   );
 
   if (!response.ok) {

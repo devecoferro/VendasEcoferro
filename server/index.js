@@ -491,6 +491,13 @@ const AUTO_HEAL_COOLDOWN_MS = 3 * 60 * 1000;
 // falhou com PERSISTENT_CLASSIFICATION_BUG ou PARTIALLY_HEALED.
 // Cooldown de 10min pra nao martelar a API.
 const HARD_HEAL_COOLDOWN_MS = 10 * 60 * 1000;
+// Circuit breaker do auto-heal: se PERSISTENT_CLASSIFICATION_BUG persistir
+// por N tentativas seguidas (max_abs_diff inalterado), e bug de codigo —
+// re-tentar burra ML API e CPU. Trip por TRIP_DURATION_MS, alerta uma vez,
+// e so reseta em sucesso ou no fim do periodo. Resolve loop infinito visto
+// no VPS em 29/04 (auto-heal a cada 3min × 1062 ML API calls cada).
+const HEAL_CB_FAILURE_THRESHOLD = 3;
+const HEAL_CB_TRIP_DURATION_MS = 30 * 60 * 1000;
 // Retencao: limpa snapshots com mais de 30 dias uma vez por dia.
 const CHIP_DRIFT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 const CHIP_DRIFT_RETENTION_DAYS = 30;
@@ -520,6 +527,9 @@ let lastPersistedChipDrift = null; // { status, max_abs_diff } do ultimo snapsho
 let lastChipDriftHeartbeatAt = 0; // epoch ms do ultimo heartbeat gravado
 let lastAutoHealAt = 0; // epoch ms do ultimo auto-heal disparado
 let lastHardHealAt = 0; // epoch ms do ultimo hard-heal disparado
+let healConsecutiveFailures = 0; // contagem de PERSISTENT_CLASSIFICATION_BUG seguidos
+let healCircuitTrippedUntil = 0; // epoch ms — ate quando suprimir auto-heal
+let healCircuitTrippedLogged = false; // alerta ja emitido no trip atual?
 
 // P7: pula auto-sync quando nao houver atividade recente de sessao. Se
 // ninguem usou o app nas ultimas 15min, nao vale torrar ML API.
@@ -678,8 +688,20 @@ async function autoChipDriftSnapshot() {
     let finalResult = result;
     let healOutcome = null;
     let hardHealOutcome = null;
+    // Circuit breaker: se ja trippamos, suprime auto-heal ate cooldown vencer.
+    // So loga o alerta uma vez por trip — drift continua sendo registrado nos
+    // heartbeats normais, mas nao chamamos ML API atoa.
+    const cbActive = now < healCircuitTrippedUntil;
+    if (cbActive && !healCircuitTrippedLogged) {
+      log.warn(
+        `Auto-heal circuit breaker ATIVO ate ${new Date(healCircuitTrippedUntil).toISOString()} — drift sera ignorado ate la (bug de classificacao persistente)`
+      );
+      healCircuitTrippedLogged = true;
+    }
+
     if (
       result.status === "DRIFT_DETECTED" &&
+      !cbActive &&
       now - lastAutoHealAt >= AUTO_HEAL_COOLDOWN_MS
     ) {
       lastAutoHealAt = now;
@@ -693,6 +715,10 @@ async function autoChipDriftSnapshot() {
         // Usa o "after" como resultado final a ser persistido
         if (heal.after) finalResult = heal.after;
         if (heal.healed) {
+          // Reset do circuit breaker — heal funcionou, sistema saudavel.
+          healConsecutiveFailures = 0;
+          healCircuitTrippedUntil = 0;
+          healCircuitTrippedLogged = false;
           log.info(
             `Auto-heal SUCESSO: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? 0})`
           );
@@ -701,14 +727,31 @@ async function autoChipDriftSnapshot() {
           log.warn(
             `Auto-heal FALHOU: ${heal.reason} (${heal.refreshed_orders} pedidos refreshed, max_abs_diff ${result.max_abs_diff}→${heal.after?.max_abs_diff ?? result.max_abs_diff})`
           );
+          // Circuit breaker: incrementa contador de falhas persistentes.
+          // Se max_abs_diff nao melhorou, e bug de codigo — nao adianta retentar.
+          const diffNotImproving =
+            heal.reason === "PERSISTENT_CLASSIFICATION_BUG" &&
+            (heal.after?.max_abs_diff ?? result.max_abs_diff) >= result.max_abs_diff;
+          if (diffNotImproving) {
+            healConsecutiveFailures += 1;
+            if (healConsecutiveFailures >= HEAL_CB_FAILURE_THRESHOLD) {
+              healCircuitTrippedUntil = now + HEAL_CB_TRIP_DURATION_MS;
+              healCircuitTrippedLogged = false;
+              log.warn(
+                `Auto-heal circuit breaker TRIPPED — ${healConsecutiveFailures} falhas seguidas com max_abs_diff inalterado (${result.max_abs_diff}). Suprimindo por ${Math.round(HEAL_CB_TRIP_DURATION_MS / 60000)}min.`
+              );
+            }
+          }
           // ESCALATION: soft heal não resolveu → dispara hard heal
           // (pedido-a-pedido via /orders/{id} + /shipments/{id}, sobrescreve raw_data).
           // Cooldown maior (10min) pra evitar gastar ML API atoa se o bug for
           // realmente na lógica de classificação.
+          // CB tambem suprime hard-heal quando trippado.
           const shouldEscalateToHardHeal =
             (heal.reason === "PERSISTENT_CLASSIFICATION_BUG" ||
               heal.reason === "PARTIALLY_HEALED") &&
-            now - lastHardHealAt >= HARD_HEAL_COOLDOWN_MS;
+            now - lastHardHealAt >= HARD_HEAL_COOLDOWN_MS &&
+            now >= healCircuitTrippedUntil;
           if (shouldEscalateToHardHeal) {
             lastHardHealAt = now;
             log.info(
