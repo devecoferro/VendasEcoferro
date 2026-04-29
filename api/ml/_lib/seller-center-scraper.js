@@ -79,6 +79,14 @@ let warmBrowserIdleTimer = null;
 let warmBrowserLaunchPromise = null;
 const WARM_BROWSER_IDLE_MS = 60 * 1000;
 
+// Removido --single-process em 2026-04-29: causava SIGTRAP do
+// chrome-headless-shell sob saturacao de CPU (VPS tem 1 vCPU, load
+// avg ~3). Em single-process o watchdog do Chrome dispara SIGTRAP em
+// deadlocks/timeouts e mata o browser inteiro — race do warm pool era
+// SINTOMA, nao causa: 2 scopes paralelos viam o mesmo browser morrer
+// simultaneo. Multi-process (default) isola renderers em processos
+// separados; quando 1 trava os outros sobrevivem. Trade-off: ~120MB a
+// mais de RAM (de ~80MB pra ~200MB). VPS tem 3GB livres, ok.
 const WARM_BROWSER_LAUNCH_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
@@ -93,7 +101,6 @@ const WARM_BROWSER_LAUNCH_ARGS = [
   "--no-first-run",
   "--no-default-browser-check",
   "--mute-audio",
-  "--single-process",
 ];
 
 async function acquireWarmBrowser() {
