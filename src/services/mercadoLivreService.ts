@@ -529,6 +529,36 @@ function formatSaleDate(dateString: string): { saleDate: string; saleTime: strin
   };
 }
 
+// Brief 2026-04-29: derivacao do NOME REAL do comprador.
+// O campo persistido `buyer_name` na nossa DB pode vir igual ao
+// nickname (ex: pedido #2000016193697340 onde ML retorna apenas
+// `buyer.nickname` e nao first_name/last_name no objeto buyer raiz).
+// O nome real fica em `raw_data.billing_info_snapshot.buyer.billing_info`
+// como `name` + `last_name`. Quando essas chaves existem e somam um
+// texto que NAO eh igual ao nickname, retornamos elas. Senao mantemos
+// o buyer_name (back-compat com pedidos onde ML ja popula o nome).
+function extractRealCustomerName(
+  order: MLOrder,
+  fallback: string
+): string {
+  const raw = (order.raw_data || {}) as Record<string, unknown>;
+  const snapshot = raw.billing_info_snapshot as
+    | { buyer?: { billing_info?: { name?: unknown; last_name?: unknown } } }
+    | undefined;
+  const billing = snapshot?.buyer?.billing_info;
+  const name = typeof billing?.name === "string" ? billing.name.trim() : "";
+  const lastName = typeof billing?.last_name === "string" ? billing.last_name.trim() : "";
+  const composed = [name, lastName].filter(Boolean).join(" ").trim();
+  if (!composed) return fallback;
+  // Caso ML tenha duplicado nickname → name/last_name (raro), mantem fallback.
+  const nick = (order.buyer_nickname || "").trim().toLowerCase();
+  if (composed.toLowerCase() === nick) return fallback;
+  // Title-case suave: "FILIPE DE SOUZA" → "Filipe De Souza".
+  return composed
+    .toLowerCase()
+    .replace(/(^|\s)([a-zà-ú])/g, (_, sep, ch) => sep + ch.toUpperCase());
+}
+
 // Extrai sla_snapshot.expected_date do raw_data do ML e formata como
 // DD/MM/YYYY pra exibir direto na etiqueta interna Ecoferro ("Data Envio").
 function extractExpectedShippingDate(order: MLOrder): string {
@@ -601,7 +631,7 @@ export function mapMLOrderToSaleData(order: MLOrder) {
     saleNumber: order.sale_number || order.order_id,
     saleDate,
     saleTime,
-    customerName: order.buyer_name || "",
+    customerName: extractRealCustomerName(order, order.buyer_name || ""),
     customerNickname: order.buyer_nickname || "",
     productName,
     sku,
