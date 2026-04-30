@@ -18,8 +18,17 @@ interface UseMercadoLivreDataOptions {
   ordersView?: "full" | "dashboard";
   autoLoadAllPages?: boolean;
   /** Brief 2026-04-28 multi-seller fase 2: filtra pedidos por
-   * conexao ML (EcoFerro vs Fantom). Quando ausente, retorna todos. */
-  connectionId?: string | null;
+   * conexao ML (EcoFerro vs Fantom). Quando ausente, retorna todos.
+   * IMPORTANTE: quando undefined, o hook aguarda a resolucao antes de
+   * fazer fetch (evita carregar TODOS os pedidos misturados). Use null
+   * apenas quando intentar de verdade carregar dados sem filtro. */
+  connectionId?: string | null | undefined;
+  /** Sprint 2.5 fix race condition: indica se connectionId foi
+   * explicitamente resolvido (diferencia "nao foi passado" de "null intencional").
+   * IMPORTANTE: quando undefined, significa que NAO ha resolucao pendente
+   * (backward compatibility - usado por DashboardPage que nao resolve connectionId).
+   * Quando true/false, significa que há resolucao em andamento/completa. */
+  connectionIdResolved?: boolean;
 }
 
 interface SyncOptions {
@@ -219,7 +228,8 @@ export function useMercadoLivreData(
     ordersLimit = null,
     ordersView = "full",
     autoLoadAllPages = false,
-    connectionId = null,
+    connectionId = undefined,
+    connectionIdResolved = undefined,
   } = options;
   const shouldPaginateOrders =
     typeof ordersLimit === "number" && Number.isFinite(ordersLimit) && ordersLimit > 0;
@@ -234,7 +244,23 @@ export function useMercadoLivreData(
       }),
     [normalizedPageSize, ordersScope, ordersView, shouldPaginateOrders, connectionId]
   );
-  const initialCache = useMemo(() => readMercadoLivreCache(cacheKey), [cacheKey]);
+  // Sprint 2.5: nao ler cache se connectionId nao foi resolvido ainda
+  // (evita carregar dados "misturados" no primeiro render).
+  // IMPORTANTE: se connectionIdResolved é undefined, significa que nao há
+  // resolucao pendente (backward compatibility - ex: DashboardPage), então
+  // permitir ler cache normalmente.
+  const initialCache = useMemo(
+    () => {
+      // Backward compatibility: se connectionIdResolved nao foi explicitamente
+      // definido, nao há guard de resolucao (permite DashboardPage funcionar)
+      const hasPendingResolution = connectionIdResolved === false;
+      if (connectionId === undefined && hasPendingResolution) {
+        return null;
+      }
+      return readMercadoLivreCache(cacheKey);
+    },
+    [cacheKey, connectionId, connectionIdResolved]
+  );
 
   const [connection, setConnection] = useState<MLConnection | null>(initialCache?.connection ?? null);
   const [orders, setOrders] = useState<MLOrder[]>(initialCache?.orders ?? []);
@@ -522,6 +548,19 @@ export function useMercadoLivreData(
   );
 
   useEffect(() => {
+    // Sprint 2.5 fix race condition: se connectionId nao foi resolvido
+    // (undefined + connectionIdResolved=false), aguardar. Isso evita
+    // fazer fetch com connectionId=null antes de resolver a conexao da
+    // EcoFerro, que retornaria TODOS os pedidos (Ecoferro + Fantom misturados).
+    // IMPORTANTE: se connectionIdResolved é undefined, nao há resolucao
+    // pendente (backward compatibility - ex: DashboardPage).
+    const hasPendingResolution = connectionIdResolved === false;
+    if (connectionId === undefined && hasPendingResolution) {
+      // Ainda aguardando resolucao do connectionId — nao fazer fetch
+      setLoading(true);
+      return;
+    }
+
     const cached = readMercadoLivreCache(cacheKey);
 
     if (cached) {
@@ -536,7 +575,7 @@ export function useMercadoLivreData(
     }
 
     void refresh();
-  }, [cacheKey, refresh]);
+  }, [cacheKey, connectionId, connectionIdResolved, refresh]);
 
   useEffect(() => {
     connectionRef.current = connection;

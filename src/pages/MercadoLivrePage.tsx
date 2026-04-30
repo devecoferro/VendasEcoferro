@@ -536,12 +536,18 @@ export default function MercadoLivrePage({
   // passado (rota /mercado-livre sem prop), busca a conexao da EcoFerro
   // dinamicamente. Sem isso, /api/ml/orders sem connection_id retorna
   // TODOS os pedidos (incluindo Fantom) e a pagina mostra mistura.
-  const [resolvedConnectionId, setResolvedConnectionId] = useState<string | null>(
+  //
+  // Sprint 2.5 fix: usa estado separado para "foi resolvido" vs "ainda nao"
+  // para que o hook nao carregue dados antes de resolver (race condition).
+  const [resolvedConnectionId, setResolvedConnectionId] = useState<string | null | undefined>(
     connectionId
   );
+  const [connectionIdResolved, setConnectionIdResolved] = useState(Boolean(connectionId));
   useEffect(() => {
-    if (connectionId) {
+    if (connectionId !== undefined) {
+      // connectionId foi explicitamente passado — usar direto
       setResolvedConnectionId(connectionId);
+      setConnectionIdResolved(true);
       return;
     }
     let cancelled = false;
@@ -551,9 +557,22 @@ export default function MercadoLivrePage({
         const eco = all.find((c) =>
           (c.seller_nickname || "").toLowerCase().includes("ecoferro")
         );
-        if (!cancelled && eco) setResolvedConnectionId(eco.id);
+        if (!cancelled) {
+          if (eco) {
+            setResolvedConnectionId(eco.id);
+          } else {
+            // Fallback: nao encontrou EcoFerro, usar null (backend usa default)
+            setResolvedConnectionId(null);
+          }
+          // Marcar como resolvido mesmo que nao tenha achado
+          setConnectionIdResolved(true);
+        }
       } catch {
         // best-effort — fallback pra default backend (oldest = ECOFERRO)
+        if (!cancelled) {
+          setResolvedConnectionId(null);
+          setConnectionIdResolved(true);
+        }
       }
     })();
     return () => {
@@ -586,6 +605,9 @@ export default function MercadoLivrePage({
     ordersView: "dashboard",
     autoLoadAllPages: true,
     connectionId: resolvedConnectionId,
+    // Sprint 2.5: aguardar resolucao do connectionId antes de fazer fetch
+    // (evita race condition onde carrega TODOS os pedidos no primeiro render)
+    connectionIdResolved,
   });
 
   // ─── Fase 2: snapshot LIVE do ML (dados 1:1 com Seller Center) ─────
