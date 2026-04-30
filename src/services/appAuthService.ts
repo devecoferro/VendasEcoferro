@@ -1,5 +1,6 @@
 import {
   ALL_LOCATIONS_ACCESS,
+  ALL_MODULES_ACCESS,
   type AuthUser,
   type SaveUserInput,
 } from "@/types/auth";
@@ -172,6 +173,10 @@ export async function saveRemoteUser(input: SaveUserInput): Promise<AuthUser[]> 
       input.role === "admin"
         ? [ALL_LOCATIONS_ACCESS]
         : input.allowedLocations,
+    allowedModules:
+      input.role === "admin"
+        ? [ALL_MODULES_ACCESS]
+        : (input.allowedModules ?? [ALL_MODULES_ACCESS]),
   };
 
   const data = await authenticatedFetch<UsersResponse>("/api/app-users", {

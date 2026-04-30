@@ -60,6 +60,9 @@ function mapProfileRow(row) {
     password_hash: row.password_hash,
     role: row.role,
     allowed_locations: parseJsonSafely(row.allowed_locations, []),
+    // 2026-04-30: default ["*"] preserva comportamento legado
+    // pra rows criados antes da migration de allowed_modules.
+    allowed_modules: parseJsonSafely(row.allowed_modules, ["*"]),
     active: parseBoolean(row.active, true),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -70,7 +73,7 @@ function getProfileRowById(userId) {
   return mapProfileRow(
     db
       .prepare(
-        `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+        `SELECT id, username, login_email, password_hash, role, allowed_locations, allowed_modules, active, created_at, updated_at
          FROM app_user_profiles
          WHERE id = ?
          LIMIT 1`
@@ -83,7 +86,7 @@ function getProfileRowByUsername(username) {
   return mapProfileRow(
     db
       .prepare(
-        `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+        `SELECT id, username, login_email, password_hash, role, allowed_locations, allowed_modules, active, created_at, updated_at
          FROM app_user_profiles
          WHERE username = ?
          LIMIT 1`
@@ -208,6 +211,23 @@ export function sanitizeAllowedLocations(locations = []) {
   return Array.from(uniqueLocations.values());
 }
 
+// 2026-04-30: lista de modulos permitidos. Convencao "*" = todos.
+// Aceita IDs validos (lower-case, alfanumericos+_) ou "*".
+export const ALL_MODULES_ACCESS = "*";
+export function sanitizeAllowedModules(modules = []) {
+  const arr = Array.isArray(modules) ? modules : [];
+  if (arr.includes(ALL_MODULES_ACCESS)) return [ALL_MODULES_ACCESS];
+
+  const unique = new Map();
+  for (const id of arr) {
+    const trimmed = String(id || "").trim();
+    if (!trimmed) continue;
+    if (!/^[a-z0-9_]+$/.test(trimmed)) continue;
+    unique.set(trimmed, trimmed);
+  }
+  return Array.from(unique.values());
+}
+
 export function serializeProfile(profile) {
   if (!profile) return null;
 
@@ -218,6 +238,9 @@ export function serializeProfile(profile) {
     allowedLocations: Array.isArray(profile.allowed_locations)
       ? profile.allowed_locations
       : [],
+    allowedModules: Array.isArray(profile.allowed_modules)
+      ? profile.allowed_modules
+      : [ALL_MODULES_ACCESS],
     active: Boolean(profile.active),
     createdAt: profile.created_at,
     updatedAt: profile.updated_at,

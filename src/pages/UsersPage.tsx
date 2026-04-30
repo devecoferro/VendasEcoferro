@@ -8,7 +8,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/contexts/AuthContext";
-import { ALL_LOCATIONS_ACCESS, type AuthUser, type SaveUserInput, type UserRole } from "@/types/auth";
+import {
+  ALL_LOCATIONS_ACCESS,
+  ALL_MODULES_ACCESS,
+  APP_MODULES,
+  type AuthUser,
+  type SaveUserInput,
+  type UserRole,
+} from "@/types/auth";
 import { toast } from "sonner";
 import { ShieldCheck, UserCog, UserPlus, Trash2 } from "lucide-react";
 
@@ -19,6 +26,7 @@ interface UserFormState {
   role: UserRole;
   active: boolean;
   allowedLocations: string[];
+  allowedModules: string[];
   customLocation: string;
 }
 
@@ -28,6 +36,9 @@ const initialFormState: UserFormState = {
   role: "operator",
   active: true,
   allowedLocations: [],
+  // Default novo operador: acesso a todos os modulos. Admin pode
+  // restringir depois marcando individualmente.
+  allowedModules: [ALL_MODULES_ACCESS],
   customLocation: "",
 };
 
@@ -45,9 +56,16 @@ function buildFormState(user?: AuthUser): UserFormState {
     allowedLocations: user.allowedLocations.includes(ALL_LOCATIONS_ACCESS)
       ? [ALL_LOCATIONS_ACCESS]
       : user.allowedLocations,
+    allowedModules: user.allowedModules?.includes(ALL_MODULES_ACCESS)
+      ? [ALL_MODULES_ACCESS]
+      : (user.allowedModules ?? []),
     customLocation: "",
   };
 }
+
+// Modulos que aparecem no checkbox grid (exclui adminOnly: a tela de
+// usuarios e diagnostico ML so admin acessa, controlado por requireAdmin).
+const SELECTABLE_MODULES = APP_MODULES.filter((m) => !("adminOnly" in m && m.adminOnly));
 
 export default function UsersPage() {
   const { users, saveUser, toggleUserActive, deleteUser, locationOptions } = useAuth();
@@ -84,6 +102,26 @@ export default function UsersPage() {
     }));
   };
 
+  const toggleModule = (moduleId: string) => {
+    setForm((current) => {
+      const selected = current.allowedModules.includes(moduleId);
+      const withoutAll = current.allowedModules.filter((m) => m !== ALL_MODULES_ACCESS);
+      return {
+        ...current,
+        allowedModules: selected
+          ? withoutAll.filter((m) => m !== moduleId)
+          : [...withoutAll, moduleId],
+      };
+    });
+  };
+
+  const handleAllModulesChange = (checked: boolean) => {
+    setForm((current) => ({
+      ...current,
+      allowedModules: checked ? [ALL_MODULES_ACCESS] : [],
+    }));
+  };
+
   const addCustomLocation = () => {
     const customLocation = form.customLocation.trim();
     if (!customLocation) return;
@@ -109,6 +147,9 @@ export default function UsersPage() {
         role: form.role,
         active: form.active,
         allowedLocations: form.allowedLocations,
+        // Admin sempre tem acesso a tudo — o backend tambem força isso,
+        // mas mantemos consistente no payload.
+        allowedModules: form.role === "admin" ? [ALL_MODULES_ACCESS] : form.allowedModules,
       };
 
       await saveUser(payload);
@@ -217,6 +258,8 @@ export default function UsersPage() {
                           role: value,
                           allowedLocations:
                             value === "admin" ? [ALL_LOCATIONS_ACCESS] : current.allowedLocations,
+                          allowedModules:
+                            value === "admin" ? [ALL_MODULES_ACCESS] : current.allowedModules,
                         }))
                       }
                     >
@@ -287,6 +330,48 @@ export default function UsersPage() {
                   )}
                 </div>
 
+                {/* 2026-04-30: granularidade por tela. Admin nao mostra
+                    o bloco — sempre tem acesso a tudo. */}
+                {form.role !== "admin" && (
+                  <div className="space-y-3 rounded-2xl border border-border/60 bg-secondary/20 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">Permissão por tela</p>
+                        <p className="text-xs text-muted-foreground">
+                          Marque as telas que este usuário pode acessar.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="all-modules"
+                          checked={form.allowedModules.includes(ALL_MODULES_ACCESS)}
+                          onCheckedChange={(checked) => handleAllModulesChange(Boolean(checked))}
+                        />
+                        <Label htmlFor="all-modules" className="text-sm">
+                          Todas as telas
+                        </Label>
+                      </div>
+                    </div>
+
+                    {!form.allowedModules.includes(ALL_MODULES_ACCESS) && (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {SELECTABLE_MODULES.map((mod) => (
+                          <label
+                            key={mod.id}
+                            className="flex items-center gap-3 rounded-xl border border-border/60 bg-background/80 px-3 py-2 text-sm"
+                          >
+                            <Checkbox
+                              checked={form.allowedModules.includes(mod.id)}
+                              onCheckedChange={() => toggleModule(mod.id)}
+                            />
+                            <span>{mod.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2">
                   <Checkbox
                     id="user-active"
@@ -327,6 +412,16 @@ export default function UsersPage() {
             <CardContent className="space-y-4">
               {users.map((user) => {
                 const allLocations = user.allowedLocations.includes(ALL_LOCATIONS_ACCESS);
+                const allModules =
+                  user.role === "admin" ||
+                  (user.allowedModules?.includes(ALL_MODULES_ACCESS) ?? false);
+                const moduleLabels = allModules
+                  ? "Todas as telas"
+                  : SELECTABLE_MODULES.filter((m) =>
+                      (user.allowedModules ?? []).includes(m.id)
+                    )
+                      .map((m) => m.label)
+                      .join(", ") || "Nenhuma tela";
 
                 return (
                   <div
@@ -349,6 +444,7 @@ export default function UsersPage() {
                             ? "Acesso a todos os locais"
                             : `Locais: ${user.allowedLocations.join(", ")}`}
                         </p>
+                        <p className="mt-1 text-xs text-muted-foreground">Telas: {moduleLabels}</p>
                       </div>
 
                       <div className="flex flex-wrap gap-2">

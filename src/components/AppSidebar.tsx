@@ -25,6 +25,9 @@ interface SidebarNavItem {
   icon?: LucideIcon;
   logoSrc?: string;
   logoAlt?: string;
+  // 2026-04-30: id do modulo pra esconder o item quando o user
+  // nao tem permissao em allowedModules. Sem moduleId = sempre visivel.
+  moduleId?: string;
 }
 
 interface SidebarContentProps {
@@ -35,25 +38,27 @@ interface SidebarContentProps {
 }
 
 const baseNavItems: SidebarNavItem[] = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/review", icon: ClipboardCheck, label: "Conferencia" },
-  { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda" },
-  { to: "/history", icon: History, label: "Historico" },
-  { to: "/stock", icon: Package, label: "Estoque" },
+  { to: "/", icon: LayoutDashboard, label: "Dashboard", moduleId: "dashboard" },
+  { to: "/review", icon: ClipboardCheck, label: "Conferencia", moduleId: "review" },
+  { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda", moduleId: "conferencia_venda" },
+  { to: "/history", icon: History, label: "Historico", moduleId: "history" },
+  { to: "/stock", icon: Package, label: "Estoque", moduleId: "stock" },
   {
     to: "/mercado-livre",
     label: "EcoFerro",
     logoSrc: "/menu-ecoferro-logo-96.png",
     logoAlt: "Logo EcoFerro",
+    moduleId: "ml",
   },
   {
     to: "/mercado-livre-fantom",
     label: "Fantom",
     logoSrc: "/menu-fantom-logo-96.png",
     logoAlt: "Logo Fantom",
+    moduleId: "fantom",
   },
-  { to: "/manual", icon: BookOpen, label: "Manual" },
-  { to: "/report-debug", icon: Bug, label: "Report Debug" },
+  { to: "/manual", icon: BookOpen, label: "Manual", moduleId: "manual" },
+  { to: "/report-debug", icon: Bug, label: "Report Debug", moduleId: "report_debug" },
 ];
 
 function SidebarContent({
@@ -63,19 +68,26 @@ function SidebarContent({
   onToggleCollapsed,
 }: SidebarContentProps) {
   const location = useLocation();
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, canAccessModule } = useAuth();
 
   const navItems = useMemo(() => {
+    // 2026-04-30: filtra items pelo allowedModules. Items sem moduleId
+    // ficam sempre visiveis (compatibilidade). Items adminOnly aparecem
+    // apenas pra admin (controlado por canAccessModule via APP_MODULES).
+    const filteredBase = baseNavItems.filter(
+      (item) => !item.moduleId || canAccessModule(item.moduleId)
+    );
+
     if (currentUser?.role === "admin") {
       return [
-        ...baseNavItems,
-        { to: "/users", icon: ShieldCheck, label: "Usuarios" },
-        { to: "/ml-diagnostics", icon: Activity, label: "Diagnostico ML" },
+        ...filteredBase,
+        { to: "/users", icon: ShieldCheck, label: "Usuarios", moduleId: "users" },
+        { to: "/ml-diagnostics", icon: Activity, label: "Diagnostico ML", moduleId: "ml_diagnostics" },
       ];
     }
 
-    return baseNavItems;
-  }, [currentUser?.role]);
+    return filteredBase;
+  }, [currentUser?.role, canAccessModule]);
 
   return (
     <div

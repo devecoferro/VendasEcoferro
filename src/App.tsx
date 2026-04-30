@@ -53,16 +53,38 @@ const App = () => (
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/ml-callback" element={<MLCallbackPage />} />
 
-                <Route element={<ProtectedRoute />}>
+                {/* 2026-04-30: cada rota declara o moduleId que exige.
+                    Admin passa sempre; operator precisa ter o modulo
+                    em allowedModules (ou "*"). Reconnect ML é livre
+                    pra qualquer usuario logado (path utilitario). */}
+                <Route element={<ProtectedRoute requireModule="dashboard" />}>
                   <Route path="/" element={<DashboardPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="review" />}>
                   <Route path="/review" element={<ReviewPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="history" />}>
                   <Route path="/history" element={<HistoryPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="ml" />}>
                   <Route path="/mercado-livre" element={<MercadoLivrePage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="fantom" />}>
                   <Route path="/mercado-livre-fantom" element={<MercadoLivreFantomPage />} />
+                </Route>
+                <Route element={<ProtectedRoute />}>
                   <Route path="/mercado-livre/reconnect" element={<MLReconnectPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="stock" />}>
                   <Route path="/stock" element={<StockPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="conferencia_venda" />}>
                   <Route path="/conferencia-venda" element={<ConferenciaVendaPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="manual" />}>
                   <Route path="/manual" element={<ManualPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="report_debug" />}>
                   <Route path="/report-debug" element={<ReportDebugPage />} />
                 </Route>
 

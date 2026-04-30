@@ -9,6 +9,9 @@ import {
 } from "react";
 import {
   ALL_LOCATIONS_ACCESS,
+  ALL_MODULES_ACCESS,
+  APP_MODULES,
+  type AppModuleId,
   type AuthUser,
   type SaveUserInput,
 } from "@/types/auth";
@@ -39,6 +42,12 @@ interface AuthContextValue {
   toggleUserActive: (userId: string) => Promise<void>;
   deleteUser: (userId: string) => Promise<void>;
   canAccessLocation: (locationLabel: string) => boolean;
+  /**
+   * 2026-04-30: granularidade por modulo. Admin sempre true.
+   * Operator: true se allowedModules inclui "*" OU o moduleId.
+   * Modulos com adminOnly:true exigem role admin (telas /users e /ml-diagnostics).
+   */
+  canAccessModule: (moduleId: AppModuleId | string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -167,6 +176,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [currentUser]
   );
 
+  const canAccessModule = useCallback(
+    (moduleId: AppModuleId | string) => {
+      if (!currentUser) return false;
+      const def = APP_MODULES.find((m) => m.id === moduleId);
+      // Modulo nao registrado: nega por seguranca.
+      if (!def) return false;
+      // Telas adminOnly só admin acessa, mesmo que tenha "*" na lista.
+      if ("adminOnly" in def && def.adminOnly) {
+        return currentUser.role === "admin";
+      }
+      if (currentUser.role === "admin") return true;
+      const allowed = currentUser.allowedModules || [];
+      return allowed.includes(ALL_MODULES_ACCESS) || allowed.includes(moduleId);
+    },
+    [currentUser]
+  );
+
   const locationOptions = useMemo(() => {
     const collected = new Set(DEFAULT_LOCATION_OPTIONS);
 
@@ -202,6 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     toggleUserActive,
     deleteUser,
     canAccessLocation,
+    canAccessModule,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

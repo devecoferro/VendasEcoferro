@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./_lib/db.js";
 import {
   ALL_LOCATIONS_ACCESS,
+  ALL_MODULES_ACCESS,
   assertAdminTransitionAllowed,
   buildLoginEmail,
   createPasswordHash,
@@ -13,6 +14,7 @@ import {
   requireAdmin,
   revokeSessionsByUserId,
   sanitizeAllowedLocations,
+  sanitizeAllowedModules,
   serializeProfile,
 } from "./_lib/auth-server.js";
 
@@ -37,10 +39,25 @@ function buildAllowedLocations(role, allowedLocations) {
   return sanitized;
 }
 
+// 2026-04-30: admin sempre ["*"] (todos os modulos). Operator pode
+// ter sub-conjunto. Default ["*"] preserva back-compat — operadores
+// existentes mantem acesso a tudo ate o admin restringir.
+function buildAllowedModules(role, allowedModules) {
+  if (role === "admin") {
+    return [ALL_MODULES_ACCESS];
+  }
+
+  const sanitized = sanitizeAllowedModules(allowedModules);
+  if (sanitized.includes(ALL_MODULES_ACCESS)) {
+    return [ALL_MODULES_ACCESS];
+  }
+  return sanitized;
+}
+
 function listProfiles() {
   const rows = db
     .prepare(
-      `SELECT id, username, login_email, password_hash, role, allowed_locations, active, created_at, updated_at
+      `SELECT id, username, login_email, password_hash, role, allowed_locations, allowed_modules, active, created_at, updated_at
        FROM app_user_profiles
        ORDER BY datetime(created_at) DESC`
     )
@@ -51,6 +68,7 @@ function listProfiles() {
       serializeProfile({
         ...row,
         allowed_locations: JSON.parse(row.allowed_locations || "[]"),
+        allowed_modules: JSON.parse(row.allowed_modules || '["*"]'),
         active: Boolean(row.active),
       })
     )
@@ -76,6 +94,7 @@ function createUser(input) {
   const role = sanitizeRole(input.role);
   const active = sanitizeBoolean(input.active, true);
   const allowedLocations = buildAllowedLocations(role, input.allowedLocations);
+  const allowedModules = buildAllowedModules(role, input.allowedModules);
   const password = String(input.password || "");
 
   if (!username) {
@@ -106,6 +125,7 @@ function createUser(input) {
         password_hash,
         role,
         allowed_locations,
+        allowed_modules,
         active,
         created_at,
         updated_at
@@ -116,6 +136,7 @@ function createUser(input) {
         @password_hash,
         @role,
         @allowed_locations,
+        @allowed_modules,
         @active,
         @created_at,
         @updated_at
@@ -128,6 +149,7 @@ function createUser(input) {
     password_hash: createPasswordHash(password),
     role,
     allowed_locations: JSON.stringify(allowedLocations),
+    allowed_modules: JSON.stringify(allowedModules),
     active: active ? 1 : 0,
     created_at: timestamp,
     updated_at: timestamp,
@@ -151,6 +173,12 @@ function updateUser(actingUserId, input) {
   const allowedLocations = buildAllowedLocations(
     role,
     input.allowedLocations || currentProfile.allowed_locations
+  );
+  const allowedModules = buildAllowedModules(
+    role,
+    Array.isArray(input.allowedModules)
+      ? input.allowedModules
+      : currentProfile.allowed_modules
   );
 
   // S7: valida política de senha se password foi informado
@@ -177,6 +205,7 @@ function updateUser(actingUserId, input) {
           password_hash = COALESCE(@password_hash, password_hash),
           role = @role,
           allowed_locations = @allowed_locations,
+          allowed_modules = @allowed_modules,
           active = @active,
           updated_at = @updated_at
         WHERE id = @id
@@ -188,6 +217,7 @@ function updateUser(actingUserId, input) {
       password_hash: input.password ? createPasswordHash(input.password) : null,
       role,
       allowed_locations: JSON.stringify(allowedLocations),
+      allowed_modules: JSON.stringify(allowedModules),
       active: active ? 1 : 0,
       updated_at: new Date().toISOString(),
     });
