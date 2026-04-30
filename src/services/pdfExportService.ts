@@ -252,13 +252,13 @@ async function drawSaleCard(
 
   const pad = 3;
 
-  // ── Borda preta fina (briefing 2026-04-29 v2) ────────────────────
-  // Briefing inicial pediu laranja → depois "remover" → agora "preta
-  // fina". Mantemos o ultimo pedido. Espessura 0.3mm pra ficar
-  // discreta sem desalinhar a grade.
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.3);
-  doc.rect(x0, y0, CARD_W, CARD_H, "S");
+  // ── Borda laranja arredondada (2026-04-29 v3 — alinha com modelo
+  // "Etiqueta Programa - 01 SEM linhas.png" pedido para Fantom) ─────
+  // Voltou pra laranja com cantos arredondados pra bater 1:1 com
+  // o modelo de referencia. ORANGE_R/G/B = #F37C20 ja definidos.
+  doc.setDrawColor(ORANGE_R, ORANGE_G, ORANGE_B);
+  doc.setLineWidth(0.7);
+  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
 
   // Áreas base em mm dentro do card — posicionamento conforme imagem
   // de referencia "Etiqueta Programa - 01 SEM linhas.png" (2026-04-29).
