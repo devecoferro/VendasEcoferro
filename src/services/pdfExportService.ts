@@ -46,33 +46,26 @@ const ORANGE_R = 243;
 const ORANGE_G = 124;
 const ORANGE_B = 32;
 
-// Largura das 4 colunas do card (esquerda → direita).
-const COL_LEFT_W = 38;   // Logo ML + foto + # venda
-const COL_INFO_W = 82;   // SKU / produto / comprador / QR venda
-const COL_LOC_W = 38;    // Corredor/Estante/Nível/Local + Logo Eco
-const COL_RIGHT_W = CARD_W - COL_LEFT_W - COL_INFO_W - COL_LOC_W; // QR objeto + SKU + quant + data
-
-// Grid invisivel de 8 linhas horizontais — padroniza alinhamento
-// conforme imagem-referencia "Etiqueta Programa - 01 SEM linhas.png".
+// Grid de linhas horizontais — padroniza alinhamento conforme
+// modelo "modelo_etiqueta_ecoferro_interna.png".
 // CARD_H ≈ 53mm.
 //
-//   Y_ROW_1 → SKU / topo do QR Objeto / topo do logo ML
-//   Y_ROW_2 → Titulo do produto (linha 1 de 2)
+//   Y_ROW_1 → SKU
+//   Y_ROW_2 → Titulo do produto
 //   Y_ROW_3 → Comprador (nome real)
 //   Y_ROW_4 → Nickname
-//   Y_ROW_5 → Corredor (alinha com inicio do QR Venda+LogoEco)
+//   Y_ROW_5 → Corredor (alinha com topo do QR Venda+LogoEco)
 //   Y_ROW_6 → Estante / SKU lateral direito (C4)
 //   Y_ROW_7 → Nivel / Quant: 01
-//   Y_ROW_8 → Local / Data Envio (rodape — usa CARD_H - 3.2)
-const ROW_TOP = 5.8;
-const ROW_GAP = 6.0;
-const Y_ROW_1 = ROW_TOP;                  // 5.8
-const Y_ROW_2 = ROW_TOP + ROW_GAP;        // 11.8
-const Y_ROW_3 = ROW_TOP + ROW_GAP * 2;    // 17.8
-const Y_ROW_4 = ROW_TOP + ROW_GAP * 3;    // 23.8
-const Y_ROW_5 = ROW_TOP + ROW_GAP * 4;    // 29.8
-const Y_ROW_6 = ROW_TOP + ROW_GAP * 5;    // 35.8
-const Y_ROW_7 = ROW_TOP + ROW_GAP * 6;    // 41.8
+//   FOOTER  → Local / Data Envio / #saleNumber (CARD_H - 3)
+const Y_ROW_1 = 6.5;
+const Y_ROW_2 = 12.5;
+const Y_ROW_3 = 18.5;
+const Y_ROW_4 = 24;
+const Y_ROW_5 = 31;
+const Y_ROW_6 = 37.5;
+const Y_ROW_7 = 44;
+const Y_FOOTER = CARD_H - 3;  // ~50
 
 const ECOFERRO_LOGO_URL = "/ecoferro-logo.png";
 const FANTOM_LOGO_URL = "/fantom-logo.png";
@@ -250,33 +243,29 @@ async function drawSaleCard(
    * - SKU / Quantidade / Data Envio alinhados à direita.
    */
 
-  const pad = 3;
-
-  // ── Borda laranja arredondada (2026-04-29 v3 — alinha com modelo
-  // "Etiqueta Programa - 01 SEM linhas.png" pedido para Fantom) ─────
-  // Voltou pra laranja com cantos arredondados pra bater 1:1 com
-  // o modelo de referencia. ORANGE_R/G/B = #F37C20 ja definidos.
+  // ── Borda laranja arredondada (2026-04-30 v4 — alinha com modelo
+  // "modelo_etiqueta_ecoferro_interna.png") ────────────────────────
   doc.setDrawColor(ORANGE_R, ORANGE_G, ORANGE_B);
   doc.setLineWidth(0.7);
-  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2, 2, "S");
+  doc.roundedRect(x0, y0, CARD_W, CARD_H, 2.5, 2.5, "S");
 
-  // Áreas base em mm dentro do card — posicionamento conforme imagem
-  // de referencia "Etiqueta Programa - 01 SEM linhas.png" (2026-04-29).
-  // QR Venda + Logo Eco ficam no MEIO do card (rows 5-7), com
-  // Corredor/Estante/Nivel ao LADO (mesma Y), nao abaixo.
-  const leftX = x0 + 4;
+  // Posicionamento X em mm — medido pixel-a-pixel sobre
+  // modelo_etiqueta_ecoferro_interna.png (1183x319 → 194x53mm).
+  // QR Venda + Logo Eco ocupam o miolo (x≈56–96mm); Corredor/
+  // Estante/Nivel logo a direita (x≈99mm); QR Objeto no canto
+  // direito (x≈156mm) com SKU/Quant centralizados embaixo.
   const infoX = x0 + 45;            // C2: SKU/titulo/comprador/nickname
-  const saleQrX = x0 + 90;          // QR Venda alinhado rows 5-7
-  const ecoLogoX = x0 + 116;        // Logo Eco a direita do QR Venda
-  const stockX = x0 + 139;          // Corredor/Estante/Nivel ao lado do Logo Eco
-  const rightX = x0 + CARD_W - 31;  // C4: QR Objeto + SKU + Quant + DataEnvio
+  const saleQrX = x0 + 56;          // QR Venda no miolo
+  const ecoLogoX = x0 + 75;         // Logo Eco a direita do QR Venda
+  const stockX = x0 + 99;           // Corredor/Estante/Nivel ao lado do Logo Eco
+  const objectQrX = x0 + 156;       // QR Objeto no canto direito
 
   // ── Logo Mercado Livre ───────────────────────────────────────────
   const mlLogoData = await loadMlLogoDataUrl();
-  const mlLogoX = leftX + 3;
-  const mlLogoY = y0 + 2.2;
-  const mlLogoW = 24;
-  const mlLogoH = 6.8;
+  const mlLogoX = x0 + 12;
+  const mlLogoY = y0 + 3;
+  const mlLogoW = 27;
+  const mlLogoH = 8;
 
   if (mlLogoData) {
     try {
@@ -296,10 +285,10 @@ async function drawSaleCard(
     sale.productImageUrl;
 
   const imgData = imageSource ? await loadImageAsDataUrl(imageSource) : null;
-  const imageX = x0 + 3;
-  const imageY = y0 + 12;
-  const imageW = 40;
-  const imageH = 30;
+  const imageX = x0 + 8;
+  const imageY = y0 + 13;
+  const imageW = 31;
+  const imageH = 32;
 
   if (imgData) {
     try {
@@ -315,22 +304,25 @@ async function drawSaleCard(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.2);
   doc.setTextColor(0, 0, 0);
-  doc.text(`#${sale.saleNumber || "-"}`, x0 + 3.5, y0 + CARD_H - 3.2);
+  doc.text(`#${sale.saleNumber || "-"}`, x0 + 6, y0 + Y_FOOTER);
 
   // ── Dados principais ─────────────────────────────────────────────
   doc.setTextColor(0, 0, 0);
 
-  // Linha 1: SKU
+  // Linha 1: SKU (negrito grande, igual ao modelo)
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(8.8);
+  doc.setFontSize(10);
   doc.text(`SKU: ${item.sku || "-"}`, infoX, y0 + Y_ROW_1);
 
-  // Linha 2: Titulo (1 linha apenas, alinhado com Y_ROW_2)
+  // Linha 2: Titulo (1 linha apenas, alinhado com Y_ROW_2).
+  // maxWidth limita ao espaco entre infoX (45) e o inicio da
+  // coluna de localizacao/QR Venda (~95mm).
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.3);
+  doc.setFontSize(8);
+  const titleMaxW = 65;
   const productLines = doc.splitTextToSize(
     item.itemTitle || sale.productName || "-",
-    70
+    titleMaxW
   );
   doc.text(productLines.slice(0, 1), infoX, y0 + Y_ROW_2);
 
@@ -344,19 +336,20 @@ async function drawSaleCard(
   const customerNickLine = customerNickRaw || "Nickname não informado";
 
   // Linha 3: Nome do comprador
-  doc.setFontSize(7.2);
-  doc.text(customerNameLine, infoX, y0 + Y_ROW_3, { maxWidth: 72 });
+  doc.setFontSize(8);
+  doc.text(customerNameLine, infoX, y0 + Y_ROW_3, { maxWidth: titleMaxW });
 
   // Linha 4: Nickname
-  doc.setFontSize(7.1);
-  doc.text(customerNickLine, infoX, y0 + Y_ROW_4, { maxWidth: 72 });
+  doc.setFontSize(7.5);
+  doc.text(customerNickLine, infoX, y0 + Y_ROW_4, { maxWidth: titleMaxW });
 
   // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 (meio do card) ─
-  const saleQrSize = 19;
-  const saleQrY = y0 + Y_ROW_5 + 0.5;
+  // Tamanho 16x16mm conforme modelo (mais compacto que antes).
+  const saleQrSize = 16;
+  const saleQrY = y0 + 29;
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.2);
+  doc.setFontSize(5.6);
   doc.setTextColor(145, 145, 145);
   doc.text("QR Venda", saleQrX + saleQrSize / 2, saleQrY - 1.2, { align: "center" });
 
@@ -372,10 +365,11 @@ async function drawSaleCard(
   }
 
   // ── Logo da marca (Ecoferro ou Fantom) — alinhado com QR Venda ──
+  // Box de 21x18mm; drawContainedImage preserva proporcao original.
   const brandLogoData = await loadBrandLogoDataUrl(brand);
   if (brandLogoData) {
     try {
-      drawContainedImage(doc, brandLogoData, ecoLogoX, y0 + Y_ROW_5 - 0.3, 21, 17);
+      drawContainedImage(doc, brandLogoData, ecoLogoX, y0 + 28, 21, 18);
     } catch {
       // mantém silencioso para não quebrar geração do PDF
     }
@@ -394,34 +388,35 @@ async function drawSaleCard(
   // Se nao houver deposito identificado, fica em branco.
   const localDeposito = sale.depositLabel || "";
 
-  // Local no rodapé central, abaixo do bloco Logo Eco
+  // Local no rodapé central — alinhado horizontalmente com QR Venda
+  // (igual modelo: "Local:" comeca abaixo do QR Venda, x≈56mm).
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.3);
+  doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
-  doc.text(`Local: ${localDeposito}`, ecoLogoX - 5, y0 + CARD_H - 3.2);
+  doc.text(`Local: ${localDeposito}`, saleQrX, y0 + Y_FOOTER);
 
   // ── Campos de estoque ────────────────────────────────────────────
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.4);
+  doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
 
   // Linhas 5-7: Corredor / Estante / Nível (alinhados com QR Venda+Logo Ec).
-  // maxWidth=26mm garante que valores longos (ex: "AAA-99-B") nao
-  // invadem a area do QR Objeto que comeca em ~x0+167.
-  const STOCK_MAX_W = 26;
+  // maxWidth=52mm garante que valores longos cabem ate o QR Objeto
+  // (que comeca em x0+156mm; stockX=99 → 156-99=57mm de espaco).
+  const STOCK_MAX_W = 52;
   doc.text(`Corredor: ${corridor}`, stockX, y0 + Y_ROW_5, { maxWidth: STOCK_MAX_W });
   doc.text(`Estante: ${shelf}`, stockX, y0 + Y_ROW_6, { maxWidth: STOCK_MAX_W });
   doc.text(`Nível: ${level}`, stockX, y0 + Y_ROW_7, { maxWidth: STOCK_MAX_W });
 
   // ── QR Objeto no topo direito ────────────────────────────────────
-  const objectQrSize = 20;
-  const objectQrX = rightX + 4;
-  const objectQrY = y0 + 6.2;
+  // 17x17mm conforme modelo (era 20mm — esticava demais).
+  const objectQrSize = 17;
+  const objectQrY = y0 + 7;
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.2);
+  doc.setFontSize(5.6);
   doc.setTextColor(145, 145, 145);
-  doc.text("QR Objeto", objectQrX + objectQrSize / 2, y0 + 4.2, { align: "center" });
+  doc.text("QR Objeto", objectQrX + objectQrSize / 2, y0 + 5, { align: "center" });
 
   const objectQrData = await generateQRCodeDataUrl(sale.qrcodeValue || item.sku || "");
   if (objectQrData) {
@@ -434,16 +429,17 @@ async function drawSaleCard(
     drawPlaceholder(doc, objectQrX, objectQrY, objectQrSize, objectQrSize);
   }
 
-  // SKU / Quantidade / Data Envio à direita
+  // SKU / Quantidade / Data Envio à direita do QR Objeto
   const rightCenterX = objectQrX + objectQrSize / 2;
 
-  // Coluna direita alinhada com Estante (Y_ROW_6) e Nível (Y_ROW_7)
+  // SKU lateral — entre QR Objeto e Quant (modelo: y≈33mm)
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.2);
+  doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
   doc.text(item.sku || "-", rightCenterX, y0 + Y_ROW_6, { align: "center" });
 
-  doc.setFontSize(7.2);
+  // Quant — alinhado com Y_ROW_7 (mesma altura de Nivel)
+  doc.setFontSize(8);
   doc.text(
     `Quant: ${String(item.quantity ?? 1).padStart(2, "0")}`,
     rightCenterX,
@@ -451,12 +447,14 @@ async function drawSaleCard(
     { align: "center" }
   );
 
+  // Data Envio — rodape direito, esquerda-alinhado a partir do
+  // canto esquerdo do QR Objeto (igual modelo).
   const dataEnvioLabel = sale.expectedShippingDate
-    ? `Data Envio ${sale.expectedShippingDate}`
+    ? `Data Envio: ${sale.expectedShippingDate}`
     : "Data Envio";
 
-  doc.setFontSize(7.2);
-  doc.text(dataEnvioLabel, rightCenterX, y0 + CARD_H - 3.2, { align: "center" });
+  doc.setFontSize(8);
+  doc.text(dataEnvioLabel, objectQrX, y0 + Y_FOOTER);
 }
 
 // Expande uma SaleData em N "renderable units" — um por item agrupado.
