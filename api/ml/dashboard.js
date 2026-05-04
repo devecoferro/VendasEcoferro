@@ -4,6 +4,7 @@ import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
 import { fetchMLChipCountsDirect } from "./_lib/ml-chip-proxy.js";
+import { getCachedLiveSnapshot } from "./_lib/seller-center-scraper.js";
 import {
   getMirrorEntityStatusBreakdown,
   getSellerCenterMirrorOverview,
@@ -2705,6 +2706,39 @@ export async function buildDashboardPayload(options = {}) {
     mlLiveChipCounts = null;
     mlLiveChipOrderIds = null;
     mlBucketByMlOrderId = null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // FIX 2026-05-04: LIVE-SNAPSHOT OVERRIDE para ml_live_chip_counts
+  //
+  // O classificador local (fetchMLLiveChipBucketsDetailed) infla os
+  // números porque busca TODOS os pedidos por shipping status sem a
+  // mesma janela de tempo que o ML Seller Center aplica internamente.
+  // Resultado: upcoming=88 vs ML real=30, in_transit=20 vs ML real=6.
+  //
+  // Solução: quando o live-snapshot (scraper Playwright) está disponível
+  // para a conexão, seus counters SÃO a fonte de verdade (bate 1:1 com
+  // ML Seller Center). Sobrescrevemos ml_live_chip_counts com eles.
+  // O ml_live_chip_order_ids_by_bucket permanece do classificador local
+  // (usado para filtrar a lista de pedidos — menos crítico que o número
+  // do chip em si).
+  // ═══════════════════════════════════════════════════════════════════
+  try {
+    const liveSnap = getCachedLiveSnapshot("all", baseConnection?.id || null);
+    if (liveSnap && liveSnap.counters) {
+      const c = liveSnap.counters;
+      if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
+        mlLiveChipCounts = {
+          today: c.today,
+          upcoming: c.upcoming,
+          in_transit: c.in_transit || 0,
+          finalized: c.finalized || 0,
+          cancelled: c.cancelled || 0,
+        };
+      }
+    }
+  } catch {
+    // fail-open — mantém ml_live_chip_counts do classificador local
   }
 
   // ═══════════════════════════════════════════════════════════════════
