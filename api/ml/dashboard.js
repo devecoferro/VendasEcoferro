@@ -2183,7 +2183,14 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // ═════════════════════════════════════════════════════════════════
     result.counts_local = { ...result.counts };
     result.chip_source = "local_classifier";
-    if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+    // FIX 2026-05-04: O chip proxy (fetchMLChipCountsDirect) usa cache GLOBAL
+    // do scraper — sempre retorna dados da conta default (Ecoferro).
+    // Para conexões não-default (Fantom), NÃO aplicamos o override pra
+    // evitar poluir result.counts com dados de outra conta.
+    // Detecção: se connection.id != default, pula o override.
+    const defaultConn = getLatestConnection();
+    const isDefaultConn = !connection?.id || connection.id === defaultConn?.id;
+    if (isDefaultConn && process.env.DISABLE_ML_CHIP_PROXY !== "true") {
       try {
         const mlCounts = await fetchMLChipCountsDirect();
         if (mlCounts && typeof mlCounts === "object") {
@@ -2796,10 +2803,22 @@ export async function buildDashboardPayload(options = {}) {
   // ML UI chip counts (via scraper do Seller Center — 100% alinhado com UI visual).
   // Prioriza fetchMLChipCountsDirect (que mantem lastKnownCounts mesmo quando cache
   // expira, evitando pulo UX de 1→3→1). Fallback pro getUiChipCounts() legado.
+  //
+  // FIX 2026-05-04 multi-seller: O scraper do Seller Center só captura dados da
+  // conta logada no storage state DEFAULT (Ecoferro). Para conexões não-default
+  // (ex: Fantom), retornamos null para forçar o frontend a usar ml_live_chip_counts
+  // (que É escopado corretamente por conexão via fetchMLLiveChipBucketsDetailed).
+  // Sem isso, a página Fantom mostra chips da Ecoferro (dados errados).
+  const defaultConnection = getLatestConnection();
+  const isDefaultConnection = !requestedConnectionId ||
+    requestedConnectionId === defaultConnection?.id;
+
   let mlUiChipCounts = null;
   let mlUiChipCountsStale = false;
   let mlUiChipCountsAgeSeconds = null;
-  if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+
+  // Só busca ml_ui_chip_counts para a conexão default (scraper só tem dados dela)
+  if (isDefaultConnection && process.env.DISABLE_ML_CHIP_PROXY !== "true") {
     try {
       const { fetchMLChipCountsDirect } = await import("./_lib/ml-chip-proxy.js");
       const counts = await fetchMLChipCountsDirect();
@@ -2820,7 +2839,7 @@ export async function buildDashboardPayload(options = {}) {
       // fail-open — fallback pro legado abaixo
     }
   }
-  if (!mlUiChipCounts) {
+  if (!mlUiChipCounts && isDefaultConnection) {
     try {
       const { getUiChipCounts } = await import("./_lib/seller-center-scraper.js");
       mlUiChipCounts = getUiChipCounts();
