@@ -1367,7 +1367,7 @@ export default function MercadoLivrePage({
 
     // Whitelist: só "Vendas sem depósito", "Ourinhos Rua Dario Alonso" e "Full".
     // Filtra códigos brutos do ML (ex.: BRP750438981) que vinham listados.
-    return baseOptions.filter((option) => {
+    const whitelisted = baseOptions.filter((option) => {
       if (option.kind === "without-deposit") return true;
       if (option.isFulfillment) return true;
       const normalized = (option.displayLabel || option.label || "")
@@ -1375,6 +1375,16 @@ export default function MercadoLivrePage({
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "");
       return normalized.includes("ourinhos") || normalized.includes("dario alonso");
+    });
+
+    // Deduplica por displayLabel — garante que "Ourinhos Rua Dario Alonso"
+    // nunca aparece 2x no dropdown mesmo que keys internos difiram.
+    const seenLabels = new Set<string>();
+    return whitelisted.filter((option) => {
+      const label = (option.displayLabel || option.label || "").toLowerCase();
+      if (seenLabels.has(label)) return false;
+      seenLabels.add(label);
+      return true;
     });
   }, [accessibleDashboardDeposits, permittedOrders]);
 
