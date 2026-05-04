@@ -256,7 +256,8 @@ export function scopeToStoreUrlParam(scope) {
  *   - per-connection:        ml-seller-center-state-<connectionId>.json
  *
  * Quando connectionId eh passado, busca arquivo per-connection. Se nao
- * existe, fallback ao default (mantendo back-compat).
+ * existe, retorna null — NUNCA faz fallback ao default pra evitar
+ * scrape com credenciais de outra conta (bug fix 2026-05-04).
  */
 function resolveStorageStatePath(connectionId = null) {
   if (!connectionId) return SCRAPER_STORAGE_STATE_PATH;
@@ -267,8 +268,9 @@ function resolveStorageStatePath(connectionId = null) {
   if (fs.existsSync(perConnPath) && fs.statSync(perConnPath).size > 0) {
     return perConnPath;
   }
-  // Fallback: arquivo per-connection nao existe, usa default
-  return SCRAPER_STORAGE_STATE_PATH;
+  // Bug fix: NAO fazer fallback ao default — retorna null pra sinalizar
+  // que este connection nao tem scraper configurado.
+  return null;
 }
 
 /**
@@ -277,6 +279,7 @@ function resolveStorageStatePath(connectionId = null) {
 export function isScraperConfigured(connectionId = null) {
   try {
     const target = resolveStorageStatePath(connectionId);
+    if (!target) return false;
     return fs.existsSync(target) && fs.statSync(target).size > 0;
   } catch {
     return false;
@@ -307,7 +310,7 @@ export function getCachedScraperResult() {
 function loadStorageState(connectionId = null) {
   try {
     const target = resolveStorageStatePath(connectionId);
-    if (!fs.existsSync(target)) return null;
+    if (!target || !fs.existsSync(target)) return null;
     const raw = fs.readFileSync(target, "utf8");
     if (!raw) return null;
     const parsed = JSON.parse(raw);
