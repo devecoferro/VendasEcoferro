@@ -231,9 +231,27 @@ export async function computeOrdersDivergence(options = {}) {
   // ML order ids puros, precisamos EXTRAIR o ml_order_id do db_row_id
   // (split por ":") pra os dois lados usarem a mesma chave.
   // Sem isso, a comparação gera 100% falsos divergentes.
+  //
+  // FIX 2026-05-04: Também mapeia pack_id → bucket. O ML usa pack_id
+  // como chave principal pra pedidos com carrinho. Se o app só indexa
+  // por order_id, pedidos com pack aparecem como "missing" no lado app
+  // gerando falsos divergentes (o ML retorna pack_id, app retorna order_id).
   const payload = await buildDashboardPayload({ allowCache: !fresh });
   const appBucketOfOrder = new Map();
   const deposits = Array.isArray(payload.deposits) ? payload.deposits : [];
+
+  // Primeiro: buscar todos os orders do DB pra construir mapa pack_id → order_ids
+  const allOrders = [];
+  for (const deposit of deposits) {
+    if (deposit._orders) {
+      for (const o of deposit._orders) allOrders.push(o);
+    }
+  }
+  // Mapa: pack_id → order_id (pra traduzir pack_ids do ML pro lado app)
+  const packIdToOrderIds = new Map();
+  // Mapa: order_id → pack_id (pra traduzir order_ids do app pro lado ML)
+  const orderIdToPackId = new Map();
+
   for (const deposit of deposits) {
     const idsByBucket =
       deposit.internal_operational_order_ids_by_bucket ||
@@ -254,15 +272,74 @@ export async function computeOrdersDivergence(options = {}) {
     }
   }
 
-  // ─── Diff por order_id ───────────────────────────────
+  // FIX 2026-05-04: Busca pack_ids dos orders no DB pra normalizar a comparação.
+  // Quando o ML retorna um pack_id nos buckets, precisamos saber qual order_id
+  // corresponde pra verificar se o app já tem esse pedido classificado.
+  try {
+    const rows = db.prepare(
+      `SELECT order_id, raw_data FROM ml_orders WHERE order_id IS NOT NULL`
+    ).all();
+    for (const row of rows) {
+      const rawData = typeof row.raw_data === "string"
+        ? JSON.parse(row.raw_data)
+        : row.raw_data;
+      const packId = rawData?.pack_id ? String(rawData.pack_id) : null;
+      if (packId && row.order_id) {
+        const orderId = String(row.order_id);
+        orderIdToPackId.set(orderId, packId);
+        if (!packIdToOrderIds.has(packId)) packIdToOrderIds.set(packId, []);
+        packIdToOrderIds.get(packId).push(orderId);
+      }
+    }
+  } catch {
+    // Se falhar a query, segue sem o mapa (backward compatible)
+  }
+
+  // ─── Diff por order_id (normalizado com pack_id) ─────────────
+  // Normalização: se o ML retorna um pack_id e o app tem o order_id
+  // correspondente no MESMO bucket, não é divergente.
   const allIds = new Set([
     ...mlBucketOfOrder.keys(),
     ...appBucketOfOrder.keys(),
   ]);
   const divergences = [];
+  const alreadyChecked = new Set();
   for (const orderId of allIds) {
-    const mlBucket = mlBucketOfOrder.get(orderId) || null;
-    const appBucket = appBucketOfOrder.get(orderId) || null;
+    if (alreadyChecked.has(orderId)) continue;
+    alreadyChecked.add(orderId);
+
+    let mlBucket = mlBucketOfOrder.get(orderId) || null;
+    let appBucket = appBucketOfOrder.get(orderId) || null;
+
+    // Se o ML tem esse ID como pack_id mas o app não o conhece,
+    // verifica se algum order_id filho desse pack está no app
+    if (mlBucket && !appBucket) {
+      const childOrderIds = packIdToOrderIds.get(orderId);
+      if (childOrderIds) {
+        for (const childId of childOrderIds) {
+          const childBucket = appBucketOfOrder.get(childId);
+          if (childBucket) {
+            appBucket = childBucket;
+            alreadyChecked.add(childId);
+            break;
+          }
+        }
+      }
+    }
+
+    // Se o app tem esse ID como order_id mas o ML não o conhece,
+    // verifica se o pack_id pai está no ML
+    if (appBucket && !mlBucket) {
+      const parentPackId = orderIdToPackId.get(orderId);
+      if (parentPackId) {
+        const parentBucket = mlBucketOfOrder.get(parentPackId);
+        if (parentBucket) {
+          mlBucket = parentBucket;
+          alreadyChecked.add(parentPackId);
+        }
+      }
+    }
+
     if (mlBucket !== appBucket) {
       divergences.push({
         order_id: orderId,

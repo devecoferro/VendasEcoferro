@@ -2643,22 +2643,45 @@ export async function buildDashboardPayload(options = {}) {
       }
 
       // ── TRADUÇÃO DE IDs pro frontend ─────────────────────────────
-      // Map ML order_id → DB row ids. Pedidos multi-item têm múltiplos
-      // DB row ids pro mesmo ML order_id — incluímos todos.
-      const mlOrderIdToDbIds = new Map();
+      // Map ML order_id E pack_id → DB row ids. Pedidos multi-item têm
+      // múltiplos DB row ids pro mesmo ML order_id — incluímos todos.
+      // FIX 2026-05-04: Também mapeia pack_id → DB row ids. O ML retorna
+      // pack_ids nos buckets quando o pedido tem carrinho (pack), mas o
+      // mapa antigo só indexava por order_id. Resultado: pedidos com pack
+      // não eram traduzidos → ficavam fora da lista → drift falso.
+      const mlIdToDbIds = new Map();
       for (const order of allOrders) {
-        if (!order.order_id) continue;
-        const key = String(order.order_id);
-        if (!mlOrderIdToDbIds.has(key)) mlOrderIdToDbIds.set(key, []);
-        mlOrderIdToDbIds.get(key).push(String(order.id));
+        const dbId = String(order.id);
+        // Indexa por order_id
+        if (order.order_id) {
+          const oKey = String(order.order_id);
+          if (!mlIdToDbIds.has(oKey)) mlIdToDbIds.set(oKey, []);
+          mlIdToDbIds.get(oKey).push(dbId);
+        }
+        // Indexa por pack_id (CRÍTICO: ML usa pack_id como identificador
+        // principal quando o pedido faz parte de um carrinho)
+        const packId = order.raw_data?.pack_id
+          ? String(order.raw_data.pack_id)
+          : null;
+        if (packId) {
+          if (!mlIdToDbIds.has(packId)) mlIdToDbIds.set(packId, []);
+          mlIdToDbIds.get(packId).push(dbId);
+        }
       }
 
       const translateIds = (idSet) => {
         const out = [];
+        const seen = new Set();
         for (const mlId of idSet) {
-          const dbIds = mlOrderIdToDbIds.get(String(mlId));
+          const dbIds = mlIdToDbIds.get(String(mlId));
           if (!dbIds) continue;
-          for (const dbId of dbIds) out.push(dbId);
+          for (const dbId of dbIds) {
+            // Evita duplicar DB row ids (pack_id e order_id podem
+            // apontar pro mesmo row)
+            if (seen.has(dbId)) continue;
+            seen.add(dbId);
+            out.push(dbId);
+          }
         }
         return out;
       };

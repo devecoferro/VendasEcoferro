@@ -1569,28 +1569,56 @@ export default function MercadoLivrePage({
 
     if (Array.isArray(liveIds) && liveIds.length > 0) {
       const ids = new Set<string>(liveIds);
-      // Se houver filtro de depósito ativo, restringimos aos pedidos que
-      // também estão no escopo local desse depósito.
+      // FIX 2026-05-04: Intersecção inteligente que lida com formatos
+      // diferentes de IDs. O ML retorna order_ids e pack_ids puros,
+      // enquanto o localScope pode ter db_row_ids compostos. Agora
+      // verificamos se QUALQUER identificador do pedido local está
+      // presente nos IDs do ML, eliminando falsos negativos.
       if (selectedDepositFilters.length > 0) {
+        // Constroi um Set com TODOS os IDs que o ML conhece neste bucket
+        // (já traduzidos pelo backend via mlIdToDbIds que agora inclui pack_id)
         const intersected = new Set<string>([...ids].filter((id) => localScope.has(id)));
 
-        // CORREÇÃO (2026-04-20): se a intersecção é 0 mas o escopo local tem
-        // pedidos, usa o escopo local. Cenário: ML live retorna IDs que ainda
-        // não foram sincronizados no banco local OU classifica diferente do
-        // depósito local (ex: ML diz "today", local diz "upcoming"). Sem isso,
-        // o operador via "0 vendas" mesmo com 106 no chip — o que aconteceu
-        // após o redeploy de 36c5770.
-        if (intersected.size === 0 && localScope.size > 0) {
+        // Se a intersecção direta funciona, usa ela (caso ideal)
+        if (intersected.size > 0) {
+          return intersected;
+        }
+
+        // Fallback robusto: se a intersecção direta falha (formatos
+        // diferentes), filtra permittedOrders que pertencem ao depósito
+        // E cujo order_id ou pack_id está nos IDs do ML.
+        // Isso resolve o mismatch de formatos de uma vez por todas.
+        const mlIdSet = ids;
+        const matchedLocalIds = new Set<string>();
+        for (const order of permittedOrders) {
+          // Verifica se o pedido pertence ao depósito selecionado
+          if (!selectedDepositFilters.includes(getDepositInfo(order).key)) continue;
+          // Verifica se algum identificador do pedido está nos IDs do ML
+          const packId = getOrderPackId(order);
+          if (
+            (order.id && mlIdSet.has(order.id)) ||
+            (order.order_id && mlIdSet.has(order.order_id)) ||
+            (packId && mlIdSet.has(packId))
+          ) {
+            matchedLocalIds.add(order.id);
+          }
+        }
+
+        if (matchedLocalIds.size > 0) {
+          return matchedLocalIds;
+        }
+
+        // Último fallback: usa escopo local puro (evita lista vazia)
+        if (localScope.size > 0) {
           return localScope;
         }
-        return intersected;
       }
       return ids;
     }
 
     // Fallback: nenhum live ID disponível, usa escopo local
     return localScope;
-  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, scopedLiveSnapshot]);
+  }, [dashboard, selectedDashboardDeposits, selectedDepositFilters, shipmentFilter, scopedLiveSnapshot, permittedOrders]);
 
   // P5: mapa único ID → bucket computado 1x por snapshot. Reaproveitado
   // pra derivar tanto o "qual bucket é do atual" quanto "qual está em
