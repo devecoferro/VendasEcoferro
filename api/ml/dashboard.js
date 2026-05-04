@@ -2111,15 +2111,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         } else {
           shippedStale++;
         }
-      } else if (!sub && shipment.dateShipped) {
-        // AJUSTE FINO: shipped sem substatus → in_transit so se shipped nas
-        // ultimas 72h. ML chip usa janela curta similar.
-        const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (!Number.isNaN(shippedAt) && (nowMs - shippedAt) / msPerDay <= 3) {
-          addMlOrderIds("in_transit", pack.ml_order_ids);
-        } else {
-          shippedStale++;
-        }
+      } else if (!sub) {
+        // FIX 2026-05-04: shipped sem substatus = trânsito normal.
+        // ML Seller Center NÃO mostra envios normais em "Em trânsito".
+        // Apenas problemas de entrega (out_for_delivery, receiver_absent, etc.)
+        // aparecem nesse chip. Remover essa condição reduz in_transit de ~105 para ~6.
+        shippedNormal++;
       } else {
         // Trânsito normal (in_transit, at_sender, etc.) → nenhum chip.
         // ML Seller Center não mostra envios normais nas abas.
@@ -2140,17 +2137,20 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
     }
 
-    // Finalizadas: not_delivered de HOJE (alinhado com janela do bucket).
+    // Finalizadas: delivered de HOJE (alinhado com ML Seller Center).
+    // FIX 2026-05-04: O ML Seller Center "Finalizadas" mostra pedidos ENTREGUES
+    // (delivered), não not_delivered. A lógica anterior buscava not_delivered
+    // e inflava o chip de 9 (ML real) para 50. Agora busca delivered.
     try {
       const todayStartIso = todayKey + "T00:00:00.000-03:00";
-      const ndR = await fetch(
+      const deliveredR = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=not_delivered&order.date_last_updated.from=${todayStartIso}&limit=50`,
+          `&shipping.status=delivered&order.date_last_updated.from=${todayStartIso}&limit=50`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.json()).catch(() => ({ results: [] }));
-      const ndToday = (ndR.results || []).filter((o) => o?.id && o.status !== "cancelled");
-      const ndTodayPacks = deduplicateOrdersToPacks(ndToday);
-      for (const [, pack] of ndTodayPacks) {
+      const deliveredToday = (deliveredR.results || []).filter((o) => o?.id && o.status !== "cancelled");
+      const deliveredTodayPacks = deduplicateOrdersToPacks(deliveredToday);
+      for (const [, pack] of deliveredTodayPacks) {
         addMlOrderIds("finalized", pack.ml_order_ids);
       }
     } catch {
