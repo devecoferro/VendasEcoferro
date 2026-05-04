@@ -2034,18 +2034,19 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // in_hub (cross OU full): CARD_IN_THE_WAY no ML → in_transit
-      // (pacote JA saiu, esta com carrier)
+       // FIX 2026-05-04: in_hub → upcoming (não in_transit)
+      // No ML Seller Center, pedidos "in_hub" aparecem em "Próximos dias",
+      // NÃO em "Em trânsito". O pacote está no hub aguardando processamento.
+      // (Antes inflava in_transit de 6 para 56+)
       if (sub === "in_hub") {
-        addMlOrderIds("in_transit", pack.ml_order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
-
-      // in_packing_list: depende da logistica
-      // - cross-docking: CARD_IN_THE_WAY "A caminho" → in_transit
-      // - full: CARD_FULL "Processando CD" → today
+      // FIX 2026-05-04: in_packing_list → today (full) ou upcoming (cross)
+      // No ML Seller Center, in_packing_list aparece em "Próximos dias" (cross)
+      // ou "Envios de hoje" (full), NUNCA em "Em trânsito".
       if (sub === "in_packing_list") {
-        addMlOrderIds(isFull ? "today" : "in_transit", pack.ml_order_ids);
+        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
         continue;
       }
 
