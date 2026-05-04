@@ -68,6 +68,7 @@ import mlAdminAuditBrandsHandler from "../api/ml/admin/audit-brands.js";
 import mlAdminClassifyDebugHandler from "../api/ml/admin/classify-debug.js";
 import mlAdminLiveCardsDebugHandler from "../api/ml/admin/live-cards-debug.js";
 import mlAdminUploadScraperStateHandler from "../api/ml/admin/upload-scraper-state.js";
+import mlAdminDeleteScraperStateHandler from "../api/ml/admin/delete-scraper-state.js";
 import mlAdminInstallChromiumHandler from "../api/ml/admin/install-chromium.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import adminAuditLogHandler from "../api/admin/audit-log.js";
@@ -403,6 +404,7 @@ app.get("/api/ml/admin/live-cards-debug", apiLimiter, (req, res) => mlAdminLiveC
 // Upload via browser do storage state do Playwright (substitui SSH/scp).
 // Aceita GET (HTML form) e POST (multipart/form-data).
 app.all("/api/ml/admin/upload-scraper-state", apiLimiter, (req, res) => mlAdminUploadScraperStateHandler(req, res));
+app.all("/api/ml/admin/delete-scraper-state", apiLimiter, (req, res) => mlAdminDeleteScraperStateHandler(req, res));
 // Instalacao on-demand do Chromium (caso o build do Coolify nao tenha
 // instalado, o que acontece se o download falhar silenciosamente).
 app.all("/api/ml/admin/install-chromium", apiLimiter, (req, res) => mlAdminInstallChromiumHandler(req, res));
