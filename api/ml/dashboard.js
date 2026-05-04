@@ -2100,17 +2100,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       if (sub === "waiting_for_withdrawal") {
         addMlOrderIds("in_transit", pack.ml_order_ids);
       } else if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
-        // AJUSTE FINO (2026-04-23 tarde): gate de 3 dias pra aproximar do
-        // chip do ML (antes era 7 → inflou in_transit pra 135 vs chip=6).
-        if (!shipment.dateShipped) { shippedNoDate++; continue; }
-        const shippedAt = new Date(shipment.dateShipped).getTime();
-        if (Number.isNaN(shippedAt)) { shippedNoDate++; continue; }
-        const ageDays = (nowMs - shippedAt) / msPerDay;
-        if (ageDays <= 3) {
-          addMlOrderIds("in_transit", pack.ml_order_ids);
-        } else {
-          shippedStale++;
-        }
+        // FIX 2026-05-04: O ML Seller Center NÃO mostra out_for_delivery,
+        // receiver_absent, not_visited, at_customs em "Em trânsito".
+        // Esses pedidos aparecem em "Devoluções" ou "Finalizadas" no ML.
+        // Remover completamente do in_transit para alinhar com ML real.
+        // (Antes: gate de 3 dias inflava in_transit de 6 para 105)
+        shippedNormal++;
       } else if (!sub) {
         // FIX 2026-05-04: shipped sem substatus = trânsito normal.
         // ML Seller Center NÃO mostra envios normais em "Em trânsito".
