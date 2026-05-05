@@ -72,7 +72,7 @@ async function doFetchChips() {
   // O classificador OAuth (ml_live_chip_counts) já está correto (max_abs_diff=1).
   const snapSource = cached.data?.source || "unknown";
   if (snapSource === "manual_inject") {
-    log.info("snapshot é manual_inject — ignorando (classificador OAuth é fonte de verdade)");
+    log.info("snapshot é manual_inject — ignorando (HTTP fetcher é fonte de verdade)");
     return null;
   }
 

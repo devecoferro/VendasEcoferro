@@ -1996,7 +1996,7 @@ export function getCachedLiveSnapshot(scope = "all", connectionId = null) {
 // configurado mas os números corretos são conhecidos.
 const INJECT_TTL_MS = 12 * 60 * 60 * 1000; // 12h (bookmarklet sync 1x por dia)
 
-export function injectLiveSnapshotCounters(counters, connectionId = null) {
+export function injectLiveSnapshotCounters(counters, connectionId = null, { source = "manual_inject" } = {}) {
   const scope = "all";
   const cacheKey = `${scope}::${connectionId || "default"}`;
   const now = new Date();
@@ -2008,7 +2008,7 @@ export function injectLiveSnapshotCounters(counters, connectionId = null) {
       finalized: counters.finalized,
     },
     capturedAt: now.toISOString(),
-    source: "manual_inject",
+    source,
     sub_cards: {},
     orders: {},
     stats: { total_orders: 0, tabs_with_data: 0, xhr_count: 0 },

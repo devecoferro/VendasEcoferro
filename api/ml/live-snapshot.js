@@ -86,7 +86,7 @@ export default async function handler(request, response) {
       // desatualizados ou capturados com filtro de depósito ativo.
       // Retorna 202 para forçar o frontend a usar ml_live_chip_counts.
       const snapSource = cached.data?.source || "unknown";
-      if (snapSource === "manual_inject") {
+      if (snapSource === "manual_inject" && snapSource !== "http_direct") {
         return response.status(202).json({
           success: true,
           scope,

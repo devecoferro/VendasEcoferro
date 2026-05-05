@@ -1208,6 +1208,68 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
     process.on("SIGINT", () => clearInterval(scraperRoundRobinIntervalId));
   }, 10_000);
 
+  // ─── ML Chip HTTP Fetcher (sem Playwright) ──────────────────────────
+  // Busca os chips DIRETAMENTE do ML Seller Center via HTTP usando cookies
+  // do storage state. Muito mais leve que o Playwright (~1s vs 30-60s).
+  // Roda a cada 2 minutos e injeta os counters no cache do live-snapshot
+  // com source="http_direct" (aceito pelo ml-chip-proxy e live-snapshot).
+  const HTTP_CHIP_FETCH_INTERVAL_MS = 2 * 60 * 1000; // 2 min
+  let httpChipFetchRunning = false;
+
+  async function runHTTPChipFetch() {
+    if (httpChipFetchRunning) return;
+    httpChipFetchRunning = true;
+    try {
+      const { fetchMLChipsViaHTTP } = await import(
+        "../api/ml/_lib/ml-chip-http-fetcher.js"
+      );
+      const { injectLiveSnapshotCounters } = await import(
+        "../api/ml/_lib/seller-center-scraper.js"
+      );
+
+      // Busca para a conexão default (Ecoferro)
+      const counters = await fetchMLChipsViaHTTP();
+      if (counters) {
+        injectLiveSnapshotCounters(counters, null, { source: "http_direct" });
+        log.info("[http-chip-fetcher] Ecoferro chips injetados", counters);
+      }
+
+      // Busca para conexões adicionais (Fantom, etc)
+      // Verifica se há storage states per-connection
+      const { listConnections } = await import("../api/ml/_lib/storage.js");
+      const connections = listConnections();
+      for (const conn of connections) {
+        if (!conn.id || conn.id === "default") continue;
+        try {
+          const connCounters = await fetchMLChipsViaHTTP(conn.id);
+          if (connCounters) {
+            injectLiveSnapshotCounters(connCounters, conn.id, { source: "http_direct" });
+            log.info(`[http-chip-fetcher] ${conn.label || conn.id} chips injetados`, connCounters);
+          }
+        } catch (err) {
+          log.warn(
+            `[http-chip-fetcher] erro conexão ${conn.id}`,
+            err instanceof Error ? err : new Error(String(err))
+          );
+        }
+      }
+    } catch (err) {
+      log.warn(
+        "[http-chip-fetcher] erro",
+        err instanceof Error ? err : new Error(String(err))
+      );
+    } finally {
+      httpChipFetchRunning = false;
+    }
+  }
+
+  // Primeira execução 15s após boot
+  setTimeout(runHTTPChipFetch, 15_000);
+  // Depois a cada 2 minutos
+  const httpChipFetchIntervalId = setInterval(runHTTPChipFetch, HTTP_CHIP_FETCH_INTERVAL_MS);
+  process.on("SIGTERM", () => clearInterval(httpChipFetchIntervalId));
+  process.on("SIGINT", () => clearInterval(httpChipFetchIntervalId));
+
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
   startAutoBackup();
 });
