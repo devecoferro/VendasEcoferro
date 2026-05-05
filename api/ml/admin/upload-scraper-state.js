@@ -46,7 +46,7 @@ function getStatusInfo() {
   }
 }
 
-function renderHtml({ message = null, isError = false } = {}) {
+function renderHtml({ message = null, isError = false, connectionId = null } = {}) {
   const status = getStatusInfo();
   const statusBlock = status.exists
     ? `<div class="status ok">
@@ -109,7 +109,7 @@ function renderHtml({ message = null, isError = false } = {}) {
   </ol>
 
   <h2>Upload do arquivo</h2>
-  <form method="POST" action="/api/ml/admin/upload-scraper-state" enctype="multipart/form-data">
+  <form method="POST" action="/api/ml/admin/upload-scraper-state${connectionId ? '?connection_id=' + encodeURIComponent(connectionId) : ''}" enctype="multipart/form-data">
     <label for="file">Selecione o arquivo <code>ml-seller-center-state.json</code>:</label>
     <input type="file" id="file" name="state" accept="application/json,.json" required>
     <button type="submit">📤 Fazer upload</button>
@@ -195,8 +195,10 @@ export default async function handler(request, response) {
   }
 
   if (request.method === "GET") {
+    const getUrl = new URL(request.url, `http://${request.headers.host}`);
+    const getConnectionId = getUrl.searchParams.get("connection_id");
     response.setHeader("Content-Type", "text/html; charset=utf-8");
-    return response.status(200).send(renderHtml());
+    return response.status(200).send(renderHtml({ connectionId: getConnectionId }));
   }
 
   if (request.method !== "POST") {
