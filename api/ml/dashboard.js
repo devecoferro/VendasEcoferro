@@ -1908,42 +1908,65 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // A API de orders com shipping.status=delivered retorna os mais recentes.
     // ══════════════════════════════════════════════════════════════════
     try {
-      // Buscar pedidos delivered recentes (shipped.date_delivered = hoje).
-      // A API orders/search com shipping.status=delivered retorna TODOS os
-      // delivered. Para filtrar apenas os entregues HOJE, buscamos os mais
-      // recentes (sort=date_desc, limit=50) e filtramos por date_last_updated
-      // >= inicio do dia. NÃO usamos paging.total pois ele conta TODOS.
+      // FINALIZADAS = pedidos entregues HOJE.
+      // Estratégia: buscar orders delivered criados nos últimos 10 dias
+      // (pedidos mais antigos já teriam sido entregues antes), depois
+      // verificar cada shipment para ver se date_delivered = hoje.
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const todayMs = todayStart.getTime();
-      // Buscar shipped de hoje via shipments/search não existe.
-      // Alternativa: buscar orders delivered com date_last_updated recente.
-      // O ML atualiza date_last_updated quando o status muda para delivered.
-      // Buscamos 3 páginas (150 orders) e filtramos localmente.
-      const deliveredPages = [];
-      for (let page = 0; page < 3; page++) {
-        const offset = page * 50;
-        const r = await fetch(
-          `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-            `&order.status=paid&shipping.status=delivered` +
-            `&sort=date_last_updated_desc&limit=50&offset=${offset}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        ).then((res) => res.ok ? res.json() : null).catch(() => null);
-        if (!r || !r.results || r.results.length === 0) break;
-        deliveredPages.push(...r.results);
-        // Se o último resultado tem date_last_updated < hoje, parar
-        const lastOrder = r.results[r.results.length - 1];
-        const lastUpdated = new Date(lastOrder.date_last_updated || lastOrder.last_updated || 0).getTime();
-        if (lastUpdated < todayMs) break;
-      }
-      // Filtrar apenas os que foram atualizados HOJE (entregues hoje)
-      const deliveredToday = deliveredPages.filter(o => {
-        const updatedAt = new Date(o.date_last_updated || o.last_updated || 0).getTime();
-        return updatedAt >= todayMs;
-      });
-      // Adicionar ao bucket finalized (apenas os entregues hoje)
-      for (const order of deliveredToday) {
-        buckets.finalized.add(String(order.id));
+      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      
+      // Buscar orders delivered criados nos últimos 10 dias (até 3 páginas = 150)
+      const deliveredOrders = await fetchAllOrdersByShippingStatus(
+        token, sellerId, "delivered", 3, tenDaysAgo
+      );
+      
+      if (deliveredOrders.length > 0) {
+        // Extrair shipping_ids para verificar data de entrega real
+        const shippingIds = [];
+        const shipToOrderMap = new Map(); // shipping_id -> [order_ids]
+        for (const order of deliveredOrders) {
+          const sid = order.shipping?.id ? String(order.shipping.id) : null;
+          if (sid) {
+            shippingIds.push(sid);
+            if (!shipToOrderMap.has(sid)) shipToOrderMap.set(sid, []);
+            shipToOrderMap.get(sid).push(String(order.id));
+          }
+        }
+        
+        // Verificar data de entrega de cada shipment (concorrência 20)
+        const authHeaders = { Authorization: `Bearer ${token}` };
+        for (let i = 0; i < shippingIds.length; i += 20) {
+          const batch = shippingIds.slice(i, i + 20);
+          const results = await Promise.all(
+            batch.map(async (sid) => {
+              try {
+                const r = await fetch(`https://api.mercadolibre.com/shipments/${sid}`, { headers: authHeaders });
+                if (!r.ok) return null;
+                const j = await r.json();
+                // Verificar se foi entregue hoje
+                const deliveredDate = j.status_history?.date_delivered ||
+                  j.tracking?.date_delivered || null;
+                if (deliveredDate) {
+                  const deliveredMs = new Date(deliveredDate).getTime();
+                  if (deliveredMs >= todayMs) {
+                    return sid; // entregue hoje
+                  }
+                }
+                return null;
+              } catch { return null; }
+            })
+          );
+          // Adicionar orders dos shipments entregues hoje
+          for (const sid of results) {
+            if (sid && shipToOrderMap.has(sid)) {
+              for (const orderId of shipToOrderMap.get(sid)) {
+                buckets.finalized.add(orderId);
+              }
+            }
+          }
+        }
       }
     } catch {
       // best-effort — se falhar, finalized fica 0
