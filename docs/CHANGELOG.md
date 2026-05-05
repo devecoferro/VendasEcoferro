@@ -1,4 +1,29 @@
-## V 4.0 — 2026-05-05 ⭐ Release atual (SaaS Ready)
+## V 4.1 — 2026-05-05 ⭐ Release atual (Precisão Absoluta)
+### 🎉 Destaques
+- **HTTP Fetcher Direto**: Substituição completa do Playwright por requisições HTTP diretas à API BFF do Mercado Livre.
+- **Precisão 100% Restaurada**: Os chips do sistema agora refletem exatamente os números do Seller Center em tempo real, sem o delay da API pública.
+- **Performance Extrema**: O tempo de sincronização caiu de ~60s (Playwright) para ~3s (HTTP Fetcher), com consumo de memória drasticamente reduzido.
+
+### ✨ Features
+- **Integração API BFF**: Engenharia reversa do endpoint `/vendas/omni/lista/api/channels/event-request` com extração automática de `csrfToken`.
+- **Suporte Multi-Conta no Fetcher**: O HTTP Fetcher agora suporta múltiplas contas (EcoFerro e Fantom) lendo arquivos de cookies separados (`ml-seller-center-state.json` e `ml-seller-center-state-fantom.json`).
+- **Endpoint de Diagnóstico**: Novo endpoint `/api/ml/admin/test-http-fetcher` para testar a conexão e validar os cookies de cada conta independentemente.
+
+### 🐛 Fixes
+- **Bug no Upload de Cookies**: Corrigido o formulário de upload de `storageState` que não repassava o parâmetro `?connection_id` na action do POST, causando sobrescrita do arquivo da conta default.
+- **Bloqueios do ML (HTTP 404)**: Eliminado o problema de "Header too large" e bloqueios de navegação que ocorriam com o Playwright.
+
+### 📚 Docs
+- **SYSTEM-MEMORY.md**: Atualizado com o Ato 5 detalhando a arquitetura e implementação do HTTP Fetcher.
+
+---
+# 📜 CHANGELOG
+
+Histórico estruturado de releases do sistema EcoFerro Vendas · Etiquetas.
+
+---
+
+## V 4.0 — 2026-05-05 (SaaS Ready)
 ### 🎉 Destaques
 - **Sincronização 100% Automática via OAuth**: Fim da dependência de scrapers, extensões Chrome ou bookmarklets.
 - **Pronto para SaaS**: O sistema agora pode ser vendido para outras empresas sem exigir configurações complexas.
@@ -19,13 +44,8 @@
 - **DEVELOPMENT-HISTORY.md**: Atualizado com o Ato 4 (A Solução Definitiva e Escalável).
 
 ---
-# 📜 CHANGELOG
 
-Histórico estruturado de releases do sistema EcoFerro Vendas · Etiquetas.
-
----
-
-## V 3.0 — 2026-04-20 ⭐ Release atual
+## V 3.0 — 2026-04-20
 
 ### 🎉 Destaques
 

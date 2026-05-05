@@ -36,19 +36,30 @@ O objetivo final era tornar o sistema escalável para ser vendido como SaaS (Sof
 - **A Solução**: Remoção da dependência de injects manuais e scrapers. O sistema passou a confiar 100% no classificador OAuth, que roda automaticamente a cada 30 segundos no servidor.
 - **Resultado**: Sincronização 100% automática, sem necessidade de extensões, bookmarklets ou ações manuais. O usuário apenas conecta a conta via OAuth e o sistema faz o resto.
 
+### Ato 5: O Retorno à Precisão Absoluta com HTTP Fetcher (Maio 2026)
+Apesar do classificador OAuth ser muito bom, ele ainda sofria com o delay de cache da API pública do ML (pedidos recém-coletados ou recém-entregues demoravam a atualizar). Para garantir **100% de precisão em tempo real** sem a lentidão e instabilidade do Playwright, desenvolvemos o **HTTP Fetcher Direto**.
+- **O Problema**: O Playwright consumia muita memória, era lento e frequentemente tomava bloqueios (HTTP 404) devido a cookies expirados ou headers muito grandes.
+- **A Solução**: Engenharia reversa da API BFF (Backend For Frontend) do Mercado Livre. Descobrimos que o Seller Center usa um endpoint `/vendas/omni/lista/api/channels/event-request` que retorna os dados exatos dos chips.
+- **Implementação**: 
+  1. O usuário faz login no ML localmente via Chromium e exporta o `storageState` (cookies).
+  2. O backend faz um GET simples na página `/vendas/omni/lista` para extrair o `csrfToken` do HTML.
+  3. O backend faz um POST direto para a API BFF usando os cookies e o `csrfToken`, obtendo os números exatos em ~2-4 segundos.
+- **Resultado**: Precisão 100% restaurada para ambas as contas (EcoFerro e Fantom), com execução ultra-rápida, baixo consumo de memória e sem depender de navegadores headless no servidor. O sistema atualiza automaticamente a cada 2 minutos via cron.
+
 ## 3. Decisões Arquiteturais Críticas
 
 ### 3.1. Sincronização de Chips (A Solução Definitiva)
 A decisão mais importante do projeto foi como obter os 4 números principais (Envios de hoje, Próximos dias, Em trânsito, Finalizadas).
-- **Tentativa 1**: API Pública (divergência de 5-10%)
-- **Tentativa 2**: Scraper Playwright (100% preciso, mas lento e frágil)
-- **Tentativa 3**: Extensão Chrome (100% preciso, mas exige instalação manual)
-- **Solução Final**: Classificador OAuth Refinado. O backend busca todos os pedidos via API OAuth e aplica as mesmas regras de negócio não-documentadas do ML (ex: janela de 2 dias para finalizadas, agrupamento de packs, exclusão de sub-status específicos).
+- **Tentativa 1**: API Pública (divergência de 5-10% devido a delay de cache e regras ocultas)
+- **Tentativa 2**: Scraper Playwright (100% preciso, mas lento, frágil e consome muita RAM)
+- **Tentativa 3**: Extensão Chrome (100% preciso, mas exige instalação manual e PC ligado)
+- **Tentativa 4**: Classificador OAuth Refinado (Muito próximo, mas sofre com delay da API pública)
+- **Solução Final (HTTP Fetcher)**: Uso direto da API BFF do Seller Center com cookies exportados. Combina a precisão 100% do Playwright com a velocidade e estabilidade de requisições HTTP diretas.
 
 ### 3.2. Multi-Seller (Isolamento de Dados)
 Para suportar múltiplas contas, o sistema não usa bancos de dados separados, mas sim um isolamento lógico via `connection_id`.
-- Cada requisição ao backend deve incluir o `connection_id`.
-- O cache de pedidos, os snapshots e as configurações são todos escopados por conexão.
+- Cada requisição ao backend deve incluir o `connection_id` (null/default para EcoFerro, "fantom" para Fantom).
+- O cache de pedidos, os snapshots, cookies do HTTP Fetcher e as configurações são todos escopados por conexão.
 - O frontend usa o hook `useMercadoLivreData` para garantir que os dados exibidos pertençam à conta selecionada.
 
 ### 3.3. Geração de Etiquetas
@@ -64,10 +75,11 @@ Ao longo do desenvolvimento, descobrimos várias regras de negócio não-documen
 2. **Janela de Finalizadas**: O chip "Finalizadas" não mostra todas as vendas concluídas da história, mas apenas as dos **últimos 2 dias**.
 3. **Sub-status Ocultos**: Pedidos com status `shipped` mas sub-status `in_hub` ou `in_packing_list` não aparecem no chip "Em trânsito", mas sim em "Próximos dias" ou "Envios de hoje", dependendo da data prometida.
 4. **Filtros de Depósito**: O Seller Center aplica filtros de depósito (ex: "Vendas sem depósito", "Full") que alteram os números dos chips. O sistema precisa replicar esses filtros localmente.
+5. **API BFF (Event Request)**: O Seller Center não carrega os dados via REST tradicional, mas sim via um endpoint de eventos (`/vendas/omni/lista/api/channels/event-request`) que exige um payload específico extraído do HTML inicial e um header `x-csrf-token`.
 
 ## 5. Próximos Passos (Roadmap SaaS)
 
-Com a sincronização 100% automática via OAuth resolvida, o sistema está pronto para ser empacotado como SaaS:
+Com a sincronização 100% automática e precisa resolvida, o sistema está pronto para ser empacotado como SaaS:
 1. **Onboarding Simplificado**: Fluxo de criação de conta e conexão OAuth em 2 cliques.
 2. **Billing/Assinaturas**: Integração com gateway de pagamento (ex: Stripe, Asaas).
 3. **Multi-Tenant Real**: Isolamento de dados por `tenant_id` (empresa), permitindo que cada empresa tenha múltiplas conexões ML.
