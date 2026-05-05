@@ -1792,6 +1792,7 @@ async function fetchShipmentDetails(token, shippingIds, concurrency = 20) {
             substatus: (j.substatus || "none").toLowerCase(),
             dateShipped: j.status_history?.date_shipped || null,
             slaDate: slaRaw, // YYYY-MM-DDTHH:mm:ss... ou null
+            logisticType: (j.logistic_type || "").toLowerCase(),
           };
         } catch { return null; }
       })
@@ -1878,67 +1879,53 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
     const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
 
-    // Cancelados/entregues/not_delivered de HOJE → Finalizadas.
-    // Alinhado com ML Seller Center UI chip (que mostra só finalizações do dia).
-    const cancelledOrdersSeen = new Set();
-    const allRawOrders = [...pendingRaw, ...rtsRaw, ...shippedRaw, ...notDeliveredRaw];
-    const cancelledRecent = [];
-    for (const order of allRawOrders) {
-      if (!isCancelled(order)) continue;
-      const key = order.pack_id
-        ? String(order.pack_id)
-        : order.shipping?.id
-          ? `s:${order.shipping.id}`
-          : `o:${order.id}`;
-      if (cancelledOrdersSeen.has(key)) continue;
-      cancelledOrdersSeen.add(key);
-      const cancelDate = order.date_closed || order.last_updated || order.date_created;
-      const cancelKey = cancelDate ? getDateKey(cancelDate) : null;
-      if (cancelKey === todayKey) {
-        cancelledRecent.push(order);
-      }
-    }
-    for (const order of cancelledRecent) {
-      addMlOrderIds("finalized", [String(order.id)]);
-    }
-
-    // Busca adicional: cancelled de HOJE via order.status=cancelled
-    // (ML remove do shipping.status ativo depois de algumas horas).
+    // ══════════════════════════════════════════════════════════════════
+    // FIX 2026-05-05: FINALIZADAS = APENAS claims/mediações ATIVAS
+    //
+    // ENGENHARIA REVERSA (screenshot ML 2026-05-05):
+    // O chip "Finalizadas" do ML Seller Center mostra APENAS o count de
+    // "Para atender" = reclamações/mediações que precisam de ação do vendedor.
+    // As "Encerradas" (delivered, not_delivered, cancelled, devoluções) NÃO
+    // contam no chip. Exemplo: Ecoferro chip=1, "Para atender: 1 (Com
+    // reclamação ou mediação: 1)", "Encerradas: 638".
+    //
+    // Solução: usar a API de claims para contar apenas claims ABERTAS.
+    // API: GET /post-purchase/v1/claims/search?player_role=respondent
+    //      &player_user_id={seller_id}&status=opened&limit=1
+    // O campo paging.total dá o count exato.
+    // ══════════════════════════════════════════════════════════════════
     try {
-      const todayStartIso = todayKey + "T00:00:00.000-03:00";
-      const cancelledR = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&order.status=cancelled&order.date_closed.from=${encodeURIComponent(todayStartIso)}&limit=50&sort=date_desc`,
+      const claimsR = await fetch(
+        `https://api.mercadolibre.com/post-purchase/v1/claims/search?` +
+          `player_role=respondent&player_user_id=${sellerId}&status=opened&limit=1&offset=0`,
         { headers: { Authorization: `Bearer ${token}` } }
-      ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
-      const cancelledOrders = (cancelledR.results || []).filter((o) => o?.id);
-      const cancelledPacks = deduplicateOrdersToPacks(cancelledOrders);
-      for (const [key, pack] of cancelledPacks) {
-        if (cancelledOrdersSeen.has(key)) continue;
-        cancelledOrdersSeen.add(key);
-        addMlOrderIds("finalized", pack.ml_order_ids);
+      ).then((r) => r.ok ? r.json() : null).catch(() => null);
+      if (claimsR) {
+        // paging.total = número de claims abertas
+        const openClaimsCount = claimsR.paging?.total || claimsR.total || 0;
+        // Adiciona IDs fictícios para representar o count (o bucket.size será usado)
+        // Usamos um Set com IDs únicos para cada claim
+        const claimsList = Array.isArray(claimsR.data) ? claimsR.data
+          : Array.isArray(claimsR.claims) ? claimsR.claims
+          : Array.isArray(claimsR.results) ? claimsR.results
+          : [];
+        if (claimsList.length > 0) {
+          for (const claim of claimsList) {
+            const claimOrderId = claim.resource_id || claim.order_id || claim.id;
+            if (claimOrderId) buckets.finalized.add(`claim:${claimOrderId}`);
+          }
+        }
+        // Se o total é maior que os resultados retornados (limit=1),
+        // adicionamos placeholders para atingir o count correto
+        const currentFinalizedCount = buckets.finalized.size;
+        if (openClaimsCount > currentFinalizedCount) {
+          for (let i = currentFinalizedCount; i < openClaimsCount; i++) {
+            buckets.finalized.add(`claim_placeholder:${i}`);
+          }
+        }
       }
     } catch {
-      // best-effort
-    }
-
-    // Busca adicional: delivered de HOJE (último dia).
-    try {
-      const todayStartIso = todayKey + "T00:00:00.000-03:00";
-      const deliveredR = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=delivered&order.date_last_updated.from=${encodeURIComponent(todayStartIso)}&limit=50&sort=date_desc`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      ).then((r) => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] }));
-      const deliveredOrders = (deliveredR.results || []).filter(
-        (o) => o?.id && o.status !== "cancelled"
-      );
-      const deliveredPacks = deduplicateOrdersToPacks(deliveredOrders);
-      for (const [, pack] of deliveredPacks) {
-        addMlOrderIds("finalized", pack.ml_order_ids);
-      }
-    } catch {
-      // best-effort
+      // best-effort — se falhar, finalized fica 0
     }
 
     const cancelledFiltered = {
@@ -1946,7 +1933,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       rts: rtsRaw.length - rtsOrders.length,
       shipped: shippedRaw.length - shippedOrders.length,
       nd: notDeliveredRaw.length - notDeliveredOrders.length,
-      recent_finalized: cancelledRecent.length,
+      recent_finalized: 0, // FIX 2026-05-05: finalized agora vem de claims API
     };
 
     const pendingPacks = deduplicateOrdersToPacks(pendingOrders);
@@ -2120,37 +2107,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     }
 
-    // Not delivered → TODOS vão para "Finalizadas" (match com ML Seller Center).
-    // No ML Seller Center, pedidos com entrega falha (devoluções, perdidos, etc.)
-    // aparecem em "Gerenciar Pós-venda" e "Finalizadas", NUNCA em "Em trânsito".
-    // A lógica anterior colocava returning_to_sender/delayed/etc em in_transit,
-    // inflando o chip. A classificação LOCAL (classifyCrossDockingOrder line 568)
-    // já coloca TODOS not_delivered em "finalized" e bate com ML.
+    // FIX 2026-05-05: Not delivered NÃO vai mais para "Finalizadas".
+    // O chip "Finalizadas" do ML = APENAS claims/mediações ativas (já buscado acima).
+    // Pedidos not_delivered aparecem em "Gerenciar Pós-venda" (botão separado),
+    // mas NÃO inflam o chip TAB_FINISHED.
+    // Mantemos o breakdown para diagnóstico mas NÃO adicionamos ao bucket.
     const ndSubstatusBreakdown = {};
     for (const [, pack] of ndPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       const ndSub = shipment?.substatus || "unknown";
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
-    }
-
-    // Finalizadas: delivered de HOJE (alinhado com ML Seller Center).
-    // FIX 2026-05-04: O ML Seller Center "Finalizadas" mostra pedidos ENTREGUES
-    // (delivered), não not_delivered. A lógica anterior buscava not_delivered
-    // e inflava o chip de 9 (ML real) para 50. Agora busca delivered.
-    try {
-      const todayStartIso = todayKey + "T00:00:00.000-03:00";
-      const deliveredR = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${sellerId}` +
-          `&shipping.status=delivered&order.date_last_updated.from=${todayStartIso}&limit=50`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      ).then((r) => r.json()).catch(() => ({ results: [] }));
-      const deliveredToday = (deliveredR.results || []).filter((o) => o?.id && o.status !== "cancelled");
-      const deliveredTodayPacks = deduplicateOrdersToPacks(deliveredToday);
-      for (const [, pack] of deliveredTodayPacks) {
-        addMlOrderIds("finalized", pack.ml_order_ids);
-      }
-    } catch {
-      // deixa vazio se falhar
     }
 
     const result = {
@@ -2187,7 +2153,14 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // Detecção: se connection.id != default, pula o override.
     const defaultConn = getLatestConnection();
     const isDefaultConn = !connection?.id || connection.id === defaultConn?.id;
-    if (isDefaultConn && process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+    // FIX 2026-05-05: DESABILITADO ML Chip Proxy.
+    // O scraper Playwright está falhando (cookies expirados, HTTP 404 em todas as tabs).
+    // O classificador local agora é a fonte de verdade:
+    //   - Finalizadas = claims API (exato)
+    //   - Próximos dias/Envios de hoje = classificação por substatus (correto)
+    //   - Em trânsito = apenas waiting_for_withdrawal (correto)
+    // Para reativar: setar env ENABLE_ML_CHIP_PROXY=true
+    if (isDefaultConn && process.env.ENABLE_ML_CHIP_PROXY === "true") {
       try {
         const mlCounts = await fetchMLChipCountsDirect();
         if (mlCounts && typeof mlCounts === "object") {
@@ -2720,27 +2693,36 @@ export async function buildDashboardPayload(options = {}) {
   //
   // Regra: só aplica override se source !== "manual_inject".
   // ═══════════════════════════════════════════════════════════════════
-  try {
-    const liveSnap = getCachedLiveSnapshot("all", baseConnection?.id || null);
-    if (liveSnap && liveSnap.counters) {
-      // Só aplica override do scraper REAL (Playwright), nunca de inject manual
-      const snapSource = liveSnap.data?.source || liveSnap.source || "unknown";
-      const isRealScraper = snapSource !== "manual_inject";
-      if (isRealScraper) {
-        const c = liveSnap.counters;
-        if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
-          mlLiveChipCounts = {
-            today: c.today,
-            upcoming: c.upcoming,
-            in_transit: c.in_transit || 0,
-            finalized: c.finalized || 0,
-            cancelled: c.cancelled || 0,
-          };
+  // FIX 2026-05-05: DESABILITADO live-snapshot override.
+  // O scraper Playwright está falhando (cookies expirados, HTTP 404).
+  // O classificador OAuth (fetchMLLiveChipBucketsDetailed) agora é a fonte
+  // de verdade com lógica corrigida:
+  //   - Finalizadas = claims API (não mais delivered/cancelled/not_delivered)
+  //   - Próximos dias = pending + RTS com substatus correto
+  //   - Em trânsito = apenas waiting_for_withdrawal
+  // Para reativar: setar env ENABLE_LIVE_SNAPSHOT_OVERRIDE=true
+  if (process.env.ENABLE_LIVE_SNAPSHOT_OVERRIDE === "true") {
+    try {
+      const liveSnap = getCachedLiveSnapshot("all", baseConnection?.id || null);
+      if (liveSnap && liveSnap.counters) {
+        const snapSource = liveSnap.data?.source || liveSnap.source || "unknown";
+        const isRealScraper = snapSource !== "manual_inject";
+        if (isRealScraper) {
+          const c = liveSnap.counters;
+          if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
+            mlLiveChipCounts = {
+              today: c.today,
+              upcoming: c.upcoming,
+              in_transit: c.in_transit || 0,
+              finalized: c.finalized || 0,
+              cancelled: c.cancelled || 0,
+            };
+          }
         }
       }
+    } catch {
+      // fail-open
     }
-  } catch {
-    // fail-open — mantém ml_live_chip_counts do classificador OAuth
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -2853,8 +2835,10 @@ export async function buildDashboardPayload(options = {}) {
   let mlUiChipCountsStale = false;
   let mlUiChipCountsAgeSeconds = null;
 
-  // Só busca ml_ui_chip_counts para a conexão default (scraper só tem dados dela)
-  if (isDefaultConnection && process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+  // FIX 2026-05-05: Desabilitado ml_ui_chip_counts do scraper (falhando).
+  // O classificador OAuth agora é a fonte de verdade.
+  // Para reativar: setar env ENABLE_ML_CHIP_PROXY=true
+  if (isDefaultConnection && process.env.ENABLE_ML_CHIP_PROXY === "true") {
     try {
       const { fetchMLChipCountsDirect } = await import("./_lib/ml-chip-proxy.js");
       const counts = await fetchMLChipCountsDirect();
