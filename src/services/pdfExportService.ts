@@ -13,11 +13,14 @@ import { type SaleData, type SaleItemData } from "@/types/sales";
 //   │          Nome do Produto                                     │
 //   │          Nome Comprador                  [  QR code grande  ]│
 //   │          NICKNAME                                            │
-//   │ #2000016102974372  2026-05-05 10:42         EC005            │
-//   │[ QR    ]  [Logo Eco]  Corredor:                              │
-//   │[ Venda ]             Estante:              Quant: 01         │
-//   │                      Nível:                                  │
-//   │ QR Venda  Local:...                       Data Envio: ..    │
+//   │[ foto ]  [QR Venda] [Logo Eco]             EC005             │
+//   │                                                              │
+//   │          Corredor:                                           │
+//   │          Estante:                          Quant: 01         │
+//   │          Nível:                                              │
+//   │          Local:                            Data Envio: ..    │
+//   │                                                              │
+//   │ #2000016102974372                                            │
 //   └──────────────────────────────────────────────────────────────┘
 //       (borda laranja ~#F37C20, 0.8mm)
 //
@@ -252,8 +255,8 @@ async function drawSaleCard(
   // Estante/Nivel logo a direita (x≈99mm); QR Objeto no canto
   // direito (x≈156mm) com SKU/Quant centralizados embaixo.
   const infoX = x0 + 45;            // C2: SKU/titulo/comprador/nickname
-  // saleQrX removido — QR Venda agora usa saleQrNewX (alinhado com #saleNumber)
-  // ecoLogoX removido — Logo agora usa posição relativa ao saleQrNewX
+  const saleQrX = x0 + 56;          // QR Venda no miolo
+  const ecoLogoX = x0 + 75;         // Logo Eco a direita do QR Venda
   const stockX = x0 + 99;           // Corredor/Estante/Nivel ao lado do Logo Eco
   const objectQrX = x0 + 156;       // QR Objeto no canto direito
 
@@ -297,28 +300,11 @@ async function drawSaleCard(
     drawPlaceholder(doc, imageX, imageY, imageW, imageH);
   }
 
-  // ── Número da venda + Data — posicionado ACIMA do QR Venda ──────
-  // (igual ao preview da tela: #saleNumber + data na mesma linha,
-  // e QR VENDA logo abaixo, alinhado com o número)
-  const saleNumberY = y0 + Y_ROW_4 + 4.5; // entre nickname e QR Venda
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7.5);
+  // Número da venda no rodapé esquerdo
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.2);
   doc.setTextColor(0, 0, 0);
-  doc.text(`#${sale.saleNumber || "-"}`, x0 + 6, saleNumberY);
-
-  // Data do envio ao lado do número da venda (formato: 2026-05-05 10:42)
-  const dataEnvioInline = sale.expectedShippingDate
-    ? sale.expectedShippingDate
-    : (sale.saleDate && sale.saleTime)
-      ? `${sale.saleDate} ${sale.saleTime}`
-      : sale.saleDate || "";
-  if (dataEnvioInline) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
-    doc.setTextColor(100, 100, 100);
-    const saleNumWidth = doc.getTextWidth(`#${sale.saleNumber || "-"}`);
-    doc.text(dataEnvioInline, x0 + 6 + saleNumWidth + 3, saleNumberY);
-  }
+  doc.text(`#${sale.saleNumber || "-"}`, x0 + 6, y0 + Y_FOOTER);
 
   // ── Dados principais ─────────────────────────────────────────────
   doc.setTextColor(0, 0, 0);
@@ -357,35 +343,33 @@ async function drawSaleCard(
   doc.setFontSize(7.5);
   doc.text(customerNickLine, infoX, y0 + Y_ROW_4, { maxWidth: titleMaxW });
 
-  // ── QR Venda — alinhado EMBAIXO do número da venda ───────────────
-  // (igual ao preview: QR VENDA fica logo abaixo do #saleNumber)
+  // ── QR Venda — alinhado com bloco Y_ROW_5..Y_ROW_7 (meio do card) ─
+  // Tamanho 16x16mm conforme modelo (mais compacto que antes).
   const saleQrSize = 16;
-  const saleQrNewX = x0 + 6; // alinhado com o #saleNumber (esquerda)
-  const saleQrY = saleNumberY + 2; // logo abaixo do número
+  const saleQrY = y0 + 29;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(5.6);
+  doc.setTextColor(145, 145, 145);
+  doc.text("QR Venda", saleQrX + saleQrSize / 2, saleQrY - 1.2, { align: "center" });
 
   const saleQrData = await generateQRCodeDataUrl(sale.saleQrcodeValue || "");
   if (saleQrData) {
     try {
-      doc.addImage(saleQrData, "PNG", saleQrNewX, saleQrY, saleQrSize, saleQrSize);
+      doc.addImage(saleQrData, "PNG", saleQrX, saleQrY, saleQrSize, saleQrSize);
     } catch {
-      drawPlaceholder(doc, saleQrNewX, saleQrY, saleQrSize, saleQrSize);
+      drawPlaceholder(doc, saleQrX, saleQrY, saleQrSize, saleQrSize);
     }
   } else {
-    drawPlaceholder(doc, saleQrNewX, saleQrY, saleQrSize, saleQrSize);
+    drawPlaceholder(doc, saleQrX, saleQrY, saleQrSize, saleQrSize);
   }
 
-  // Label "QR Venda" abaixo do QR code
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.6);
-  doc.setTextColor(145, 145, 145);
-  doc.text("QR Venda", saleQrNewX + saleQrSize / 2, saleQrY + saleQrSize + 3, { align: "center" });
-
-  // ── Logo da marca (Ecoferro ou Fantom) — ao lado do QR Venda ─────
+  // ── Logo da marca (Ecoferro ou Fantom) — alinhado com QR Venda ──
   // Box de 21x18mm; drawContainedImage preserva proporcao original.
   const brandLogoData = await loadBrandLogoDataUrl(brand);
   if (brandLogoData) {
     try {
-      drawContainedImage(doc, brandLogoData, saleQrNewX + saleQrSize + 4, saleQrY, 21, 18);
+      drawContainedImage(doc, brandLogoData, ecoLogoX, y0 + 28, 21, 18);
     } catch {
       // mantém silencioso para não quebrar geração do PDF
     }
@@ -404,11 +388,12 @@ async function drawSaleCard(
   // Se nao houver deposito identificado, fica em branco.
   const localDeposito = sale.depositLabel || "";
 
-  // Local no rodapé central — alinhado horizontalmente com bloco de estoque
+  // Local no rodapé central — alinhado horizontalmente com QR Venda
+  // (igual modelo: "Local:" comeca abaixo do QR Venda, x≈56mm).
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
-  doc.text(`Local: ${localDeposito}`, saleQrNewX + saleQrSize + 4, y0 + Y_FOOTER);
+  doc.text(`Local: ${localDeposito}`, saleQrX, y0 + Y_FOOTER);
 
   // ── Campos de estoque ────────────────────────────────────────────
   doc.setFont("helvetica", "normal");
@@ -462,15 +447,10 @@ async function drawSaleCard(
     { align: "center" }
   );
 
-  // Data Envio — rodape direito. Usa expectedShippingDate se disponível,
-  // senão usa saleDate + saleTime como fallback (ex: 2026-05-05 10:42).
-  const dataEnvioValue = sale.expectedShippingDate
-    ? sale.expectedShippingDate
-    : (sale.saleDate && sale.saleTime)
-      ? `${sale.saleDate} ${sale.saleTime}`
-      : sale.saleDate || "";
-  const dataEnvioLabel = dataEnvioValue
-    ? `Data Envio: ${dataEnvioValue}`
+  // Data Envio — rodape direito, esquerda-alinhado a partir do
+  // canto esquerdo do QR Objeto (igual modelo).
+  const dataEnvioLabel = sale.expectedShippingDate
+    ? `Data Envio: ${sale.expectedShippingDate}`
     : "Data Envio";
 
   doc.setFontSize(8);
