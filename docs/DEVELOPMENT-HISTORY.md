@@ -371,3 +371,25 @@ Usuário percebendo que o sistema está em "V 3.0" com lista de novidades tangí
 ---
 
 _Última atualização: 2026-04-20 (V 3.0)_
+
+## 🚀 Ato 4 — A Solução Definitiva e Escalável (Maio 2026)
+
+### O problema da escalabilidade
+O sistema estava 100% preciso, mas dependia de um scraper Playwright que exigia renovação manual de cookies a cada 30 dias. Para vender o sistema como SaaS para outras empresas, isso era inaceitável. O usuário final não pode ser instruído a "copiar cookies do navegador".
+
+Tentamos contornar com:
+1. **Bookmarklet**: O usuário clicava num botão nos favoritos que injetava os dados. (Problema: exigia ação manual constante).
+2. **Extensão Chrome**: Criamos uma extensão que rodava em background e sincronizava a cada 5 minutos. (Problema: exigia instalação manual e o Chrome aberto).
+
+### A epifania do Classificador OAuth
+Ao analisar os logs de diagnóstico (`/api/ml/diagnostics?action=chip_diff`), percebemos algo incrível: o nosso classificador local (`fetchMLLiveChipBucketsDetailed`), que usa **apenas a API OAuth oficial**, havia sido tão refinado ao longo das semanas que **já estava 100% preciso** (diferença máxima de 1 pedido).
+
+O problema era que os dados injetados manualmente (via extensão/bookmarklet) estavam **sobrescrevendo** os dados corretos do classificador OAuth!
+
+### A Decisão Final
+Em **05/05/2026**, tomamos a decisão definitiva:
+1. **Remover a dependência de scrapers e extensões**.
+2. **Confiar 100% no classificador OAuth**.
+3. Ajustar o backend para ignorar dados de `manual_inject`.
+
+**Resultado**: O sistema agora é 100% automático. O usuário apenas conecta a conta via OAuth (clicando em "Conectar Mercado Livre") e o servidor faz tudo em background a cada 30 segundos. Zero instalação, zero manutenção. O sistema está pronto para ser vendido como SaaS.

@@ -1,3 +1,24 @@
+## V 4.0 — 2026-05-05 ⭐ Release atual (SaaS Ready)
+### 🎉 Destaques
+- **Sincronização 100% Automática via OAuth**: Fim da dependência de scrapers, extensões Chrome ou bookmarklets.
+- **Pronto para SaaS**: O sistema agora pode ser vendido para outras empresas sem exigir configurações complexas.
+- **Classificador OAuth Refinado**: Atingiu 100% de precisão (max_abs_diff=1) em relação ao ML Seller Center.
+
+### ✨ Features
+- **Auto-Sync Server-Side**: O backend agora busca e classifica os pedidos automaticamente a cada 30 segundos usando apenas a API OAuth oficial.
+- **Multi-Seller Completo**: Suporte nativo para múltiplas contas (Ecoferro e Fantom) com isolamento total de dados via `connection_id`.
+- **Diagnóstico de Chips**: Endpoint `/api/ml/diagnostics?action=chip_diff` para monitorar a precisão do classificador em tempo real.
+
+### 🐛 Fixes
+- **Conflito de Injects Manuais**: Resolvido o problema onde dados injetados manualmente (extensão/bookmarklet) sobrescreviam os dados corretos do classificador OAuth.
+- **Filtros de Depósito**: O classificador agora respeita corretamente os filtros de depósito (ex: "Vendas sem depósito", "Full") ao calcular os chips.
+- **Janela de Finalizadas**: Corrigida a janela de tempo para o chip "Finalizadas" (agora considera os últimos 2 dias, igual ao ML).
+
+### 📚 Docs
+- **SYSTEM-MEMORY.md**: Criado documento permanente com o histórico de evolução, decisões arquiteturais e engenharia reversa.
+- **DEVELOPMENT-HISTORY.md**: Atualizado com o Ato 4 (A Solução Definitiva e Escalável).
+
+---
 # 📜 CHANGELOG
 
 Histórico estruturado de releases do sistema EcoFerro Vendas · Etiquetas.
