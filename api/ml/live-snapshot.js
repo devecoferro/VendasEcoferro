@@ -80,6 +80,23 @@ export default async function handler(request, response) {
   if (!forceRun) {
     const cached = getCachedLiveSnapshot(scope, connectionId);
     if (cached) {
+      // FIX 2026-05-05: Ignora snapshots de inject manual (extensão Chrome,
+      // bookmarklet, sync-from-ml). O classificador OAuth (ml_live_chip_counts)
+      // já está correto (max_abs_diff=1). Injects manuais podem ter valores
+      // desatualizados ou capturados com filtro de depósito ativo.
+      // Retorna 202 para forçar o frontend a usar ml_live_chip_counts.
+      const snapSource = cached.data?.source || "unknown";
+      if (snapSource === "manual_inject") {
+        return response.status(202).json({
+          success: true,
+          scope,
+          from_cache: false,
+          stale: false,
+          scrape_in_progress: false,
+          message: `Cache disponível mas fonte é manual_inject (ignorado). Classificador OAuth é fonte de verdade.`,
+          source: "manual_inject_ignored",
+        });
+      }
       let bgRefresh = null;
       if (cached.stale === true) {
         bgRefresh = maybeRefreshLiveSnapshotInBackground(scope, connectionId);

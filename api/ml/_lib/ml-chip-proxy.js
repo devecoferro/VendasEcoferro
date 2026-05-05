@@ -66,6 +66,16 @@ async function doFetchChips() {
     return lastKnownCounts ? { ...lastKnownCounts, stale: true, ageSeconds: null } : null;
   }
 
+  // FIX 2026-05-05: Ignora snapshots de inject manual (extensão Chrome,
+  // bookmarklet, sync-from-ml). Esses podem ter valores desatualizados
+  // ou capturados com filtro de depósito ativo, poluindo os chips.
+  // O classificador OAuth (ml_live_chip_counts) já está correto (max_abs_diff=1).
+  const snapSource = cached.data?.source || "unknown";
+  if (snapSource === "manual_inject") {
+    log.info("snapshot é manual_inject — ignorando (classificador OAuth é fonte de verdade)");
+    return null;
+  }
+
   const snapTs = new Date(
     cached.data?.capturedAt || cached.capturedAt || 0
   ).getTime();

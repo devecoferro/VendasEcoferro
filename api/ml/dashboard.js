@@ -2705,36 +2705,42 @@ export async function buildDashboardPayload(options = {}) {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // FIX 2026-05-04: LIVE-SNAPSHOT OVERRIDE para ml_live_chip_counts
+  // ═══════════════════════════════════════════════════════════════════
+  // FIX 2026-05-05: LIVE-SNAPSHOT OVERRIDE — APENAS para scraper real
   //
-  // O classificador local (fetchMLLiveChipBucketsDetailed) infla os
-  // números porque busca TODOS os pedidos por shipping status sem a
-  // mesma janela de tempo que o ML Seller Center aplica internamente.
-  // Resultado: upcoming=88 vs ML real=30, in_transit=20 vs ML real=6.
+  // O classificador OAuth (fetchMLLiveChipBucketsDetailed) agora está
+  // CORRETO (max_abs_diff=1 vs ML real). O override do live-snapshot
+  // só deve ser aplicado quando a fonte é o SCRAPER PLAYWRIGHT real
+  // (que navega no Seller Center e captura XHRs), NUNCA quando é um
+  // inject manual (extensão Chrome, bookmarklet, sync-from-ml).
   //
-  // Solução: quando o live-snapshot (scraper Playwright) está disponível
-  // para a conexão, seus counters SÃO a fonte de verdade (bate 1:1 com
-  // ML Seller Center). Sobrescrevemos ml_live_chip_counts com eles.
-  // O ml_live_chip_order_ids_by_bucket permanece do classificador local
-  // (usado para filtrar a lista de pedidos — menos crítico que o número
-  // do chip em si).
+  // Injects manuais podem ter valores desatualizados ou incorretos
+  // (ex: capturados com filtro de depósito ativo) e POLUEM os chips
+  // quando sobrescrevem o classificador OAuth que está correto.
+  //
+  // Regra: só aplica override se source !== "manual_inject".
   // ═══════════════════════════════════════════════════════════════════
   try {
     const liveSnap = getCachedLiveSnapshot("all", baseConnection?.id || null);
     if (liveSnap && liveSnap.counters) {
-      const c = liveSnap.counters;
-      if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
-        mlLiveChipCounts = {
-          today: c.today,
-          upcoming: c.upcoming,
-          in_transit: c.in_transit || 0,
-          finalized: c.finalized || 0,
-          cancelled: c.cancelled || 0,
-        };
+      // Só aplica override do scraper REAL (Playwright), nunca de inject manual
+      const snapSource = liveSnap.data?.source || liveSnap.source || "unknown";
+      const isRealScraper = snapSource !== "manual_inject";
+      if (isRealScraper) {
+        const c = liveSnap.counters;
+        if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
+          mlLiveChipCounts = {
+            today: c.today,
+            upcoming: c.upcoming,
+            in_transit: c.in_transit || 0,
+            finalized: c.finalized || 0,
+            cancelled: c.cancelled || 0,
+          };
+        }
       }
     }
   } catch {
-    // fail-open — mantém ml_live_chip_counts do classificador local
+    // fail-open — mantém ml_live_chip_counts do classificador OAuth
   }
 
   // ═══════════════════════════════════════════════════════════════════
