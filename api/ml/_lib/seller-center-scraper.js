@@ -1994,7 +1994,7 @@ export function getCachedLiveSnapshot(scope = "all", connectionId = null) {
 // Permite injetar counters diretamente no cache do live-snapshot sem
 // precisar de cookies/Playwright. Útil quando o scraper não está
 // configurado mas os números corretos são conhecidos.
-const INJECT_TTL_MS = 30 * 60 * 1000; // 30 min (bookmarklet sync)
+const INJECT_TTL_MS = 12 * 60 * 60 * 1000; // 12h (bookmarklet sync 1x por dia)
 
 export function injectLiveSnapshotCounters(counters, connectionId = null) {
   const scope = "all";

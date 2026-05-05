@@ -31,7 +31,7 @@ import {
 const log = createLogger("ml-chip-proxy");
 
 const CACHE_TTL_MS = 60 * 1000;
-const SCRAPER_FRESHNESS_MS = 30 * 60 * 1000; // aceita cache do scraper ate 30min (stale tolerance)
+const SCRAPER_FRESHNESS_MS = 12 * 60 * 60 * 1000; // 12h — alinhado com INJECT_TTL
 
 let chipCountsCache = null;
 let lastKnownCounts = null; // ultimo valor conhecido (mesmo stale) — evita pulo UX quando cache expira
