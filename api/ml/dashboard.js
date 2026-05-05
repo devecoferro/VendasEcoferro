@@ -1908,13 +1908,12 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // A API de orders com shipping.status=delivered retorna os mais recentes.
     // ══════════════════════════════════════════════════════════════════
     try {
-      // FINALIZADAS = pedidos entregues HOJE.
+      // FINALIZADAS = pedidos entregues HOJE (fuso BRT).
       // Estratégia: buscar orders delivered criados nos últimos 10 dias
       // (pedidos mais antigos já teriam sido entregues antes), depois
-      // verificar cada shipment para ver se date_delivered = hoje.
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayMs = todayStart.getTime();
+      // verificar cada shipment para ver se date_delivered = hoje (BRT).
+      // IMPORTANTE: usar fuso America/Sao_Paulo para "hoje" = todayKey
+      const todayMs = new Date(todayKey + "T00:00:00-03:00").getTime();
       const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
       
       // Buscar orders delivered criados nos últimos 10 dias (até 3 páginas = 150)
