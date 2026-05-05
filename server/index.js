@@ -70,6 +70,8 @@ import mlAdminLiveCardsDebugHandler from "../api/ml/admin/live-cards-debug.js";
 import mlAdminUploadScraperStateHandler from "../api/ml/admin/upload-scraper-state.js";
 import mlAdminDeleteScraperStateHandler from "../api/ml/admin/delete-scraper-state.js";
 import mlAdminInstallChromiumHandler from "../api/ml/admin/install-chromium.js";
+import mlAdminSyncFromMlHandler from "../api/ml/admin/sync-from-ml.js";
+import mlAdminInjectChipCountsHandler from "../api/ml/admin/inject-chip-counts.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import adminAuditLogHandler from "../api/admin/audit-log.js";
 import adminHealthHandler from "../api/admin/health.js";
@@ -308,6 +310,8 @@ app.use((req, res, next) => {
 // quando a middleware e montada com app.use("/api", ...)).
 const CSRF_EXEMPT_PATHS = new Set([
   "/ml/notifications", // auth propria via secret
+  "/ml/admin/sync-from-ml", // bookmarklet cross-origin (auth no body)
+  "/ml/admin/inject-chip-counts", // bookmarklet cross-origin (auth no body)
   "/health",
   "/health/dependencies",
 ]);
@@ -408,6 +412,8 @@ app.all("/api/ml/admin/delete-scraper-state", apiLimiter, (req, res) => mlAdminD
 // Instalacao on-demand do Chromium (caso o build do Coolify nao tenha
 // instalado, o que acontece se o download falhar silenciosamente).
 app.all("/api/ml/admin/install-chromium", apiLimiter, (req, res) => mlAdminInstallChromiumHandler(req, res));
+app.all("/api/ml/admin/sync-from-ml", apiLimiter, (req, res) => mlAdminSyncFromMlHandler(req, res));
+app.all("/api/ml/admin/inject-chip-counts", apiLimiter, (req, res) => mlAdminInjectChipCountsHandler(req, res));
 // Proxy de imagens do ML — usado pelo PDF do estoque (jspdf precisa do
 // byte da imagem, e fetch direto bate em CORS). Whitelist de hosts no handler.
 app.get("/api/ml/image-proxy", imageProxyLimiter, (req, res) => mlImageProxyHandler(req, res));
