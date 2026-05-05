@@ -15,6 +15,7 @@ import fs from "fs";
 import path from "path";
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+const ML_BASE = "https://www.mercadolivre.com.br";
 
 export default async function handler(request, response) {
   try {
@@ -30,6 +31,7 @@ export default async function handler(request, response) {
     timestamp: new Date().toISOString(),
     connectionId: connectionId || "default",
     storageState: {},
+    rawFetchTest: {},
     httpFetcher: {},
     result: null,
   };
@@ -43,6 +45,8 @@ export default async function handler(request, response) {
   diagnostics.storageState.path = statePath;
   diagnostics.storageState.exists = fs.existsSync(statePath);
 
+  let cookieHeader = null;
+
   if (diagnostics.storageState.exists) {
     try {
       const raw = fs.readFileSync(statePath, "utf8");
@@ -50,16 +54,6 @@ export default async function handler(request, response) {
       diagnostics.storageState.sizeBytes = raw.length;
       diagnostics.storageState.cookieCount = parsed.cookies?.length || 0;
       diagnostics.storageState.originsCount = parsed.origins?.length || 0;
-
-      // Listar nomes dos cookies (sem valores por segurança)
-      const cookieNames = (parsed.cookies || []).map((c) => ({
-        name: c.name,
-        domain: c.domain,
-        expires: c.expires,
-        httpOnly: c.httpOnly,
-        secure: c.secure,
-      }));
-      diagnostics.storageState.cookies = cookieNames;
 
       // Verificar cookies ML
       const mlCookies = (parsed.cookies || []).filter(
@@ -71,8 +65,8 @@ export default async function handler(request, response) {
       diagnostics.storageState.mlCookieCount = mlCookies.length;
       diagnostics.storageState.mlCookieNames = mlCookies.map((c) => c.name);
 
-      // Calcular tamanho do cookie header
-      const cookieHeader = mlCookies
+      // Construir cookie header
+      cookieHeader = mlCookies
         .map((c) => `${c.name}=${c.value}`)
         .join("; ");
       diagnostics.storageState.cookieHeaderLength = cookieHeader.length;
@@ -82,10 +76,82 @@ export default async function handler(request, response) {
     }
   }
 
-  // 2. Verificar se o HTTP fetcher está configurado
+  // 2. Raw fetch test — testa DIRETAMENTE os endpoints do ML com os cookies
+  if (cookieHeader) {
+    const endpoints = [
+      {
+        name: "operations-dashboard/tabs (default)",
+        url: `${ML_BASE}/sales-omni/packs/marketshops/operations-dashboard/tabs?sellerSegmentType=professional&filters=TAB_TODAY&subFilters=&store=all&gmt=-03:00`,
+      },
+      {
+        name: "operations-dashboard/tabs (api)",
+        url: `${ML_BASE}/sales-omni/api/packs/marketshops/operations-dashboard/tabs?sellerSegmentType=professional&filters=TAB_TODAY&subFilters=&store=all&gmt=-03:00`,
+      },
+      {
+        name: "vendas/omni/lista/api (event-request style)",
+        url: `${ML_BASE}/vendas/omni/lista/api/channels/event-request`,
+      },
+    ];
+
+    diagnostics.rawFetchTest.endpoints = [];
+
+    for (const ep of endpoints) {
+      const testResult = { name: ep.name, url: ep.url };
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+
+        const res = await fetch(ep.url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            "x-scope": "tabs-mlb",
+            Cookie: cookieHeader,
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            Referer: `${ML_BASE}/vendas/omni/lista`,
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+          },
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        testResult.status = res.status;
+        testResult.statusText = res.statusText;
+        testResult.headers = Object.fromEntries(
+          [...res.headers.entries()].filter(([k]) =>
+            ["content-type", "location", "set-cookie", "x-request-id"].includes(k.toLowerCase())
+          )
+        );
+
+        // Ler body (limitado a 2000 chars)
+        const text = await res.text();
+        testResult.bodyLength = text.length;
+        testResult.bodyPreview = text.slice(0, 2000);
+
+        // Tentar parsear como JSON
+        try {
+          const json = JSON.parse(text);
+          testResult.isJson = true;
+          // Verificar se tem o brick segmented_actions_marketshops
+          const hasSegmented = text.includes("segmented_actions_marketshops");
+          testResult.hasSegmentedActions = hasSegmented;
+        } catch {
+          testResult.isJson = false;
+        }
+      } catch (err) {
+        testResult.error = err instanceof Error ? err.message : String(err);
+      }
+      diagnostics.rawFetchTest.endpoints.push(testResult);
+    }
+  }
+
+  // 3. Verificar se o HTTP fetcher está configurado
   diagnostics.httpFetcher.configured = isHTTPFetcherConfigured(connectionId);
 
-  // 3. Executar o HTTP fetcher (invalidar cache primeiro)
+  // 4. Executar o HTTP fetcher (invalidar cache primeiro)
   invalidateHTTPChipCache(connectionId);
 
   try {
