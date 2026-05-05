@@ -72,6 +72,7 @@ import mlAdminDeleteScraperStateHandler from "../api/ml/admin/delete-scraper-sta
 import mlAdminInstallChromiumHandler from "../api/ml/admin/install-chromium.js";
 import mlAdminSyncFromMlHandler from "../api/ml/admin/sync-from-ml.js";
 import mlAdminInjectChipCountsHandler from "../api/ml/admin/inject-chip-counts.js";
+import mlAdminTestHttpFetcherHandler from "../api/ml/admin/test-http-fetcher.js";
 import mlImageProxyHandler from "../api/ml/image-proxy.js";
 import adminAuditLogHandler from "../api/admin/audit-log.js";
 import adminHealthHandler from "../api/admin/health.js";
@@ -414,6 +415,7 @@ app.all("/api/ml/admin/delete-scraper-state", apiLimiter, (req, res) => mlAdminD
 app.all("/api/ml/admin/install-chromium", apiLimiter, (req, res) => mlAdminInstallChromiumHandler(req, res));
 app.all("/api/ml/admin/sync-from-ml", apiLimiter, (req, res) => mlAdminSyncFromMlHandler(req, res));
 app.all("/api/ml/admin/inject-chip-counts", apiLimiter, (req, res) => mlAdminInjectChipCountsHandler(req, res));
+app.get("/api/ml/admin/test-http-fetcher", apiLimiter, (req, res) => mlAdminTestHttpFetcherHandler(req, res));
 // Proxy de imagens do ML — usado pelo PDF do estoque (jspdf precisa do
 // byte da imagem, e fetch direto bate em CORS). Whitelist de hosts no handler.
 app.get("/api/ml/image-proxy", imageProxyLimiter, (req, res) => mlImageProxyHandler(req, res));
