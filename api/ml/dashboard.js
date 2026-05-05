@@ -1909,16 +1909,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // ══════════════════════════════════════════════════════════════════
     try {
       // FINALIZADAS = pedidos entregues HOJE (fuso BRT).
-      // Estratégia: buscar orders delivered criados nos últimos 10 dias
-      // (pedidos mais antigos já teriam sido entregues antes), depois
-      // verificar cada shipment para ver se date_delivered = hoje (BRT).
-      // IMPORTANTE: usar fuso America/Sao_Paulo para "hoje" = todayKey
-      const todayMs = new Date(todayKey + "T00:00:00-03:00").getTime();
-      const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      // Engenharia reversa: o chip TAB_FINISHED do ML mostra pedidos cuja
+      // data de entrega real ("Chegou em X de maio") = hoje.
+      // Estratégia: buscar orders delivered dos últimos 4 dias via API,
+      // depois verificar cada shipment. Usar getCalendarKey na date_delivered
+      // para comparar com todayKey (mesmo dia calendário BRT).
+      const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
       
-      // Buscar orders delivered criados nos últimos 10 dias (até 3 páginas = 150)
+      // Buscar orders delivered criados nos últimos 4 dias (até 2 páginas = 100)
       const deliveredOrders = await fetchAllOrdersByShippingStatus(
-        token, sellerId, "delivered", 3, tenDaysAgo
+        token, sellerId, "delivered", 2, fourDaysAgo
       );
       
       if (deliveredOrders.length > 0) {
@@ -1944,13 +1944,14 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
                 const r = await fetch(`https://api.mercadolibre.com/shipments/${sid}`, { headers: authHeaders });
                 if (!r.ok) return null;
                 const j = await r.json();
-                // Verificar se foi entregue hoje
+                // Verificar se foi entregue HOJE (mesmo dia calendário BRT)
+                // Tentar múltiplos campos: date_delivered, tracking_number update
                 const deliveredDate = j.status_history?.date_delivered ||
                   j.tracking?.date_delivered || null;
                 if (deliveredDate) {
-                  const deliveredMs = new Date(deliveredDate).getTime();
-                  if (deliveredMs >= todayMs) {
-                    return sid; // entregue hoje
+                  const deliveredKey = getCalendarKey(new Date(deliveredDate));
+                  if (deliveredKey === todayKey) {
+                    return sid; // entregue hoje (mesmo dia calendário)
                   }
                 }
                 return null;
