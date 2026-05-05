@@ -2062,16 +2062,11 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // invoice_pending: usa SLA para decidir today vs upcoming
-      // Se a coleta é HOJE, ML mostra em "Envios de hoje" (precisa emitir NF-e urgente)
-      // Se a coleta é futura, vai para "Próximos dias"
+      // invoice_pending → SEMPRE upcoming
+      // Engenharia reversa rev10: ML NUNCA mostra invoice_pending em "Envios de hoje"
+      // independente do SLA. Sempre fica em "Próximos dias".
       if (sub === "invoice_pending") {
-        const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-        if (sla && sla <= todayKey) {
-          addMlOrderIds("today", pack.ml_order_ids);
-        } else {
-          addMlOrderIds("upcoming", pack.ml_order_ids);
-        }
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
 
@@ -2091,16 +2086,11 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // ready_to_print: usa SLA para decidir today vs upcoming
-      // Se a coleta é HOJE, ML mostra em "Envios de hoje" (precisa imprimir urgente)
-      // Se a coleta é futura, vai para "Próximos dias"
+      // ready_to_print → SEMPRE upcoming
+      // Engenharia reversa rev10: ML NUNCA mostra ready_to_print em "Envios de hoje"
+      // independente do SLA. Sempre fica em "Próximos dias".
       if (sub === "ready_to_print") {
-        const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-        if (sla && sla <= todayKey) {
-          addMlOrderIds("today", pack.ml_order_ids);
-        } else {
-          addMlOrderIds("upcoming", pack.ml_order_ids);
-        }
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
 
