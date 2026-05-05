@@ -2,30 +2,23 @@
 // ML Chip HTTP Fetcher — busca chips DIRETAMENTE do ML Seller Center
 // via HTTP usando cookies do storage state (sem Playwright/browser).
 //
-// COMO FUNCIONA:
+// COMO FUNCIONA (rev15 — 2026-05-05):
 // 1. Lê os cookies do storage state do Playwright (arquivo JSON no disco)
-// 2. LIMPA cookies desnecessários (evita "Header too large" / HTTP 431)
-// 3. Faz fetch HTTP direto para /operations-dashboard/tabs do ML
+// 2. Faz GET na página /vendas/omni/lista para obter o CSRF token
+// 3. Faz POST em /vendas/omni/lista/api/channels/event-request
+//    com o CSRF token + cookies → retorna os chips exatos
 // 4. Extrai os counters (TAB_TODAY, TAB_NEXT_DAYS, TAB_IN_THE_WAY, TAB_FINISHED)
-// 5. Retorna os 4 números exatos que aparecem nos chips do Seller Center
 //
 // VANTAGENS:
 // - Sem Playwright/browser headless (economia de ~250MB RAM)
-// - Execução em <1s (vs 30-60s do scraper)
-// - Mesma precisão (usa mesmos endpoints internos do ML)
+// - Execução em <2s (vs 30-60s do scraper)
+// - Precisão 100% (usa o mesmo endpoint que o frontend JS do ML)
 // - Funciona em qualquer servidor (não precisa de Chrome instalado)
 // - Suporta múltiplas contas (connectionId)
 //
 // REQUISITO:
 // - Storage state válido com cookies do ML (gerado pelo login manual
-//   no Playwright ou via setup-storage-state)
-//
-// FIX 2026-05-05: Reescrito com:
-// - Limpeza agressiva de cookies (só mantém essenciais ML)
-// - Suporte a connectionId (multi-conta)
-// - Cache por connectionId (isolamento entre contas)
-// - Fallback: tenta /operations-dashboard/tabs primeiro, se falhar
-//   tenta variante com /api/ no path
+//   no Playwright ou via capturar-cookies-ml.mjs)
 // ═══════════════════════════════════════════════════════════════════
 
 import fs from "fs";
@@ -43,78 +36,43 @@ const DEFAULT_STORAGE_STATE_PATH = path.join(
 const STORAGE_STATE_PATH =
   process.env.ML_SCRAPER_STORAGE_STATE_PATH || DEFAULT_STORAGE_STATE_PATH;
 
-// Cache interno POR connectionId: 90s (mais fresco que o scraper de 2min)
+// Cache interno POR connectionId: 90s
 const CACHE_TTL_MS = 90 * 1000;
 const cacheByConnection = new Map(); // connectionId → { data, expiresAt }
 
-// ML Seller Center base URL
+// ML Seller Center URLs
 const ML_BASE = "https://www.mercadolivre.com.br";
+const ML_PAGE_URL = `${ML_BASE}/vendas/omni/lista`;
+const ML_EVENT_REQUEST_URL = `${ML_PAGE_URL}/api/channels/event-request`;
+
+// User-Agent consistente
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 // ═══════════════════════════════════════════════════════════════════
-// COOKIE CLEANUP — resolve o problema "Header too large"
-// ═══════════════════════════════════════════════════════════════════
-// O storage state acumula centenas de cookies ao longo do tempo
-// (tracking, analytics, A/B tests, etc). O ML só precisa de ~5-10
-// cookies essenciais para autenticação. Mantemos apenas esses.
-//
-// Cookies essenciais identificados por engenharia reversa:
-// - _d2id: device ID (anti-fraud)
-// - _ml_ci / _ml_ga: sessão ML
-// - _mldataSessionId: sessão de dados
-// - D_SID: session ID principal
-// - orguseridp: user ID criptografado
-// - c_ui-id: UI session
-// - _csrf: token CSRF
-// - ml-uid: user ID
-// - ml-session: sessão principal
+// COOKIE HANDLING
 // ═══════════════════════════════════════════════════════════════════
 
-// Prefixos/nomes de cookies ESSENCIAIS para autenticação ML.
-// Qualquer cookie que NÃO comece com um desses prefixos é descartado.
-const ESSENTIAL_COOKIE_PATTERNS = [
-  // Sessão e autenticação
-  /^_d2id/,
-  /^_ml_/,
-  /^_mldataSessionId/,
-  /^D_SID/,
-  /^orguseridp/,
-  /^c_ui-id/,
-  /^_csrf/,
-  /^ml-/,
-  /^ssid/,
-  /^_s_/,
-  // Cookies de sessão genéricos que ML usa
-  /^_cp_/,
-  /^_cb_/,
-  /^_tracking/,
-  /^_d_/,
-  /^SID_/,
-  /^SSID/,
-  /^HSID/,
-  /^NID/,
-  /^secure-/,
-  /^_secure/,
-];
-
-// Domínios que são relevantes para autenticação ML
+// Domínios relevantes para autenticação ML
 const RELEVANT_DOMAINS = [
   ".mercadolivre.com.br",
   ".mercadolibre.com",
-  ".ml.com",
   "www.mercadolivre.com.br",
   "mercadolivre.com.br",
+  "www.mercadolivre.com",
+  ".mercadolivre.com",
 ];
 
 /**
- * Filtra cookies do storage state mantendo apenas os essenciais.
- * Retorna string de Cookie header com tamanho controlado.
+ * Constrói o cookie header a partir do storage state.
+ * Inclui TODOS os cookies de domínios ML (não filtra por pattern).
  */
-function getCleanCookieHeader(storageState) {
+function buildCookieHeader(storageState) {
   if (!storageState?.cookies || !Array.isArray(storageState.cookies)) {
     return null;
   }
 
-  // Passo 1: Filtra por domínio relevante
+  // Filtra por domínio relevante
   const mlCookies = storageState.cookies.filter((c) => {
     const domain = c.domain || "";
     return RELEVANT_DOMAINS.some(
@@ -124,52 +82,23 @@ function getCleanCookieHeader(storageState) {
 
   if (mlCookies.length === 0) return null;
 
-  // Passo 2: Se o header resultante for muito grande (>6KB), aplica
-  // filtragem mais agressiva mantendo só os essenciais por pattern
-  let selectedCookies = mlCookies;
-  const fullHeader = mlCookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const header = mlCookies.map((c) => `${c.name}=${c.value}`).join("; ");
 
-  if (fullHeader.length > 6000) {
-    // Filtragem agressiva: só cookies que matcham os patterns essenciais
-    selectedCookies = mlCookies.filter((c) =>
-      ESSENTIAL_COOKIE_PATTERNS.some((pattern) => pattern.test(c.name))
-    );
-
-    // Se ficou vazio demais (< 3 cookies), algo está errado — usa todos
-    if (selectedCookies.length < 3) {
-      log.warn(
-        `Cookie cleanup muito agressivo (${selectedCookies.length} cookies). ` +
-        `Usando top 50 por tamanho.`
-      );
-      // Fallback: pega os 50 menores cookies (evita header gigante)
-      selectedCookies = mlCookies
-        .sort((a, b) => (a.value?.length || 0) - (b.value?.length || 0))
-        .slice(0, 50);
-    }
-  }
-
-  const header = selectedCookies.map((c) => `${c.name}=${c.value}`).join("; ");
-
-  // Log de diagnóstico
-  if (fullHeader.length > 6000) {
-    log.info(
-      `Cookie cleanup: ${mlCookies.length} → ${selectedCookies.length} cookies, ` +
-      `header ${fullHeader.length} → ${header.length} bytes`
-    );
-  }
-
-  // Safety check: se ainda estiver > 12KB, trunca (nginx default max é 8KB)
+  // Safety check: se > 12KB, pega os mais importantes (por nome)
   if (header.length > 12000) {
-    log.warn(`Cookie header ainda muito grande (${header.length} bytes) após cleanup`);
-    // Pega só os primeiros 50 cookies por nome mais curto
-    const minimal = selectedCookies
+    log.warn(`Cookie header muito grande (${header.length} bytes), truncando`);
+    const essential = mlCookies
       .sort((a, b) => (a.value?.length || 0) - (b.value?.length || 0))
-      .slice(0, 30);
-    return minimal.map((c) => `${c.name}=${c.value}`).join("; ");
+      .slice(0, 40);
+    return essential.map((c) => `${c.name}=${c.value}`).join("; ");
   }
 
   return header;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// STORAGE STATE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════
 
 /**
  * Resolve o path do storage state para uma conexão específica.
@@ -181,7 +110,6 @@ function resolveStatePath(connectionId) {
     `-${connectionId}.json`
   );
   if (fs.existsSync(perConnPath)) return perConnPath;
-  // Sem fallback ao default — retorna null se não existe per-connection
   return null;
 }
 
@@ -213,105 +141,169 @@ function loadAndValidateState(connectionId) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// CSRF TOKEN EXTRACTION
+// ═══════════════════════════════════════════════════════════════════
+
 /**
- * Faz fetch de uma tab do operations-dashboard.
- * Retorna o body JSON ou null em caso de erro.
+ * Faz GET na página do ML Seller Center e extrai o CSRF token do HTML.
+ * O token está em: "csrfToken":"<token>" ou <meta name="csrf-token" content="<token>">
  */
-async function fetchTab(tabFilter, cookieHeader, { variant = "default" } = {}) {
-  // Duas variantes de URL (o ML às vezes reescreve via nginx/CDN):
-  const paths = {
-    default: `/sales-omni/packs/marketshops/operations-dashboard/tabs`,
-    api: `/sales-omni/api/packs/marketshops/operations-dashboard/tabs`,
-  };
-  const basePath = paths[variant] || paths.default;
+async function fetchCsrfToken(cookieHeader) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
-  const url =
-    `${ML_BASE}${basePath}` +
-    `?sellerSegmentType=professional` +
-    `&filters=${encodeURIComponent(tabFilter)}` +
-    `&subFilters=` +
-    `&store=all` +
-    `&gmt=-03:00`;
+    const res = await fetch(ML_PAGE_URL, {
+      method: "GET",
+      headers: {
+        Cookie: cookieHeader,
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
 
-  const headers = {
-    Accept: "application/json, text/plain, */*",
-    "X-Requested-With": "XMLHttpRequest",
-    "x-scope": "tabs-mlb",
-    Cookie: cookieHeader,
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    Referer: `${ML_BASE}/vendas/omni/lista`,
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-  };
+    if (res.status >= 300 && res.status < 400) {
+      log.warn(`CSRF fetch: redirect ${res.status} (sessão expirada)`);
+      return null;
+    }
+
+    if (!res.ok) {
+      log.warn(`CSRF fetch: HTTP ${res.status}`);
+      return null;
+    }
+
+    const html = await res.text();
+
+    // Extrair csrfToken do JSON inline no HTML
+    const csrfMatch = html.match(/"csrfToken":"([^"]+)"/);
+    if (csrfMatch) {
+      return csrfMatch[1];
+    }
+
+    // Fallback: meta tag
+    const metaMatch = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/);
+    if (metaMatch) {
+      return metaMatch[1];
+    }
+
+    log.warn("CSRF token não encontrado no HTML da página");
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`CSRF fetch error: ${msg}`);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EVENT-REQUEST — busca os chips via POST
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Faz POST no event-request do ML para obter os chips.
+ * Retorna o body JSON da resposta ou null.
+ */
+async function fetchEventRequest(cookieHeader, csrfToken) {
+  const body = JSON.stringify({
+    baseUrl: "/sales-omni",
+    method: "GET",
+    path: "/packs/marketshops/operations-dashboard/tabs",
+    loadingEvents: [],
+    errorEvents: [],
+    queryParams: [
+      { key: "sellerSegmentType", value: "professional" },
+      { key: "filters", value: "TAB_TODAY" },
+      { key: "subFilters", value: "" },
+      { key: "store", value: "all" },
+      { key: "gmt", value: "-03:00" },
+    ],
+    pathParams: [],
+    bodyParams: [],
+    headers: [{ key: "x-scope", value: "tabs-mlb" }],
+    impersonalized: false,
+  });
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
-    const res = await fetch(url, {
-      method: "GET",
-      headers,
-      redirect: "manual", // Não seguir redirects (indica sessão expirada)
+    const res = await fetch(ML_EVENT_REQUEST_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "x-csrf-token": csrfToken,
+        Cookie: cookieHeader,
+        "User-Agent": USER_AGENT,
+        Referer: ML_PAGE_URL,
+      },
+      body,
+      redirect: "manual",
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
-    if (res.status === 431 || res.status === 494) {
-      // 431 = Request Header Fields Too Large
-      // 494 = nginx Request Header Too Large
-      log.warn(`Tab ${tabFilter} (${variant}): HTTP ${res.status} — header too large (cookies?)`);
-      return { error: "header_too_large", status: res.status };
+    if (res.status === 422) {
+      log.warn(`event-request: 422 validation error (CSRF token inválido ou body incorreto)`);
+      return null;
+    }
+
+    if (res.status === 403) {
+      log.warn(`event-request: 403 forbidden (CSRF rejeitado)`);
+      return null;
     }
 
     if (res.status >= 300 && res.status < 400) {
-      log.warn(`Tab ${tabFilter} (${variant}): redirect ${res.status} (sessão expirada?)`);
-      return { error: "session_expired", status: res.status };
-    }
-
-    if (res.status === 404) {
-      // 404 pode ser causado por header too large (ML retorna 404 em vez de 431)
-      log.warn(`Tab ${tabFilter} (${variant}): HTTP 404 — possível header too large ou endpoint mudou`);
-      return { error: "not_found", status: 404 };
+      log.warn(`event-request: redirect ${res.status} (sessão expirada)`);
+      return null;
     }
 
     if (!res.ok) {
-      log.warn(`Tab ${tabFilter} (${variant}): HTTP ${res.status}`);
-      return { error: "http_error", status: res.status };
+      log.warn(`event-request: HTTP ${res.status}`);
+      return null;
     }
 
     const text = await res.text();
     try {
-      return { ok: true, body: JSON.parse(text) };
+      return JSON.parse(text);
     } catch {
-      log.warn(`Tab ${tabFilter} (${variant}): resposta não é JSON (${text.slice(0, 200)})`);
-      return { error: "not_json", status: res.status };
+      log.warn(`event-request: resposta não é JSON (${text.slice(0, 100)})`);
+      return null;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("abort")) {
-      log.warn(`Tab ${tabFilter} (${variant}): timeout (15s)`);
-      return { error: "timeout" };
+      log.warn("event-request: timeout (15s)");
+    } else {
+      log.warn(`event-request: fetch error — ${msg}`);
     }
-    log.warn(`Tab ${tabFilter} (${variant}): fetch error — ${msg}`);
-    return { error: "network", message: msg };
+    return null;
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// COUNTER EXTRACTION
+// ═══════════════════════════════════════════════════════════════════
+
 /**
- * Extrai counters de um response body do operations-dashboard/tabs.
- * O ML retorna um array de "bricks", e dentro de um deles há um
- * brick com id="segmented_actions_marketshops" que contém os segments
- * com os counts de cada tab.
+ * Extrai counters da resposta do event-request.
+ * A resposta contém response[].data.bricks[] com
+ * id="segmented_actions_marketshops" → data.segments[]
  */
-function extractCountersFromBody(body) {
-  if (!body) return null;
+function extractCountersFromResponse(responseBody) {
+  if (!responseBody) return null;
 
   const counters = { today: 0, upcoming: 0, in_transit: 0, finalized: 0 };
   let found = false;
 
   // DFS no body para encontrar segmented_actions_marketshops
-  const stack = [body];
-  const maxIter = 50000; // safety: evita loop infinito em payloads enormes
+  const stack = [responseBody];
+  const maxIter = 50000;
   let iter = 0;
   while (stack.length && iter++ < maxIter) {
     const cur = stack.pop();
@@ -321,11 +313,12 @@ function extractCountersFromBody(body) {
       found = true;
       for (const seg of cur.data.segments) {
         const count = parseInt(String(seg.count || "0"), 10) || 0;
-        if (seg.id === "TAB_TODAY" && count > counters.today) counters.today = count;
-        else if (seg.id === "TAB_NEXT_DAYS" && count > counters.upcoming) counters.upcoming = count;
-        else if (seg.id === "TAB_IN_THE_WAY" && count > counters.in_transit) counters.in_transit = count;
-        else if (seg.id === "TAB_FINISHED" && count > counters.finalized) counters.finalized = count;
+        if (seg.id === "TAB_TODAY") counters.today = count;
+        else if (seg.id === "TAB_NEXT_DAYS") counters.upcoming = count;
+        else if (seg.id === "TAB_IN_THE_WAY") counters.in_transit = count;
+        else if (seg.id === "TAB_FINISHED") counters.finalized = count;
       }
+      break; // Found it, no need to continue
     }
 
     if (Array.isArray(cur)) {
@@ -340,8 +333,13 @@ function extractCountersFromBody(body) {
   return found ? counters : null;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// PUBLIC API
+// ═══════════════════════════════════════════════════════════════════
+
 /**
  * Busca os chips do ML Seller Center via HTTP direto.
+ * Fluxo: GET page → extract CSRF → POST event-request → extract counters.
  * Suporta connectionId para multi-conta.
  * Retorna { today, upcoming, in_transit, finalized, source: "http_fetcher" } ou null.
  */
@@ -358,68 +356,34 @@ export async function fetchMLChipsViaHTTP(connectionId = null) {
   const storageState = loadAndValidateState(connectionId);
   if (!storageState) return null;
 
-  // Get clean cookie header (evita "Header too large")
-  const cookieHeader = getCleanCookieHeader(storageState);
+  // Build cookie header
+  const cookieHeader = buildCookieHeader(storageState);
   if (!cookieHeader) {
     log.warn(`Nenhum cookie ML válido para connection=${cacheKey}`);
     return null;
   }
 
-  log.info(`Buscando chips via HTTP para connection=${cacheKey} (cookie header: ${cookieHeader.length} bytes)`);
+  log.info(`Buscando chips via HTTP para connection=${cacheKey} (cookie: ${cookieHeader.length} bytes)`);
 
-  // Estratégia: faz fetch de UMA tab (qualquer uma retorna os counts de TODAS).
-  // Se falhar com a variante default, tenta a variante /api/.
-  // Se ambas falharem, tenta com a segunda tab como fallback.
-  const TAB_FILTERS = ["TAB_TODAY", "TAB_NEXT_DAYS", "TAB_IN_THE_WAY", "TAB_FINISHED"];
+  // Step 1: Fetch CSRF token from page HTML
+  const csrfToken = await fetchCsrfToken(cookieHeader);
+  if (!csrfToken) {
+    log.warn(`Não foi possível obter CSRF token para connection=${cacheKey}`);
+    return null;
+  }
+  log.info(`CSRF token obtido para connection=${cacheKey}: ${csrfToken.slice(0, 8)}...`);
 
-  let counters = null;
-  let lastError = null;
-
-  // Tenta variante "default" com TAB_TODAY
-  const result1 = await fetchTab("TAB_TODAY", cookieHeader, { variant: "default" });
-  if (result1?.ok) {
-    counters = extractCountersFromBody(result1.body);
-  } else {
-    lastError = result1?.error;
+  // Step 2: POST event-request with CSRF token
+  const responseBody = await fetchEventRequest(cookieHeader, csrfToken);
+  if (!responseBody) {
+    log.warn(`event-request falhou para connection=${cacheKey}`);
+    return null;
   }
 
-  // Se não conseguiu, tenta variante "api"
+  // Step 3: Extract counters from response
+  const counters = extractCountersFromResponse(responseBody);
   if (!counters) {
-    const result2 = await fetchTab("TAB_TODAY", cookieHeader, { variant: "api" });
-    if (result2?.ok) {
-      counters = extractCountersFromBody(result2.body);
-    } else {
-      lastError = result2?.error || lastError;
-    }
-  }
-
-  // Se ainda não conseguiu, tenta TODAS as tabs em paralelo (cada uma
-  // retorna os counts de todas — pegamos o maior por tab)
-  if (!counters) {
-    const results = await Promise.all(
-      TAB_FILTERS.map((tab) => fetchTab(tab, cookieHeader, { variant: "default" }))
-    );
-
-    const aggregated = { today: 0, upcoming: 0, in_transit: 0, finalized: 0 };
-    let anySuccess = false;
-
-    for (const r of results) {
-      if (!r?.ok) continue;
-      const c = extractCountersFromBody(r.body);
-      if (c) {
-        anySuccess = true;
-        if (c.today > aggregated.today) aggregated.today = c.today;
-        if (c.upcoming > aggregated.upcoming) aggregated.upcoming = c.upcoming;
-        if (c.in_transit > aggregated.in_transit) aggregated.in_transit = c.in_transit;
-        if (c.finalized > aggregated.finalized) aggregated.finalized = c.finalized;
-      }
-    }
-
-    if (anySuccess) counters = aggregated;
-  }
-
-  if (!counters) {
-    log.warn(`HTTP fetcher falhou para connection=${cacheKey}: ${lastError || "unknown"}`);
+    log.warn(`Não foi possível extrair counters da resposta para connection=${cacheKey}`);
     return null;
   }
 
