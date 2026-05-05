@@ -1911,14 +1911,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       // FINALIZADAS = pedidos entregues HOJE (fuso BRT).
       // Engenharia reversa: o chip TAB_FINISHED do ML mostra pedidos cuja
       // data de entrega real ("Chegou em X de maio") = hoje.
-      // Estratégia: buscar orders delivered dos últimos 4 dias via API,
+      // Estratégia: buscar orders delivered dos últimos 2 dias via API,
       // depois verificar cada shipment. Usar getCalendarKey na date_delivered
       // para comparar com todayKey (mesmo dia calendário BRT).
-      const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+      // Janela de 2 dias (não 4) porque pedidos criados há 3-4 dias já foram
+      // entregues antes de hoje na maioria dos casos.
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
       
-      // Buscar orders delivered criados nos últimos 4 dias (até 2 páginas = 100)
+      // Buscar orders delivered criados nos últimos 2 dias (até 2 páginas = 100)
       const deliveredOrders = await fetchAllOrdersByShippingStatus(
-        token, sellerId, "delivered", 2, fourDaysAgo
+        token, sellerId, "delivered", 2, twoDaysAgo
       );
       
       if (deliveredOrders.length > 0) {
