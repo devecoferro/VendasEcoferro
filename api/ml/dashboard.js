@@ -1997,13 +1997,15 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
-    // Pending: ML Seller Center mantém TODOS em "Próximos dias" (observado
-    // em múltiplas comparações). Alinhado com classifyCrossDockingOrder e
-    // classifyFulfillmentOrder após commit e8f7787. Fix R1 do audit: antes
-    // promovia pra today por SLA, inflando "Envios de hoje" em ~9 pedidos.
-    for (const [, pack] of pendingPacks) {
-      addMlOrderIds("upcoming", pack.ml_order_ids);
-    }
+    // FIX 2026-05-05 (rev9): Pedidos PENDING NÃO vão para nenhum chip.
+    // Engenharia reversa 2026-05-05: o chip "Próximos dias" do ML mostra
+    // APENAS pedidos RTS (ready_to_ship) com data de coleta futura.
+    // Pedidos pending (shipping.status=pending) NÃO aparecem nos chips
+    // porque ainda não têm data de coleta definida.
+    // Evidência: nosso upcoming=137, ML=77. Cards somam 90 (apenas RTS).
+    // A diferença de 137-90=47 são exatamente os pending que inflam.
+    // SOLUÇÃO: pending fica fora dos chips (não é operacional até virar RTS).
+    // (pendingPacks não são adicionados a nenhum bucket)
 
     // Ready to ship → classificação por substatus + data SLA.
     // Replica a lógica de classifyCrossDockingOrder/classifyFulfillmentOrder
@@ -2073,24 +2075,32 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
-      // FIX 2026-05-04: in_packing_list → today (full) ou upcoming (cross)
-      // No ML Seller Center, in_packing_list aparece em "Próximos dias" (cross)
-      // ou "Envios de hoje" (full), NUNCA em "Em trânsito".
-      if (sub === "in_packing_list") {
-        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
+      // FIX 2026-05-05 (rev9): in_packing_list e in_warehouse
+      // Para Full: usar SLA para decidir today vs upcoming.
+      // ML mostra CARD_FULL em "Envios de hoje" APENAS se o envio é programado
+      // para HOJE. Se o Full vai enviar amanhã/depois, vai para "Próximos dias".
+      // Para cross-docking: sempre upcoming (aguardando processamento).
+      if (sub === "in_packing_list" || sub === "in_warehouse") {
+        if (!isFull) {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        } else {
+          // Full: usar SLA para decidir
+          const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+          if (sla && sla > todayKey) {
+            addMlOrderIds("upcoming", pack.ml_order_ids);
+          } else {
+            addMlOrderIds("today", pack.ml_order_ids);
+          }
+        }
         continue;
       }
 
-      // in_warehouse: so acontece em Full (pacote no warehouse ML)
-      // ML mostra CARD_FULL "Processando CD" / "Vamos enviar dia X" → today
-      if (sub === "in_warehouse") {
-        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
-        continue;
-      }
-
-      // ready_to_print → today (precisa imprimir antes da coleta)
+      // FIX 2026-05-05 (rev9): ready_to_print → upcoming (NÃO today)
+      // Engenharia reversa: ML mostra ready_to_print em "Próximos dias"
+      // (task TASK_READY_TO_PRINT aparece em ourinhos/next_days, não today).
+      // O vendedor ainda precisa imprimir a etiqueta antes da coleta.
       if (sub === "ready_to_print") {
-        addMlOrderIds("today", pack.ml_order_ids);
+        addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
 
