@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "ML Chip Sync - VendasEcoferro",
+  "version": "1.0.0",
+  "description": "Sincroniza automaticamente os chips do Mercado Livre Seller Center com o VendasEcoferro",
+  "permissions": [
+    "alarms",
+    "storage",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://www.mercadolivre.com.br/*",
+    "https://vendas.ecoferro.com.br/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.mercadolivre.com.br/vendas/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

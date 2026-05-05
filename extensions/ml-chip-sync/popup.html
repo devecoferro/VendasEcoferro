@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ML Chip Sync</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 320px;
+      padding: 16px;
+      background: #f8f9fa;
+      color: #333;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .header img {
+      width: 32px;
+      height: 32px;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+    .header .subtitle {
+      font-size: 11px;
+      color: #666;
+    }
+    .status-card {
+      background: white;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+    }
+    .status-label {
+      font-size: 12px;
+      color: #666;
+    }
+    .status-value {
+      font-size: 12px;
+      font-weight: 600;
+      color: #333;
+    }
+    .status-value.success { color: #28a745; }
+    .status-value.error { color: #dc3545; }
+    .status-value.pending { color: #ffc107; }
+    .chips-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .chip-item {
+      background: #f0f4ff;
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+    }
+    .chip-item .count {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2563eb;
+    }
+    .chip-item .label {
+      font-size: 10px;
+      color: #666;
+      margin-top: 2px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+    .btn-primary:disabled {
+      background: #93c5fd;
+      cursor: not-allowed;
+    }
+    .seller-badge {
+      display: inline-block;
+      background: #e8f5e9;
+      color: #2e7d32;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .error-msg {
+      font-size: 11px;
+      color: #dc3545;
+      margin-top: 4px;
+    }
+    .footer {
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px solid #e0e0e0;
+      font-size: 10px;
+      color: #999;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>ML Chip Sync</h1>
+      <div class="subtitle">VendasEcoferro - Sincronização Automática</div>
+    </div>
+  </div>
+
+  <div class="status-card">
+    <div class="status-row">
+      <span class="status-label">Status</span>
+      <span class="status-value" id="status-text">Verificando...</span>
+    </div>
+    <div class="status-row">
+      <span class="status-label">Conta ML</span>
+      <span id="seller-name"><span class="seller-badge">-</span></span>
+    </div>
+    <div class="status-row">
+      <span class="status-label">Última sync</span>
+      <span class="status-value" id="last-sync">-</span>
+    </div>
+  </div>
+
+  <div class="status-card">
+    <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px;">Chips Sincronizados</div>
+    <div class="chips-grid">
+      <div class="chip-item">
+        <div class="count" id="chip-today">-</div>
+        <div class="label">Envios de hoje</div>
+      </div>
+      <div class="chip-item">
+        <div class="count" id="chip-upcoming">-</div>
+        <div class="label">Próximos dias</div>
+      </div>
+      <div class="chip-item">
+        <div class="count" id="chip-transit">-</div>
+        <div class="label">Em trânsito</div>
+      </div>
+      <div class="chip-item">
+        <div class="count" id="chip-finalized">-</div>
+        <div class="label">Finalizadas</div>
+      </div>
+    </div>
+    <div class="error-msg" id="error-msg" style="display:none;"></div>
+  </div>
+
+  <button class="btn btn-primary" id="sync-btn">Sincronizar Agora</button>
+
+  <div class="footer">
+    Sincronização automática a cada 5 minutos
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
