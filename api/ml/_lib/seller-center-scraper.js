@@ -1990,6 +1990,50 @@ export function getCachedLiveSnapshot(scope = "all", connectionId = null) {
   return entry;
 }
 
+// ─── Inject manual de counters (bypass scraper) ────────────────────────
+// Permite injetar counters diretamente no cache do live-snapshot sem
+// precisar de cookies/Playwright. Útil quando o scraper não está
+// configurado mas os números corretos são conhecidos.
+const INJECT_TTL_MS = 10 * 60 * 1000; // 10 min (vs 2min do scraper)
+
+export function injectLiveSnapshotCounters(counters, connectionId = null) {
+  const scope = "all";
+  const cacheKey = `${scope}::${connectionId || "default"}`;
+  const now = new Date();
+  const snapshot = {
+    counters: {
+      today: counters.today,
+      upcoming: counters.upcoming,
+      in_transit: counters.in_transit,
+      finalized: counters.finalized,
+    },
+    capturedAt: now.toISOString(),
+    source: "manual_inject",
+    sub_cards: {},
+    orders: {},
+    stats: { total_orders: 0, tabs_with_data: 0, xhr_count: 0 },
+  };
+  const cacheEntry = {
+    data: snapshot,
+    capturedAt: now.toISOString(),
+    expiresAt: Date.now() + INJECT_TTL_MS,
+    scope,
+    connectionId,
+    counters: snapshot.counters,
+  };
+  cachedLiveSnapshotByScope.set(cacheKey, cacheEntry);
+  // Retrocompat: se é a conexão default, atualiza o cache global
+  if (!connectionId) {
+    cachedLiveSnapshot = cacheEntry;
+  }
+  log.info("[inject] Counters injetados manualmente", {
+    cacheKey,
+    counters,
+    ttlSeconds: Math.round(INJECT_TTL_MS / 1000),
+  });
+  return { ttlSeconds: Math.round(INJECT_TTL_MS / 1000) };
+}
+
 // ─── Auto-refresh em background (single-flight POR ESCOPO) ───────────
 // Agora cada escopo tem seu próprio lock e throttle. Permite que
 // scrapes de escopos diferentes rodem em paralelo se necessário.
