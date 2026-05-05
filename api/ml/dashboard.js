@@ -2033,7 +2033,8 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       if (!shipment) {
         rtsNoShipment++;
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+        // FIX 2026-05-05 (rev10): RTS sem shipment NÃO vai para nenhum chip.
+        // Se não tem shipment, não é operacional (provavelmente já processado).
         continue;
       }
       if (shipment.status !== "ready_to_ship") {
@@ -2061,9 +2062,16 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // invoice_pending → upcoming (aguarda NF-e)
+      // invoice_pending: usa SLA para decidir today vs upcoming
+      // Se a coleta é HOJE, ML mostra em "Envios de hoje" (precisa emitir NF-e urgente)
+      // Se a coleta é futura, vai para "Próximos dias"
       if (sub === "invoice_pending") {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+        const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        if (sla && sla <= todayKey) {
+          addMlOrderIds("today", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
         continue;
       }
 
@@ -2075,32 +2083,24 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
-      // FIX 2026-05-05 (rev9): in_packing_list e in_warehouse
-      // Para Full: usar SLA para decidir today vs upcoming.
-      // ML mostra CARD_FULL em "Envios de hoje" APENAS se o envio é programado
-      // para HOJE. Se o Full vai enviar amanhã/depois, vai para "Próximos dias".
-      // Para cross-docking: sempre upcoming (aguardando processamento).
+      // FIX 2026-05-05 (rev10): in_packing_list e in_warehouse
+      // Full: SEMPRE today (ML mostra CARD_FULL em "Envios de hoje" independente do SLA)
+      // Cross-docking: sempre upcoming (aguardando processamento no hub)
       if (sub === "in_packing_list" || sub === "in_warehouse") {
-        if (!isFull) {
-          addMlOrderIds("upcoming", pack.ml_order_ids);
-        } else {
-          // Full: usar SLA para decidir
-          const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
-          if (sla && sla > todayKey) {
-            addMlOrderIds("upcoming", pack.ml_order_ids);
-          } else {
-            addMlOrderIds("today", pack.ml_order_ids);
-          }
-        }
+        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
         continue;
       }
 
-      // FIX 2026-05-05 (rev9): ready_to_print → upcoming (NÃO today)
-      // Engenharia reversa: ML mostra ready_to_print em "Próximos dias"
-      // (task TASK_READY_TO_PRINT aparece em ourinhos/next_days, não today).
-      // O vendedor ainda precisa imprimir a etiqueta antes da coleta.
+      // ready_to_print: usa SLA para decidir today vs upcoming
+      // Se a coleta é HOJE, ML mostra em "Envios de hoje" (precisa imprimir urgente)
+      // Se a coleta é futura, vai para "Próximos dias"
       if (sub === "ready_to_print") {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+        const sla = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        if (sla && sla <= todayKey) {
+          addMlOrderIds("today", pack.ml_order_ids);
+        } else {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
         continue;
       }
 
