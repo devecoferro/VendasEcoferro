@@ -2191,32 +2191,23 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // ═════════════════════════════════════════════════════════════════
     result.counts_local = { ...result.counts };
     result.chip_source = "local_classifier";
-    // FIX 2026-05-04: O chip proxy (fetchMLChipCountsDirect) usa cache GLOBAL
-    // do scraper — sempre retorna dados da conta default (Ecoferro).
-    // Para conexões não-default (Fantom), NÃO aplicamos o override pra
-    // evitar poluir result.counts com dados de outra conta.
-    // Detecção: se connection.id != default, pula o override.
-    const defaultConn = getLatestConnection();
-    const isDefaultConn = !connection?.id || connection.id === defaultConn?.id;
-    // FIX 2026-05-05: DESABILITADO ML Chip Proxy.
-    // O scraper Playwright está falhando (cookies expirados, HTTP 404 em todas as tabs).
-    // O classificador local agora é a fonte de verdade:
-    //   - Finalizadas = claims API (exato)
-    //   - Próximos dias/Envios de hoje = classificação por substatus (correto)
-    //   - Em trânsito = apenas waiting_for_withdrawal (correto)
-    // Para reativar: setar env ENABLE_ML_CHIP_PROXY=true
-    if (isDefaultConn && process.env.ENABLE_ML_CHIP_PROXY === "true") {
+    // FIX 2026-05-05 rev13: ML Chip Proxy REATIVADO com HTTP Fetcher direto.
+    // O novo ml-chip-http-fetcher.js faz fetch HTTP puro (sem Playwright) usando
+    // cookies limpos do storage state. Suporta connectionId (multi-conta).
+    // Funciona para TODAS as contas (não só default).
+    // Para DESATIVAR: setar env DISABLE_ML_CHIP_PROXY=true
+    if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
       try {
-        const mlCounts = await fetchMLChipCountsDirect();
-        if (mlCounts && typeof mlCounts === "object") {
+        const mlCounts = await fetchMLChipCountsDirect(connection?.id || null);
+        if (mlCounts && typeof mlCounts === "object" && Number.isFinite(mlCounts.today)) {
           result.counts.today = mlCounts.today;
           result.counts.upcoming = mlCounts.upcoming;
           result.counts.in_transit = mlCounts.in_transit;
           result.counts.finalized = mlCounts.finalized;
-          result.chip_source = "ml_direct";
+          result.chip_source = mlCounts.source || "ml_direct";
         }
       } catch {
-        // fail-open — fallback pra local
+        // fail-open — fallback pra classificador local
       }
     }
 
@@ -2738,22 +2729,35 @@ export async function buildDashboardPayload(options = {}) {
   //
   // Regra: só aplica override se source !== "manual_inject".
   // ═══════════════════════════════════════════════════════════════════
-  // FIX 2026-05-05: DESABILITADO live-snapshot override.
-  // O scraper Playwright está falhando (cookies expirados, HTTP 404).
-  // O classificador OAuth (fetchMLLiveChipBucketsDetailed) agora é a fonte
-  // de verdade com lógica corrigida:
-  //   - Finalizadas = claims API (não mais delivered/cancelled/not_delivered)
-  //   - Próximos dias = pending + RTS com substatus correto
-  //   - Em trânsito = apenas waiting_for_withdrawal
-  // Para reativar: setar env ENABLE_LIVE_SNAPSHOT_OVERRIDE=true
-  if (process.env.ENABLE_LIVE_SNAPSHOT_OVERRIDE === "true") {
+  // FIX 2026-05-05 rev13: HTTP Fetcher override para mlLiveChipCounts.
+  // Se o HTTP fetcher (via ml-chip-proxy) conseguir chips oficiais do ML,
+  // SOBRESCREVE o mlLiveChipCounts do classificador OAuth. Isso garante
+  // precisão 100% nos números dos chips quando o storage state está válido.
+  // Para DESATIVAR: setar env DISABLE_ML_CHIP_PROXY=true
+  if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
+    try {
+      const httpCounts = await fetchMLChipCountsDirect(baseConnection?.id || null);
+      if (httpCounts && Number.isFinite(httpCounts.today) && httpCounts.source === "http_fetcher") {
+        mlLiveChipCounts = {
+          today: httpCounts.today,
+          upcoming: httpCounts.upcoming,
+          in_transit: httpCounts.in_transit,
+          finalized: httpCounts.finalized,
+          cancelled: 0,
+        };
+      }
+    } catch {
+      // fail-open — mantém mlLiveChipCounts do classificador OAuth
+    }
+  }
+  // Fallback: live-snapshot do scraper Playwright (se disponível e não manual)
+  if (!mlLiveChipCounts || (mlLiveChipCounts.today === 0 && mlLiveChipCounts.upcoming === 0)) {
     try {
       const liveSnap = getCachedLiveSnapshot("all", baseConnection?.id || null);
-      if (liveSnap && liveSnap.counters) {
-        const snapSource = liveSnap.data?.source || liveSnap.source || "unknown";
-        const isRealScraper = snapSource !== "manual_inject";
-        if (isRealScraper) {
-          const c = liveSnap.counters;
+      if (liveSnap && liveSnap.data?.counters) {
+        const snapSource = liveSnap.data?.source || "unknown";
+        if (snapSource !== "manual_inject") {
+          const c = liveSnap.data.counters;
           if (Number.isFinite(c.today) && Number.isFinite(c.upcoming)) {
             mlLiveChipCounts = {
               today: c.today,
@@ -2880,13 +2884,13 @@ export async function buildDashboardPayload(options = {}) {
   let mlUiChipCountsStale = false;
   let mlUiChipCountsAgeSeconds = null;
 
-  // FIX 2026-05-05: Desabilitado ml_ui_chip_counts do scraper (falhando).
-  // O classificador OAuth agora é a fonte de verdade.
-  // Para reativar: setar env ENABLE_ML_CHIP_PROXY=true
-  if (isDefaultConnection && process.env.ENABLE_ML_CHIP_PROXY === "true") {
+  // FIX 2026-05-05 rev13: ml_ui_chip_counts REATIVADO com HTTP Fetcher.
+  // Agora funciona para TODAS as contas (não só default).
+  // Para DESATIVAR: setar env DISABLE_ML_CHIP_PROXY=true
+  if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
     try {
       const { fetchMLChipCountsDirect } = await import("./_lib/ml-chip-proxy.js");
-      const counts = await fetchMLChipCountsDirect();
+      const counts = await fetchMLChipCountsDirect(requestedConnectionId || null);
       if (counts && typeof counts === "object" && Number.isFinite(counts.today)) {
         mlUiChipCounts = {
           today: counts.today,
@@ -2904,7 +2908,7 @@ export async function buildDashboardPayload(options = {}) {
       // fail-open — fallback pro legado abaixo
     }
   }
-  if (!mlUiChipCounts && isDefaultConnection) {
+  if (!mlUiChipCounts) {
     try {
       const { getUiChipCounts } = await import("./_lib/seller-center-scraper.js");
       mlUiChipCounts = getUiChipCounts();

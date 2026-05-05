@@ -316,6 +316,47 @@ function loadStorageState(connectionId = null) {
     const parsed = JSON.parse(raw);
     // Sanity check: storage state tem cookies e/ou origins
     if (!parsed || (!parsed.cookies && !parsed.origins)) return null;
+    // FIX 2026-05-05 rev13: Limpa cookies desnecessários para evitar
+    // "Header too large" (HTTP 404/431). Mantém apenas cookies de
+    // domínios ML relevantes e remove tracking/analytics.
+    if (parsed.cookies && Array.isArray(parsed.cookies)) {
+      const before = parsed.cookies.length;
+      parsed.cookies = parsed.cookies.filter((c) => {
+        const domain = c.domain || "";
+        // Mantém apenas cookies de domínios ML
+        if (
+          !domain.includes("mercadolivre") &&
+          !domain.includes("mercadolibre") &&
+          !domain.includes("ml.com") &&
+          !domain.includes("mlstatic")
+        ) {
+          return false;
+        }
+        // Remove cookies de tracking/analytics conhecidos
+        const name = c.name || "";
+        if (
+          name.startsWith("_ga") ||
+          name.startsWith("_gid") ||
+          name.startsWith("_fbp") ||
+          name.startsWith("_fbc") ||
+          name.startsWith("_dd_") ||
+          name.startsWith("__cf") ||
+          name.startsWith("_gcl") ||
+          name.startsWith("_pin_") ||
+          name.startsWith("_tt_") ||
+          name.startsWith("_ttp") ||
+          name === "_uetsid" ||
+          name === "_uetvid"
+        ) {
+          return false;
+        }
+        return true;
+      });
+      const after = parsed.cookies.length;
+      if (before !== after) {
+        log.info(`[loadStorageState] Cookie cleanup: ${before} → ${after} cookies`);
+      }
+    }
     return parsed;
   } catch (err) {
     log.warn("Falha ao ler storage state", err instanceof Error ? err : new Error(String(err)));
