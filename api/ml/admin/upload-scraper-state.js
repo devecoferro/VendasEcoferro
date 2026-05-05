@@ -231,8 +231,18 @@ export default async function handler(request, response) {
     }
 
     // Cria diretorio + salva
-    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-    fs.writeFileSync(STATE_PATH, content);
+    // Brief 2026-05-04: aceita ?connection_id=<id> pra salvar per-connection
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const connectionId = url.searchParams.get("connection_id");
+    let targetPath = STATE_PATH;
+    if (connectionId) {
+      targetPath = path.join(
+        DATA_DIR, "playwright",
+        `ml-seller-center-state-${connectionId}.json`
+      );
+    }
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, content);
 
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     return response.status(200).send(
