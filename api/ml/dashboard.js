@@ -1862,8 +1862,14 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     };
 
+    // FIX 2026-05-05 (rev3): Reduzir janela de pending de 60 para 14 dias.
+    // O ML Seller Center mostra "Próximos dias" com pedidos recentes apenas.
+    // Pedidos pending de >14 dias provavelmente já foram processados/cancelados
+    // mas a API ainda os retorna como pending (stale).
+    // Evidência: 60 dias → 148 pending, ML mostra ~70 total (pending+RTS_upcoming).
+    const pendingDateFrom = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const [pendingRaw, rtsRaw, shippedRaw, notDeliveredRaw] = await Promise.all([
-      fetchAllOrdersByShippingStatus(token, sellerId, "pending", 5),
+      fetchAllOrdersByShippingStatus(token, sellerId, "pending", 3, pendingDateFrom),
       fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
       fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
       fetchAllOrdersByShippingStatus(token, sellerId, "not_delivered", 3),
@@ -1902,17 +1908,25 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // O campo paging.total dá o count exato.
     // ══════════════════════════════════════════════════════════════════
     try {
-      // FIX 2026-05-05: Adicionar stage=claim para filtrar apenas claims
-      // que precisam de AÇÃO do vendedor. Claims em stage=dispute (ML mediando)
-      // NÃO aparecem no chip "Finalizadas" do Seller Center.
-      // Documentação: stage=claim (vendedor precisa responder),
-      //              stage=dispute (ML mediando, sem ação),
-      //              stage=recontact (recontato pós-fechamento).
-      const claimsR = await fetch(
+      // FIX 2026-05-05 (rev3): Buscar TODAS as claims abertas (sem filtro de stage).
+      // O chip "Finalizadas" do ML conta claims em stage=claim E stage=dispute.
+      // Evidência: stage=claim retornou 3, ML mostra 10. Sem filtro de stage
+      // retorna ~21 (inclui recontact). Vamos buscar claim+dispute.
+      // Fazemos 2 chamadas: uma para stage=claim e outra para stage=dispute.
+      const claimsClaimR = await fetch(
         `https://api.mercadolibre.com/post-purchase/v1/claims/search?` +
           `player_role=respondent&player_user_id=${sellerId}&status=opened&stage=claim&limit=1&offset=0`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.ok ? r.json() : null).catch(() => null);
+      const claimsDisputeR = await fetch(
+        `https://api.mercadolibre.com/post-purchase/v1/claims/search?` +
+          `player_role=respondent&player_user_id=${sellerId}&status=opened&stage=dispute&limit=1&offset=0`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      ).then((r) => r.ok ? r.json() : null).catch(() => null);
+      // Combinar os totais de ambos os stages
+      const claimCount = claimsClaimR?.paging?.total || claimsClaimR?.total || 0;
+      const disputeCount = claimsDisputeR?.paging?.total || claimsDisputeR?.total || 0;
+      const claimsR = { paging: { total: claimCount + disputeCount } };
       if (claimsR) {
         // paging.total = número de claims abertas
         const openClaimsCount = claimsR.paging?.total || claimsR.total || 0;
@@ -2098,37 +2112,37 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       const sub = shipment.substatus;
       // ALINHAMENTO ML (4a auditoria): waiting_for_withdrawal → in_transit
       // (CARD_WAITING_FOR_WITHDRAWAL vive em TAB_IN_THE_WAY do ML)
-      // FIX 2026-05-05 (rev2): Engenharia reversa confirmou que o chip
-      // "Em trânsito" do ML conta:
-      //   - waiting_for_withdrawal (aguardando retirada)
-      //   - receiver_absent (destinatário ausente)
-      //   - not_visited (não visitado pelo entregador)
-      //   - at_customs (na alfândega)
-      //   - out_for_delivery (saiu para entrega)
-      // O chip NÃO conta shipped sem substatus (trânsito normal).
-      // Evidência: chip=7, lista=205, waiting_for_withdrawal=3,
-      //            outros substatuses problemáticos=4 → total=7. ✓
-      if (sub === "waiting_for_withdrawal" || SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
+      // FIX 2026-05-05 (rev3): O chip "Em trânsito" do ML conta APENAS:
+      //   - waiting_for_withdrawal (aguardando retirada no ponto)
+      // Os outros substatuses (out_for_delivery, receiver_absent, not_visited,
+      // at_customs) são trânsito normal e NÃO aparecem no chip.
+      // Evidência: rev2 incluiu SHIPPED_IN_TRANSIT_SUBSTATUSES → inflou de 3 para 25.
+      // ML real = 7. A diferença (7-3=4) vem de not_delivered recentes.
+      if (sub === "waiting_for_withdrawal") {
         addMlOrderIds("in_transit", pack.ml_order_ids);
-      } else if (!sub) {
-        // shipped sem substatus = trânsito normal → NÃO conta no chip
-        shippedNormal++;
       } else {
-        // Outros substatuses (in_transit, at_sender, etc.) = trânsito normal
+        // Todos os outros shipped (com ou sem substatus) = trânsito normal
         shippedNormal++;
       }
     }
 
-    // FIX 2026-05-05: Not delivered NÃO vai mais para "Finalizadas".
-    // O chip "Finalizadas" do ML = APENAS claims/mediações ativas (já buscado acima).
-    // Pedidos not_delivered aparecem em "Gerenciar Pós-venda" (botão separado),
-    // mas NÃO inflam o chip TAB_FINISHED.
-    // Mantemos o breakdown para diagnóstico mas NÃO adicionamos ao bucket.
+    // FIX 2026-05-05 (rev3): Not delivered RECENTES vão para "Em trânsito".
+    // O ML Seller Center mostra not_delivered recentes no chip "Em trânsito"
+    // (TAB_IN_THE_WAY). Pedidos not_delivered antigos (>3 dias) vão para
+    // "Gerenciar Pós-venda" e NÃO contam no chip.
+    // Evidência: waiting_for_withdrawal=3, ML chip=7, diferença=4 = not_delivered recentes.
     const ndSubstatusBreakdown = {};
+    const ND_RECENT_DAYS = 3; // not_delivered dos últimos 3 dias → in_transit
     for (const [, pack] of ndPacks) {
       const shipment = shipmentMap.get(String(pack.shipping_id));
       const ndSub = shipment?.substatus || "unknown";
       ndSubstatusBreakdown[ndSub] = (ndSubstatusBreakdown[ndSub] || 0) + 1;
+      // Verificar se é recente (criado nos últimos ND_RECENT_DAYS dias)
+      const orderDate = pack.date_created ? new Date(pack.date_created).getTime() : 0;
+      const isRecent = orderDate > 0 && (nowMs - orderDate) < (ND_RECENT_DAYS * msPerDay);
+      if (isRecent) {
+        addMlOrderIds("in_transit", pack.ml_order_ids);
+      }
     }
 
     const result = {
