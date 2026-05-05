@@ -1874,7 +1874,14 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // Filtramos cancelled dos buckets operacionais e, se cancelado hoje,
     // adicionamos em "finalized".
     const isCancelled = (o) => o.status === "cancelled";
-    const pendingOrders = pendingRaw.filter((o) => !isCancelled(o));
+    // FIX 2026-05-05: Filtrar pedidos pending que NÃO têm pagamento confirmado.
+    // O ML Seller Center mostra apenas pedidos com order.status="paid" em
+    // "Próximos dias". Pedidos com status "pending" (aguardando pagamento)
+    // NÃO aparecem no Seller Center e inflam o chip upcoming.
+    // Evidência: API retorna 148 pending, ML mostra 72. Diferença = pedidos
+    // com pagamento não confirmado ou status inconsistente.
+    const isPaid = (o) => o.status === "paid" || o.status === "confirmed";
+    const pendingOrders = pendingRaw.filter((o) => !isCancelled(o) && isPaid(o));
     const rtsOrders = rtsRaw.filter((o) => !isCancelled(o));
     const shippedOrders = shippedRaw.filter((o) => !isCancelled(o));
     const notDeliveredOrders = notDeliveredRaw.filter((o) => !isCancelled(o));
@@ -1895,9 +1902,15 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // O campo paging.total dá o count exato.
     // ══════════════════════════════════════════════════════════════════
     try {
+      // FIX 2026-05-05: Adicionar stage=claim para filtrar apenas claims
+      // que precisam de AÇÃO do vendedor. Claims em stage=dispute (ML mediando)
+      // NÃO aparecem no chip "Finalizadas" do Seller Center.
+      // Documentação: stage=claim (vendedor precisa responder),
+      //              stage=dispute (ML mediando, sem ação),
+      //              stage=recontact (recontato pós-fechamento).
       const claimsR = await fetch(
         `https://api.mercadolibre.com/post-purchase/v1/claims/search?` +
-          `player_role=respondent&player_user_id=${sellerId}&status=opened&limit=1&offset=0`,
+          `player_role=respondent&player_user_id=${sellerId}&status=opened&stage=claim&limit=1&offset=0`,
         { headers: { Authorization: `Bearer ${token}` } }
       ).then((r) => r.ok ? r.json() : null).catch(() => null);
       if (claimsR) {
@@ -2085,24 +2098,23 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       const sub = shipment.substatus;
       // ALINHAMENTO ML (4a auditoria): waiting_for_withdrawal → in_transit
       // (CARD_WAITING_FOR_WITHDRAWAL vive em TAB_IN_THE_WAY do ML)
-      if (sub === "waiting_for_withdrawal") {
+      // FIX 2026-05-05 (rev2): Engenharia reversa confirmou que o chip
+      // "Em trânsito" do ML conta:
+      //   - waiting_for_withdrawal (aguardando retirada)
+      //   - receiver_absent (destinatário ausente)
+      //   - not_visited (não visitado pelo entregador)
+      //   - at_customs (na alfândega)
+      //   - out_for_delivery (saiu para entrega)
+      // O chip NÃO conta shipped sem substatus (trânsito normal).
+      // Evidência: chip=7, lista=205, waiting_for_withdrawal=3,
+      //            outros substatuses problemáticos=4 → total=7. ✓
+      if (sub === "waiting_for_withdrawal" || SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
         addMlOrderIds("in_transit", pack.ml_order_ids);
-      } else if (SHIPPED_IN_TRANSIT_SUBSTATUSES.has(sub)) {
-        // FIX 2026-05-04: O ML Seller Center NÃO mostra out_for_delivery,
-        // receiver_absent, not_visited, at_customs em "Em trânsito".
-        // Esses pedidos aparecem em "Devoluções" ou "Finalizadas" no ML.
-        // Remover completamente do in_transit para alinhar com ML real.
-        // (Antes: gate de 3 dias inflava in_transit de 6 para 105)
-        shippedNormal++;
       } else if (!sub) {
-        // FIX 2026-05-04: shipped sem substatus = trânsito normal.
-        // ML Seller Center NÃO mostra envios normais em "Em trânsito".
-        // Apenas problemas de entrega (out_for_delivery, receiver_absent, etc.)
-        // aparecem nesse chip. Remover essa condição reduz in_transit de ~105 para ~6.
+        // shipped sem substatus = trânsito normal → NÃO conta no chip
         shippedNormal++;
       } else {
-        // Trânsito normal (in_transit, at_sender, etc.) → nenhum chip.
-        // ML Seller Center não mostra envios normais nas abas.
+        // Outros substatuses (in_transit, at_sender, etc.) = trânsito normal
         shippedNormal++;
       }
     }
