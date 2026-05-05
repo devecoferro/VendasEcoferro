@@ -609,15 +609,18 @@ function extractRealCustomerName(order: MLOrder): string {
 }
 
 // Extrai sla_snapshot.expected_date do raw_data do ML e formata como
-// DD/MM/YYYY pra exibir direto na etiqueta interna Ecoferro ("Data Envio").
+// YYYY-MM-DD HH:MM pra exibir direto na etiqueta interna Ecoferro ("Data Envio").
 function extractExpectedShippingDate(order: MLOrder): string {
   const raw = (order.raw_data as { sla_snapshot?: { expected_date?: string } } | null | undefined);
   const iso = raw?.sla_snapshot?.expected_date;
   if (!iso || typeof iso !== "string") return "";
-  // Aceita formatos "YYYY-MM-DD" ou ISO completo. Pega YYYY-MM-DD do início.
-  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  // Aceita formatos "YYYY-MM-DD" ou ISO completo "YYYY-MM-DDTHH:MM:SS".
+  // Retorna no formato YYYY-MM-DD HH:MM (ex: 2026-05-05 12:30).
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
   if (!match) return "";
-  return `${match[3]}/${match[2]}/${match[1]}`;
+  const datePart = `${match[1]}-${match[2]}-${match[3]}`;
+  const timePart = match[4] && match[5] ? ` ${match[4]}:${match[5]}` : "";
+  return `${datePart}${timePart}`;
 }
 
 // Extrai a variação de um item do pedido ML.

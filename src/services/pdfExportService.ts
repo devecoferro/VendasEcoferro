@@ -297,11 +297,14 @@ async function drawSaleCard(
     drawPlaceholder(doc, imageX, imageY, imageW, imageH);
   }
 
-  // Número da venda no rodapé esquerdo
+  // Número da venda + data no rodapé esquerdo (ex: #2000016280141300  2026-05-05 10:42)
+  const saleNumberDateStr = sale.saleDate && sale.saleTime
+    ? `#${sale.saleNumber || "-"} ${sale.saleDate} ${sale.saleTime}`
+    : `#${sale.saleNumber || "-"}`;
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.2);
+  doc.setFontSize(7);
   doc.setTextColor(0, 0, 0);
-  doc.text(`#${sale.saleNumber || "-"}`, x0 + 6, y0 + Y_FOOTER);
+  doc.text(saleNumberDateStr, x0 + 6, y0 + Y_FOOTER);
 
   // ── Dados principais ─────────────────────────────────────────────
   doc.setTextColor(0, 0, 0);
