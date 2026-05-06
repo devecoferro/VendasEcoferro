@@ -1974,6 +1974,46 @@ export default function MercadoLivrePage({
     };
   }, [loadMoreOrders, shouldAutoLoadVisibleBucket]);
 
+  // ─── Auto-sync silencioso quando ML mostra pedidos mas o app não tem ───
+  // Substitui o antigo botão manual "Sincronizar agora". Dispara syncNow
+  // automaticamente (1x) quando o chip mostra pedidos mas bucketOrders está
+  // vazio. Usa ref para evitar loop infinito de re-syncs.
+  const autoSyncTriggeredRef = useRef<string | null>(null);
+  const needsAutoSync =
+    selectedBucketTotalCount > 0 &&
+    bucketOrders.length === 0 &&
+    !loading &&
+    !isOperationalListIncomplete;
+
+  useEffect(() => {
+    if (!needsAutoSync) {
+      // Reset ref quando a condição não é mais verdadeira (mudou de bucket/depósito)
+      if (autoSyncTriggeredRef.current && bucketOrders.length > 0) {
+        autoSyncTriggeredRef.current = null;
+      }
+      return;
+    }
+
+    // Chave única para evitar re-trigger no mesmo bucket+depósito
+    const syncKey = `${shipmentFilter}:${selectedDepositFilters.join(",")}`;
+    if (autoSyncTriggeredRef.current === syncKey) {
+      return; // Já disparou sync para este bucket+depósito
+    }
+
+    autoSyncTriggeredRef.current = syncKey;
+    // Dispara sync silencioso após pequeno delay (evita race com carregamento)
+    const timeoutId = window.setTimeout(() => {
+      void syncNow({ forceFullSync: true }).catch(() => {
+        // Silencioso — não mostra erro ao usuário, o auto-refresh de 60s
+        // vai tentar novamente
+      });
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [needsAutoSync, shipmentFilter, selectedDepositFilters, syncNow, bucketOrders.length]);
+
   const selectedDepositLabel = useMemo(
     () => getSelectedDepositLabel(selectedDepositFilters, depositOptions),
     [depositOptions, selectedDepositFilters]
@@ -2769,30 +2809,18 @@ export default function MercadoLivrePage({
           </div>
         ) : displayedOperationalOrders.length === 0 ? (
           <div className="rounded-[20px] border border-[#e6e6e6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-            {/* Caso especial: chip do ML mostra pedidos mas a lista local
-                esta vazia. Significa que o ML retorna IDs que ainda nao
-                foram sincronizados no banco local. Mostra um aviso claro
-                + botao "Sincronizar agora" pra forcar a sync. */}
+            {/* Auto-sync silencioso: quando ML mostra pedidos mas o app
+                não tem sincronizado, dispara sync automaticamente via
+                useEffect (autoSyncTriggeredRef). Mostra apenas spinner. */}
             {selectedBucketTotalCount > 0 && bucketOrders.length === 0 ? (
               <>
-                <CircleAlert className="mx-auto mb-3 h-8 w-8 text-[#ff6d1b]" />
+                <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-[#3483fa]" />
                 <p className="text-[16px] font-semibold text-[#333333]">
-                  ML mostra <strong>{selectedBucketTotalCount}</strong> pedido(s),
-                  mas o app não tem nenhum sincronizado ainda.
+                  Sincronizando {selectedBucketTotalCount} pedido(s) do Mercado Livre...
                 </p>
                 <p className="mt-1 text-[15px] text-[#666666]">
-                  Isso acontece quando vendas novas ainda nao foram puxadas pro banco local.
-                  Clica em "Sincronizar agora" pra resolver.
+                  Os pedidos deste bucket estão sendo puxados automaticamente.
                 </p>
-                <div className="mt-5 flex justify-center">
-                  <Button
-                    onClick={handleRetryLoad}
-                    className="bg-[#ff6d1b] text-white hover:bg-[#e65c10]"
-                  >
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    Sincronizar agora
-                  </Button>
-                </div>
               </>
             ) : (
               <>
