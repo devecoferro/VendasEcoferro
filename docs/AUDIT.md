@@ -1,3 +1,12 @@
+---
+title: "Auditoria de Código — VendasEcoferro"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - audit
+---
+
 # Auditoria de Código — VendasEcoferro
 
 **Data:** 2026-04-18  

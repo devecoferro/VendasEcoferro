@@ -1,3 +1,12 @@
+---
+title: "ML Chip Sync — Histórico de Engenharia Reversa e Estado Atual"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-chip-sync-notes
+---
+
 # ML Chip Sync — Histórico de Engenharia Reversa e Estado Atual
 
 **Data:** 2026-04-23 a 2026-04-24

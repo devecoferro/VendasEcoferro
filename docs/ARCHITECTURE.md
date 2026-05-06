@@ -1,3 +1,12 @@
+---
+title: "🏛️ Arquitetura Técnica"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - architecture
+---
+
 # 🏛️ Arquitetura Técnica
 
 > **Objetivo**: descrever em alto nível a stack, estrutura de diretórios e fluxo de dados do sistema.

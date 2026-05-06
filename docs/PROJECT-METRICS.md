@@ -1,3 +1,12 @@
+---
+title: "📊 Métricas do Projeto"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - project-metrics
+---
+
 # 📊 Métricas do Projeto
 
 Estatísticas extraídas do histórico git. Snapshot em **2026-04-20 23:36**.

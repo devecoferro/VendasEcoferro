@@ -1,3 +1,12 @@
+---
+title: "Classificação de pedidos Mercado Livre — Referência"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-classification-reference
+---
+
 # Classificação de pedidos Mercado Livre — Referência
 
 > **Atualizado em:** 2026-04-24 (4ª auditoria + investigação de divergência chip visual vs API)

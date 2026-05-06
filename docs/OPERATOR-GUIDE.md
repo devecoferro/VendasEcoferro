@@ -1,3 +1,12 @@
+---
+title: "📖 Guia do Operador — Fluxo do Dia"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - operator-guide
+---
+
 # 📖 Guia do Operador — Fluxo do Dia
 
 Guia passo-a-passo pro operador que usa o sistema no dia-a-dia (separar, imprimir etiquetas, conferir pedidos e despachar).

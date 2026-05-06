@@ -1,3 +1,12 @@
+---
+title: "Memória Técnica: HTTP Fetcher para Chips do ML Seller Center"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-http-fetcher-memory
+---
+
 # Memória Técnica: HTTP Fetcher para Chips do ML Seller Center
 
 **Data:** 05 de Maio de 2026  

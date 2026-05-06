@@ -1,3 +1,12 @@
+---
+title: "🛠️ Troubleshooting — Solução de Problemas"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - troubleshooting
+---
+
 # 🛠️ Troubleshooting — Solução de Problemas
 
 Guia de problemas comuns e como resolver. Dividido por tipo: **operador** (quem usa) e **admin** (quem mantém).

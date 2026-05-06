@@ -1,3 +1,12 @@
+---
+title: "Memória de Engenharia Reversa: Chips do Mercado Livre Seller Center"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-chips-memory-2026-05-05
+---
+
 # Memória de Engenharia Reversa: Chips do Mercado Livre Seller Center
 
 **Data:** 05 de Maio de 2026

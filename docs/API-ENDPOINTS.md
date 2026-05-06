@@ -1,3 +1,12 @@
+---
+title: "🌐 API Endpoints"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - api-endpoints
+---
+
 # 🌐 API Endpoints
 
 Catálogo completo dos endpoints HTTP expostos pelo backend.

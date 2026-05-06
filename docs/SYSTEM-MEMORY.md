@@ -1,3 +1,12 @@
+---
+title: "🧠 Memória do Sistema (System Memory)"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - system-memory
+---
+
 # 🧠 Memória do Sistema (System Memory)
 
 Este documento serve como a **memória permanente** do sistema VendasEcoferro. Ele registra o histórico de evolução, as decisões arquiteturais críticas, e os resultados de engenharia reversa que permitiram ao sistema atingir 100% de precisão com o Mercado Livre.
@@ -85,6 +94,11 @@ Com a sincronização 100% automática e precisa resolvida, o sistema está pron
 3. **Multi-Tenant Real**: Isolamento de dados por `tenant_id` (empresa), permitindo que cada empresa tenha múltiplas conexões ML.
 4. **White-label**: Personalização de cores e logos por tenant.
 
+## 6. Sessões de Trabalho
+
+Registros detalhados de cada sessão de trabalho estão disponíveis em [[sessions/]]:
+- [[2026-05-06-http-fetcher-fix]] — Correção da hierarquia de prioridade dos chips no frontend.
+
 ---
 *Documento gerado e mantido pelo Manus AI Operator.*
-*Última atualização: 05 de Maio de 2026.*
+*Última atualização: 06 de Maio de 2026.*

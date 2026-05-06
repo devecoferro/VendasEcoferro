@@ -1,3 +1,12 @@
+---
+title: "🔬 ML Live Snapshot — Engenharia Reversa do Seller Center"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-live-snapshot
+---
+
 # 🔬 ML Live Snapshot — Engenharia Reversa do Seller Center
 
 > Documentação técnica do sistema que captura dados 1:1 do ML Seller Center

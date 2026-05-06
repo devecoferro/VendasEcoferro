@@ -1,3 +1,12 @@
+---
+title: "ML Seller Center — Bricks Reverse Engineering"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - ml-bricks-reverse-engineered
+---
+
 # ML Seller Center — Bricks Reverse Engineering
 
 Descoberto via `scripts/deep-reverse-engineer-ml.mjs` + `scripts/debug-ml-dom-dump.mjs` em 2026-04-23 (sessão autenticada ECOFERRO, 4 depósitos × 4 tabs).

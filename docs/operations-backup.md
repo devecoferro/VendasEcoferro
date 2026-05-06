@@ -1,3 +1,12 @@
+---
+title: "Backup e Restauracao Operacional"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - operations-backup
+---
+
 # Backup e Restauracao Operacional
 
 ## Escopo do backup

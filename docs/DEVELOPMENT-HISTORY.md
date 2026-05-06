@@ -1,3 +1,12 @@
+---
+title: "📜 Histórico Narrativo de Desenvolvimento"
+date: 2026-05-06
+tags:
+  - ecoferro
+  - docs
+  - development-history
+---
+
 # 📜 Histórico Narrativo de Desenvolvimento
 
 Este documento conta a **história completa** do projeto — não só o que foi feito, mas **por que** e **como** chegamos nas decisões técnicas. Útil pra devs futuros entenderem o contexto.
