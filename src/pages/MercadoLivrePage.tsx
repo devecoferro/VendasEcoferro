@@ -2773,13 +2773,6 @@ export default function MercadoLivrePage({
             </div>
           </div>
 
-          {!isOperationalListFullyLoaded && (
-            <div className="mt-3 rounded-xl border border-[#d4edda] bg-[#f0fff4] px-4 py-3 text-sm text-[#155724]">
-              <strong>Etiquetas ML:</strong> O botão "Imprimir TODAS etiquetas ML" já funciona — gera o PDF
-              diretamente no servidor sem precisar esperar o carregamento da lista.
-              As etiquetas Ecoferro/Fantom ficam disponíveis após o carregamento completo.
-            </div>
-          )}
         </div>
 
         {permittedOrders.length === 0 && isOperationalListIncomplete ? (
