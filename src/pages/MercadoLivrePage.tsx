@@ -2101,11 +2101,25 @@ export default function MercadoLivrePage({
     typeof error === "string" &&
     /timeout ao (consultar|carregar|sincronizar)/i.test(error);
 
-  if (loading) {
+  // ─── Carregamento instantâneo (estilo ML) ───────────────────────────
+  // NÃO bloqueia a página inteira com spinner. Mostra a estrutura
+  // (header, chips, filtros) imediatamente e coloca o spinner apenas
+  // na área da lista de pedidos. O dashboard/liveSnapshot já tem seu
+  // próprio loading state independente.
+  const isInitialLoading = loading && !connection && orders.length === 0 && !dashboard;
+
+  if (isInitialLoading) {
     return (
       <AppLayout>
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <div className="font-mercado space-y-6">
+          <div className="space-y-4">
+            <h1 className="text-[32px] font-semibold tracking-[-0.03em] text-[#333333] sm:text-4xl lg:text-[52px]">
+              Vendas
+            </h1>
+          </div>
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-[#3483fa]" />
+          </div>
         </div>
       </AppLayout>
     );
