@@ -1943,6 +1943,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         
         // Verificar data de entrega de cada shipment (concorrência 20)
         const authHeaders = { Authorization: `Bearer ${token}` };
+        const _debugFinalized = []; // DEBUG: rastrear datas
         for (let i = 0; i < shippingIds.length; i += 20) {
           const batch = shippingIds.slice(i, i + 20);
           const results = await Promise.all(
@@ -1951,15 +1952,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
                 const r = await fetch(`https://api.mercadolibre.com/shipments/${sid}`, { headers: authHeaders });
                 if (!r.ok) return null;
                 const j = await r.json();
-                // Verificar se foi entregue HOJE (mesmo dia calendário BRT)
-                // Tentar múltiplos campos: date_delivered, tracking_number update
-                const deliveredDate = j.status_history?.date_delivered ||
-                  j.tracking?.date_delivered || null;
+                // FIX: Usar APENAS status_history.date_delivered (fonte autoritativa).
+                // O campo tracking.date_delivered pode ter datas de tentativas
+                // de entrega anteriores que não representam entrega efetiva.
+                const deliveredDate = j.status_history?.date_delivered || null;
                 if (deliveredDate) {
                   const deliveredKey = getCalendarKey(new Date(deliveredDate));
+                  _debugFinalized.push({ sid, deliveredDate, deliveredKey, todayKey, match: deliveredKey === todayKey });
                   if (deliveredKey === todayKey) {
                     return sid; // entregue hoje (mesmo dia calendário)
                   }
+                } else {
+                  _debugFinalized.push({ sid, deliveredDate: null, note: 'no_date_delivered' });
                 }
                 return null;
               } catch { return null; }
@@ -2846,29 +2850,10 @@ export async function buildDashboardPayload(options = {}) {
           : null;
         if (!mlBucket || !OPERATIONAL_BUCKETS.includes(mlBucket)) continue;
 
-        // FIX 2026-05-06 rev3: Finalizadas no override = HOJE + claims.
-        // O classificador global coloca TODOS os delivered/cancelled recentes
-        // em "finalized", mas o chip do ML só conta os de HOJE + claims.
-        // Filtramos aqui no override para todos os depósitos.
-        if (mlBucket === "finalized") {
-          if (isOrderUnderReview(order)) {
-            // Claim/mediação ativa — sempre conta
-          } else {
-            // Só conta se evento terminal foi HOJE
-            const snapshot = getShipmentSnapshot(order);
-            const statusHistory = snapshot.status_history || {};
-            const exceptionDateKey =
-              getDateKey(statusHistory.date_cancelled) ||
-              getDateKey(statusHistory.date_not_delivered) ||
-              getDateKey(statusHistory.date_returned) ||
-              getDateKey(statusHistory.date_delivered) ||
-              getDateKey(snapshot.last_updated) ||
-              getDateKey(order.sale_date);
-            if (!exceptionDateKey || exceptionDateKey !== todayKey) {
-              continue; // Não é de hoje — não conta no chip
-            }
-          }
-        }
+        // NOTA: O classificador global (fetchMLLiveChipBucketsDetailed) já
+        // determina quais pedidos são "finalized" — confiamos nele.
+        // A filtragem de "HOJE + claims" é feita no classificador global,
+        // não aqui no override. O override apenas distribui por depósito.
 
         // Dedup por pack/shipping/order (evita multi-items contarem 2x).
         const packId = order.raw_data?.pack_id
@@ -2894,7 +2879,7 @@ export async function buildDashboardPayload(options = {}) {
       // Reclassificamos: upcoming → today para pedidos invoice_pending.
       //
       // FULL: Regras específicas (today=0, finalized=só claims).
-      if (deposit.logistic_type === "cross_docking" || deposit.key === "ourinhos" || deposit.key === "without-deposit") {
+      if (deposit.key !== "fulfillment") {
         // Reclassificar invoice_pending de upcoming → today
         const reclassifyIds = [];
         const reclassifyDedupe = new Set();
