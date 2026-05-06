@@ -2846,6 +2846,30 @@ export async function buildDashboardPayload(options = {}) {
           : null;
         if (!mlBucket || !OPERATIONAL_BUCKETS.includes(mlBucket)) continue;
 
+        // FIX 2026-05-06 rev3: Finalizadas no override = HOJE + claims.
+        // O classificador global coloca TODOS os delivered/cancelled recentes
+        // em "finalized", mas o chip do ML só conta os de HOJE + claims.
+        // Filtramos aqui no override para todos os depósitos.
+        if (mlBucket === "finalized") {
+          if (isOrderUnderReview(order)) {
+            // Claim/mediação ativa — sempre conta
+          } else {
+            // Só conta se evento terminal foi HOJE
+            const snapshot = getShipmentSnapshot(order);
+            const statusHistory = snapshot.status_history || {};
+            const exceptionDateKey =
+              getDateKey(statusHistory.date_cancelled) ||
+              getDateKey(statusHistory.date_not_delivered) ||
+              getDateKey(statusHistory.date_returned) ||
+              getDateKey(statusHistory.date_delivered) ||
+              getDateKey(snapshot.last_updated) ||
+              getDateKey(order.sale_date);
+            if (!exceptionDateKey || exceptionDateKey !== todayKey) {
+              continue; // Não é de hoje — não conta no chip
+            }
+          }
+        }
+
         // Dedup por pack/shipping/order (evita multi-items contarem 2x).
         const packId = order.raw_data?.pack_id
           ? String(order.raw_data.pack_id)
