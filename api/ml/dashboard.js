@@ -2082,20 +2082,17 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         shipment.logisticType === "fulfillment" ||
         (pack.deposit_key && String(pack.deposit_key).startsWith("node:"));
 
-      // today — prontos pra envio/coleta
+      // today — prontos pra envio/coleta (ambos cross e full no GLOBAL)
+      // NOTA: No ML Seller Center visão GLOBAL ("Todas as vendas"), pedidos Full
+      // com ready_for_pickup/packed/ready_to_pack CONTAM em "Envios de hoje".
+      // A exclusão de Full de today acontece APENAS no override por depósito
+      // (quando deposit.key === "fulfillment"), não aqui no classificador global.
       if (
         sub === "ready_for_pickup" ||
         sub === "packed" ||
         sub === "ready_to_pack"
       ) {
-        // FIX 2026-05-06: Full NÃO tem "Envios de hoje" no ML Seller Center.
-        // Screenshots ML 06/05/2026: Full chip "Envios de hoje" = 0 (sem badge).
-        // Pedidos Full com esses substatuses são processados pelo ML automaticamente
-        // no centro de distribuição e não aparecem no chip operacional.
-        // Apenas cross-docking conta em "today".
-        if (!isFull) {
-          addMlOrderIds("today", pack.ml_order_ids);
-        }
+        addMlOrderIds("today", pack.ml_order_ids);
         continue;
       }
 
