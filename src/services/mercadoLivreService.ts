@@ -1883,3 +1883,59 @@ export async function getConferenciaSale(code: string): Promise<MLConferenciaRes
     has_ml_connection: Boolean(data.has_ml_connection),
   };
 }
+
+// ─── Labels Batch (server-side) ──────────────────────────────────────────
+// Gera PDF consolidado com todas as etiquetas ML de um bucket ou lista de
+// order_ids. O backend busca os shipment_ids no banco e chama a API ML
+// diretamente — sem depender do carregamento completo da lista no frontend.
+
+export interface LabelsBatchOptions {
+  bucket?: "today" | "upcoming";
+  order_ids?: string[];
+  connection_id?: string;
+}
+
+export interface LabelsBatchResult {
+  blob: Blob;
+  totalOrders: number;
+  printed: number;
+  skippedFulfillment: number;
+  skippedNoShipment: number;
+  errors: number;
+}
+
+export async function generateLabelsBatchServerSide(
+  options: LabelsBatchOptions
+): Promise<LabelsBatchResult> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000); // 2min timeout
+
+  try {
+    const response = await fetch("/api/ml/labels-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options),
+      credentials: "include",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        (errorData as { error?: string }).error ||
+          `Falha ao gerar etiquetas em lote (${response.status}).`
+      );
+    }
+
+    const blob = await response.blob();
+    const totalOrders = parseInt(response.headers.get("X-Labels-Total-Orders") || "0", 10);
+    const printed = parseInt(response.headers.get("X-Labels-Printed") || "0", 10);
+    const skippedFulfillment = parseInt(response.headers.get("X-Labels-Skipped-Fulfillment") || "0", 10);
+    const skippedNoShipment = parseInt(response.headers.get("X-Labels-Skipped-NoShipment") || "0", 10);
+    const errors = parseInt(response.headers.get("X-Labels-Errors") || "0", 10);
+
+    return { blob, totalOrders, printed, skippedFulfillment, skippedNoShipment, errors };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}

@@ -93,6 +93,7 @@ import {
   syncMLNFeWithMercadoLivre,
   startMLOAuth,
   listMLConnections,
+  generateLabelsBatchServerSide,
 } from "@/services/mercadoLivreService";
 // ColetasPanel removido do render em commit b88cf61. Import tambem
 // removido (sprint 2.4 cleanup) — estava causando import morto.
@@ -708,6 +709,7 @@ export default function MercadoLivrePage({
   const [operationalFocus, setOperationalFocus] = useState<OperationalSummaryFilter | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [bulkPrintingMl, setBulkPrintingMl] = useState(false);
+  const [bulkPrintingMlServerSide, setBulkPrintingMlServerSide] = useState(false);
   const [bulkGeneratingNFe, setBulkGeneratingNFe] = useState(false);
   const [generatingSeparation, setGeneratingSeparation] = useState(false);
   // Estados per-order para os botoes "Gerar NF-e" e "Etiqueta ML + DANFe"
@@ -1075,6 +1077,51 @@ export default function MercadoLivrePage({
         );
       } finally {
         setBulkPrintingMl(false);
+      }
+    },
+    []
+  );
+
+  // ─── Impressão em lote SERVER-SIDE (não depende da lista carregada) ────
+  // Chama o endpoint /api/ml/labels-batch que busca TODOS os shipment_ids
+  // do bucket no banco e gera o PDF consolidado no servidor — igual ao ML.
+  const handlePrintAllLabelsBucket = useCallback(
+    async (bucket: "today" | "upcoming") => {
+      setBulkPrintingMlServerSide(true);
+      try {
+        toast.info(`Gerando etiquetas do bucket "${bucket}" no servidor...`);
+        const result = await generateLabelsBatchServerSide({ bucket });
+
+        if (result.printed === 0) {
+          toast.warning(
+            "Nenhuma etiqueta disponivel neste bucket (pedidos Full nao tem etiqueta publica)."
+          );
+          return;
+        }
+
+        openPdfBlobForPrint(
+          result.blob,
+          `etiquetas-ml-${bucket}-${new Date().toISOString().slice(0, 10)}.pdf`
+        );
+
+        const msgs: string[] = [
+          `${result.printed} etiqueta(s) gerada(s) com sucesso.`,
+        ];
+        if (result.skippedFulfillment > 0) {
+          msgs.push(`${result.skippedFulfillment} pedido(s) Full ignorados.`);
+        }
+        if (result.errors > 0) {
+          msgs.push(`${result.errors} erro(s) ao buscar no ML.`);
+        }
+        toast.success(msgs.join(" "));
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Falha ao gerar etiquetas em lote."
+        );
+      } finally {
+        setBulkPrintingMlServerSide(false);
       }
     },
     []
@@ -2594,22 +2641,35 @@ export default function MercadoLivrePage({
               </Button>
               <Button
                 className="h-10 w-full rounded-lg bg-[#fff159] px-3.5 text-[13px] font-semibold text-[#333333] shadow-[0_1px_3px_rgba(255,241,89,0.6)] transition hover:bg-[#ffe924] hover:shadow-[0_2px_6px_rgba(255,241,89,0.8)] disabled:opacity-60 disabled:shadow-none sm:text-[13px] lg:w-auto lg:px-4"
-                disabled={selectedMlPrintableCount === 0 || !isOperationalListFullyLoaded || bulkPrintingMl}
-                onClick={() => handlePrintMlLabelsAndNFeBulk(selectedMlPrintableOrders)}
+                disabled={
+                  isOperationalListFullyLoaded
+                    ? (selectedMlPrintableCount === 0 || bulkPrintingMl)
+                    : bulkPrintingMlServerSide
+                }
+                onClick={() => {
+                  if (isOperationalListFullyLoaded && selectedMlPrintableCount > 0) {
+                    handlePrintMlLabelsAndNFeBulk(selectedMlPrintableOrders);
+                  } else {
+                    handlePrintAllLabelsBucket(shipmentFilter as "today" | "upcoming");
+                  }
+                }}
                 title={
-                  selectedMlPrintableCount === 0
-                    ? "Nenhum pedido cross-docking selecionado com etiqueta ML disponivel (pedidos Full nao tem etiqueta publica)"
-                    : `Imprimir ${selectedMlPrintableCount} etiqueta(s) ML + DANFe`
+                  isOperationalListFullyLoaded
+                    ? (selectedMlPrintableCount === 0
+                        ? "Nenhum pedido cross-docking selecionado com etiqueta ML disponivel (pedidos Full nao tem etiqueta publica)"
+                        : `Imprimir ${selectedMlPrintableCount} etiqueta(s) ML + DANFe selecionadas`)
+                    : `Imprimir TODAS etiquetas ML do bucket (server-side, sem esperar carregamento)`
                 }
               >
-                {bulkPrintingMl ? (
+                {(bulkPrintingMl || bulkPrintingMlServerSide) ? (
                   <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
                 ) : (
                   <Printer className="mr-1.5 h-4 w-4" />
                 )}
                 <span className="truncate">
-                  Imprimir etiqueta ML + DANFe
-                  {selectedMlPrintableCount > 0 ? ` (${selectedMlPrintableCount})` : ""}
+                  {isOperationalListFullyLoaded
+                    ? `Imprimir etiqueta ML + DANFe${selectedMlPrintableCount > 0 ? ` (${selectedMlPrintableCount})` : ""}`
+                    : `Imprimir TODAS etiquetas ML`}
                 </span>
               </Button>
               <Button
@@ -2643,9 +2703,10 @@ export default function MercadoLivrePage({
           </div>
 
           {!isOperationalListFullyLoaded && (
-            <div className="mt-3 rounded-xl border border-[#f0e1b2] bg-[#fff9e6] px-4 py-3 text-sm text-[#7a5c12]">
-              A geração em lote fica liberada assim que a listagem operacional terminar de carregar,
-              evitando imprimir etiquetas com base parcial.
+            <div className="mt-3 rounded-xl border border-[#d4edda] bg-[#f0fff4] px-4 py-3 text-sm text-[#155724]">
+              <strong>Etiquetas ML:</strong> O botão "Imprimir TODAS etiquetas ML" já funciona — gera o PDF
+              diretamente no servidor sem precisar esperar o carregamento da lista.
+              As etiquetas Ecoferro/Fantom ficam disponíveis após o carregamento completo.
             </div>
           )}
         </div>
