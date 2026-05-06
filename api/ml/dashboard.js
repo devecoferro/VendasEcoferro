@@ -2900,12 +2900,12 @@ export async function buildDashboardPayload(options = {}) {
       //
       // FULL: Regras específicas (today=0, finalized=só claims).
       if (deposit.key !== "fulfillment") {
-        // FIX 2026-05-06 rev6: Reclassificar invoice_pending/ready_to_print de
+        // FIX 2026-05-06 rev7: Reclassificar invoice_pending/ready_to_print de
         // upcoming → today na visão por depósito (cross-docking).
-        // REGRA ML: Na visão por depósito, "Envios de hoje" inclui pedidos cuja
-        // SLA (expected_date) é ≤ próximo dia útil. O vendedor precisa preparar
-        // HOJE para coletar AMANHÃ. Ex: SLA 07/05 (amanhã) → "Envios de hoje".
-        const nextBizDay = getNextBusinessDayKey();
+        // REGRA ML: Na visão por depósito, "Envios de hoje" inclui pedidos
+        // com SLA VENCIDO (≤ hoje). São pedidos urgentes que já deveriam ter
+        // sido despachados. O ML mostra ~9 para Ourinhos (não 80+).
+        // Pedidos com SLA amanhã ficam em "Próximos dias" no ML.
         const reclassifyIds = [];
         const reclassifyDedupe = new Set();
         for (const order of ordersForDeposit) {
@@ -2917,10 +2917,10 @@ export async function buildDashboardPayload(options = {}) {
           const snapshot = getShipmentSnapshot(order);
           const sub = normalizeState(snapshot.substatus || "");
           if (sub !== "invoice_pending" && sub !== "ready_to_print") continue;
-          // Reclassificar se SLA ≤ próximo dia útil (precisa preparar HOJE)
+          // Reclassificar APENAS se SLA ≤ HOJE (vencido/urgente)
           const dates = getOperationalDates(order);
           if (!dates.operationalDueDateKey) continue;
-          if (!isSameOrPastCalendarDay(dates.operationalDueDateKey, nextBizDay)) continue;
+          if (!isSameOrPastCalendarDay(dates.operationalDueDateKey, todayKey)) continue;
           const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
           const shippingId = order.shipping_id ? String(order.shipping_id) : null;
           const mlOrderId = order.order_id ? String(order.order_id) : null;
