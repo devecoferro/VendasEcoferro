@@ -1445,28 +1445,17 @@ export default function MercadoLivrePage({
     ) as Record<ShipmentBucket, number>;
 
     // Hierarquia de fontes pros chips (maior prioridade primeiro):
-    // 1. liveSnapshot.counters — Fase 2, scraper Playwright via clicks (100% 1:1 ML) ⭐
-    // 2. ml_ui_chip_counts — scraper headless antigo
-    // 3. ml_live_chip_counts — nossa API ML (~95% alinhado)
+    // 1. ml_ui_chip_counts — HTTP Fetcher direto (cookies → ML Seller Center, 100% preciso) ⭐
+    // 2. ml_live_chip_counts — classificador OAuth (fallback ~95% alinhado)
+    // 3. liveSnapshot.counters — scraper Playwright legado (fallback de emergência)
     // 4. localCounts — classificação interna do app (fallback final)
+    //
+    // FIX 2026-05-06: liveSnapshot rebaixado para fallback #3.
+    // O HTTP Fetcher (que alimenta ml_ui_chip_counts) é agora a fonte primária
+    // porque faz fetch direto do endpoint do ML com cookies válidos, garantindo
+    // precisão 100% sem depender de scraper Playwright (que pode ter cache stale).
 
-    // #1: Live snapshot (Fase 2) — fonte de verdade 1:1 com o Seller Center.
-    // Usa a versão ESCOPADA pelo filtro de depósito do topo (Vendas sem
-    // depósito / Ourinhos / Full). Quando scope é "all" (nenhum filtro),
-    // scopedLiveSnapshot é igual ao liveSnapshot original.
-    if (
-      scopedLiveSnapshot?.counters &&
-      typeof scopedLiveSnapshot.counters.today === "number"
-    ) {
-      return {
-        today: scopedLiveSnapshot.counters.today,
-        upcoming: scopedLiveSnapshot.counters.upcoming,
-        in_transit: scopedLiveSnapshot.counters.in_transit,
-        finalized: scopedLiveSnapshot.counters.finalized,
-        cancelled: 0,
-      };
-    }
-
+    // #1: ml_ui_chip_counts — HTTP Fetcher direto (precisão 100%)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const uiCounts = (dashboard as any)?.ml_ui_chip_counts as
       | { today: number; upcoming: number; in_transit: number; finalized: number }
@@ -1482,6 +1471,7 @@ export default function MercadoLivrePage({
       };
     }
 
+    // #2: ml_live_chip_counts — classificador OAuth (fallback)
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
       return {
@@ -1493,14 +1483,26 @@ export default function MercadoLivrePage({
       };
     }
 
+    // #3: liveSnapshot — scraper Playwright legado (fallback de emergência)
+    if (
+      scopedLiveSnapshot?.counters &&
+      typeof scopedLiveSnapshot.counters.today === "number"
+    ) {
+      return {
+        today: scopedLiveSnapshot.counters.today,
+        upcoming: scopedLiveSnapshot.counters.upcoming,
+        in_transit: scopedLiveSnapshot.counters.in_transit,
+        finalized: scopedLiveSnapshot.counters.finalized,
+        cancelled: 0,
+      };
+    }
+
     return localCounts;
   }, [selectedDashboardDeposits, dashboard, scopedLiveSnapshot]);
 
   // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
+  // FIX 2026-05-06: Mesma hierarquia do useMemo acima (ml_ui > ml_live > live_snapshot > local).
   const chipMeta = useMemo(() => {
-    if (scopedLiveSnapshot?.counters && typeof scopedLiveSnapshot.counters.today === "number") {
-      return { source: "live_snapshot" as const, stale: false, ageSeconds: null };
-    }
     if (dashboard?.ml_ui_chip_counts && typeof dashboard.ml_ui_chip_counts.today === "number") {
       return {
         source: "ml_ui" as const,
@@ -1510,6 +1512,9 @@ export default function MercadoLivrePage({
     }
     if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
       return { source: "ml_live" as const, stale: false, ageSeconds: null };
+    }
+    if (scopedLiveSnapshot?.counters && typeof scopedLiveSnapshot.counters.today === "number") {
+      return { source: "live_snapshot" as const, stale: false, ageSeconds: null };
     }
     return { source: "local" as const, stale: false, ageSeconds: null };
   }, [dashboard, scopedLiveSnapshot]);
