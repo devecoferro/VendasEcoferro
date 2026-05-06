@@ -170,6 +170,26 @@ function isSameOrPastCalendarDay(leftKey, rightKey) {
   return Boolean(leftKey && rightKey && leftKey <= rightKey);
 }
 
+/**
+ * Retorna a chave do próximo dia útil (seg-sex) a partir de hoje.
+ * Se hoje é sexta, retorna segunda. Se hoje é sábado, retorna segunda.
+ * Se hoje é dia útil, retorna amanhã (se amanhã for dia útil) ou próxima segunda.
+ */
+function getNextBusinessDayKey() {
+  const now = new Date();
+  // Converter para BRT para obter o dia correto
+  const brNow = new Date(now.toLocaleString('en-US', { timeZone: OPERATIONAL_TIMEZONE }));
+  const dayOfWeek = brNow.getDay(); // 0=dom, 1=seg, ..., 5=sex, 6=sab
+  let daysToAdd = 1;
+  if (dayOfWeek === 5) daysToAdd = 3; // sexta → segunda
+  else if (dayOfWeek === 6) daysToAdd = 2; // sábado → segunda
+  else if (dayOfWeek === 0) daysToAdd = 1; // domingo → segunda
+  // Para dias úteis (seg-qui), próximo dia útil é amanhã
+  const next = new Date(brNow);
+  next.setDate(next.getDate() + daysToAdd);
+  return getCalendarKey(next);
+}
+
 function getRawData(order) {
   return order?.raw_data && typeof order.raw_data === "object" ? order.raw_data : {};
 }
@@ -2880,9 +2900,12 @@ export async function buildDashboardPayload(options = {}) {
       //
       // FULL: Regras específicas (today=0, finalized=só claims).
       if (deposit.key !== "fulfillment") {
-        // FIX 2026-05-06 rev5: Reclassificar invoice_pending de upcoming → today
-        // APENAS se a data SLA (coleta) for HOJE. O ML só mostra em "Envios de hoje"
-        // pedidos cuja coleta é hoje. Pedidos com coleta amanhã ficam em "Próximos dias".
+        // FIX 2026-05-06 rev6: Reclassificar invoice_pending/ready_to_print de
+        // upcoming → today na visão por depósito (cross-docking).
+        // REGRA ML: Na visão por depósito, "Envios de hoje" inclui pedidos cuja
+        // SLA (expected_date) é ≤ próximo dia útil. O vendedor precisa preparar
+        // HOJE para coletar AMANHÃ. Ex: SLA 07/05 (amanhã) → "Envios de hoje".
+        const nextBizDay = getNextBusinessDayKey();
         const reclassifyIds = [];
         const reclassifyDedupe = new Set();
         for (const order of ordersForDeposit) {
@@ -2894,9 +2917,10 @@ export async function buildDashboardPayload(options = {}) {
           const snapshot = getShipmentSnapshot(order);
           const sub = normalizeState(snapshot.substatus || "");
           if (sub !== "invoice_pending" && sub !== "ready_to_print") continue;
-          // Só reclassificar se a data SLA (coleta) for HOJE
+          // Reclassificar se SLA ≤ próximo dia útil (precisa preparar HOJE)
           const dates = getOperationalDates(order);
-          if (dates.operationalDueDateKey !== todayKey) continue;
+          if (!dates.operationalDueDateKey) continue;
+          if (!isSameOrPastCalendarDay(dates.operationalDueDateKey, nextBizDay)) continue;
           const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
           const shippingId = order.shipping_id ? String(order.shipping_id) : null;
           const mlOrderId = order.order_id ? String(order.order_id) : null;
