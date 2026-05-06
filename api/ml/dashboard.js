@@ -2880,7 +2880,9 @@ export async function buildDashboardPayload(options = {}) {
       //
       // FULL: Regras específicas (today=0, finalized=só claims).
       if (deposit.key !== "fulfillment") {
-        // Reclassificar invoice_pending de upcoming → today
+        // FIX 2026-05-06 rev5: Reclassificar invoice_pending de upcoming → today
+        // APENAS se a data SLA (coleta) for HOJE. O ML só mostra em "Envios de hoje"
+        // pedidos cuja coleta é hoje. Pedidos com coleta amanhã ficam em "Próximos dias".
         const reclassifyIds = [];
         const reclassifyDedupe = new Set();
         for (const order of ordersForDeposit) {
@@ -2888,10 +2890,13 @@ export async function buildDashboardPayload(options = {}) {
             ? mlBucketByMlOrderId.get(String(order.order_id))
             : null;
           if (mlBucket !== "upcoming") continue;
-          // Verificar se é invoice_pending
+          // Verificar se é invoice_pending ou ready_to_print
           const snapshot = getShipmentSnapshot(order);
           const sub = normalizeState(snapshot.substatus || "");
           if (sub !== "invoice_pending" && sub !== "ready_to_print") continue;
+          // Só reclassificar se a data SLA (coleta) for HOJE
+          const dates = getOperationalDates(order);
+          if (dates.operationalDueDateKey !== todayKey) continue;
           const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
           const shippingId = order.shipping_id ? String(order.shipping_id) : null;
           const mlOrderId = order.order_id ? String(order.order_id) : null;
