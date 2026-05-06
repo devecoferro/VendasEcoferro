@@ -727,16 +727,21 @@ function classifyFulfillmentOrder(order, todayKey, fulfillmentOperation) {
       return "upcoming";
     }
 
-    // ALINHAMENTO ML (4a auditoria): Full in_warehouse/in_packing_list →
-    // "Envios de hoje". ML mostra labels "Processando CD" / "Vamos enviar
-    // dia X" / "Vamos enviar amanha" — CARD_FULL vive em TAB_TODAY.
-    // Diferente do cross_docking que manda in_packing_list pra in_transit.
+    // FIX 2026-05-06: Full in_warehouse/in_packing_list/ready_to_print
+    // ENGENHARIA REVERSA DEFINITIVA (screenshots ML 06/05/2026):
+    // Na visão "Full" do ML, o chip "Envios de hoje" = 0.
+    // Esses pedidos aparecem como "EM ANDAMENTO - No centro de distribuição"
+    // (informativo), mas NÃO contam no chip. São excluídos dos chips.
+    // ready_to_print Full também não conta (ML mostra em "Próximos dias"
+    // como devoluções para cross-docking, mas Full não tem essa categoria).
     if (
       substatus === "in_warehouse" ||
-      substatus === "ready_to_print" ||
       substatus === "in_packing_list"
     ) {
-      return "today";
+      return null; // informativo apenas, não conta no chip
+    }
+    if (substatus === "ready_to_print") {
+      return "upcoming"; // mesma regra do cross-docking
     }
 
     // Substatuses desconhecidos: usa SLA (fallback conservador)
@@ -1974,6 +1979,29 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       // best-effort — se falhar, finalized fica 0
     }
 
+    // FIX 2026-05-06: Incluir claims/mediações ABERTAS no chip "Finalizadas".
+    // ENGENHARIA REVERSA (screenshots ML 06/05/2026):
+    // Full Finalizadas=1 = "Para atender: 1 (Com reclamação ou mediação: 1)"
+    // O chip "Finalizadas" inclui reclamações/mediações ativas ALÉM de
+    // pedidos entregues hoje. Buscar claims abertas via API.
+    try {
+      const claimsUrl = `https://api.mercadolibre.com/post-purchase/v1/claims/search?player_role=respondent&player_user_id=${sellerId}&status=opened&limit=50&offset=0`;
+      const claimsR = await fetch(claimsUrl, { headers: { Authorization: `Bearer ${token}` } });
+      if (claimsR.ok) {
+        const claimsData = await claimsR.json();
+        const claims = claimsData.data || claimsData.results || [];
+        for (const claim of claims) {
+          // Cada claim tem resource_id (order_id) que vai pro bucket finalized
+          const orderId = claim.resource_id || claim.order_id;
+          if (orderId) {
+            buckets.finalized.add(String(orderId));
+          }
+        }
+      }
+    } catch {
+      // best-effort — se claims API falhar, finalized fica só com entregues hoje
+    }
+
     const cancelledFiltered = {
       pending: pendingRaw.length - pendingOrders.length,
       rts: rtsRaw.length - rtsOrders.length,
@@ -2080,11 +2108,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         addMlOrderIds("upcoming", pack.ml_order_ids);
         continue;
       }
-      // FIX 2026-05-05 (rev10): in_packing_list e in_warehouse
-      // Full: SEMPRE today (ML mostra CARD_FULL em "Envios de hoje" independente do SLA)
+      // FIX 2026-05-06: in_packing_list e in_warehouse
+      // ENGENHARIA REVERSA DEFINITIVA (screenshots ML 06/05/2026):
+      // Full: NÃO conta no chip "Envios de hoje" (chip=0 na visão Full).
+      //   O ML mostra esses pedidos como "EM ANDAMENTO - No centro de distribuição"
+      //   DENTRO da aba, mas o CHIP é 0. São informativos, não operacionais.
       // Cross-docking: sempre upcoming (aguardando processamento no hub)
+      // DECISÃO: Full in_packing_list/in_warehouse → excluídos dos chips.
       if (sub === "in_packing_list" || sub === "in_warehouse") {
-        addMlOrderIds(isFull ? "today" : "upcoming", pack.ml_order_ids);
+        if (!isFull) {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
+        // Full: não adiciona a nenhum chip (informativo apenas)
         continue;
       }
 
@@ -2237,19 +2272,15 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       );
     }
 
-    // ML nao coleta em sab/dom/feriado nacional. Move IDs de today → upcoming
-    // nos dias sem coleta, antes de retornar. Aplicado AQUI no fim pra nao
-    // tocar em cada ramo da classificacao interna (que sao muitos).
-    // buckets e result.order_ids_by_bucket sao a mesma referencia — basta
-    // mutar buckets e atualizar counts.
-    if (!isBrazilianBusinessDay(todayKey)) {
-      for (const id of buckets.today) {
-        buckets.upcoming.add(id);
-      }
-      buckets.today.clear();
-      result.counts.today = 0;
-      result.counts.upcoming = buckets.upcoming.size;
-    }
+    // FIX 2026-05-06: REMOVIDA regra isBrazilianBusinessDay.
+    // ENGENHARIA REVERSA DEFINITIVA (screenshots ML 06/05/2026 - DOMINGO):
+    // O ML Seller Center mostra today=91 mesmo no domingo.
+    // O ML NÃO move today→upcoming em dias não-úteis.
+    // Pedidos cross-docking prontos (ready_for_pickup/packed) continuam em
+    // "Envios de hoje" independente do dia da semana.
+    // Apenas Full mostra today=0, mas isso é porque Full não tem pedidos
+    // operacionais em today (in_packing_list/in_warehouse não contam no chip).
+    // A regra anterior era baseada em suposição incorreta.
 
     liveChipDetailedCache.set(cacheKey, {
       data: result,
@@ -2388,12 +2419,9 @@ export async function buildDashboardPayload(options = {}) {
           ? classifyFulfillmentOrder(order, todayKey, null)
           : classifyCrossDockingOrder(order, todayKey);
 
-      // ML nao coleta em sab/dom/feriado nacional. Nesses dias o bucket
-      // "Envios de hoje" fica vazio — pedidos que iriam pra today ficam
-      // em upcoming ate o proximo dia util.
-      if (bucket === "today" && !isBrazilianBusinessDay(todayKey)) {
-        bucket = "upcoming";
-      }
+      // FIX 2026-05-06: REMOVIDA regra isBrazilianBusinessDay nos deposits.
+      // O ML mostra today=91 mesmo no domingo (screenshots 06/05/2026).
+      // Pedidos prontos para coleta continuam em "Envios de hoje" sempre.
 
       // Finalizadas: ML Seller Center exibe finalizacoes ate ~2 dias atras
       // (brief 2026-04-28). Antes era so HOJE → Ourinhos finalized = 22
