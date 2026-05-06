@@ -1445,33 +1445,21 @@ export default function MercadoLivrePage({
     ) as Record<ShipmentBucket, number>;
 
     // Hierarquia de fontes pros chips (maior prioridade primeiro):
-    // 1. ml_ui_chip_counts — HTTP Fetcher direto (cookies → ML Seller Center, 100% preciso) ⭐
-    // 2. ml_live_chip_counts — classificador OAuth (fallback ~95% alinhado)
-    // 3. liveSnapshot.counters — scraper Playwright legado (fallback de emergência)
-    // 4. localCounts — classificação interna do app (fallback final)
+    // 1. ml_live_chip_counts — classificador OAuth (fonte principal, 100% automático) ⭐
+    // 2. localCounts — classificação interna do app (fallback final)
     //
-    // FIX 2026-05-06: liveSnapshot rebaixado para fallback #3.
-    // O HTTP Fetcher (que alimenta ml_ui_chip_counts) é agora a fonte primária
-    // porque faz fetch direto do endpoint do ML com cookies válidos, garantindo
-    // precisão 100% sem depender de scraper Playwright (que pode ter cache stale).
+    // FIX 2026-05-06 (DEFINITIVO): Classificador OAuth como fonte ÚNICA.
+    //
+    // MOTIVO: O HTTP Fetcher (ml_ui_chip_counts) depende de cookies manuais
+    // que expiram a cada ~30 dias. Quando expiram, retorna dados incorretos
+    // causando divergência. O classificador OAuth usa access_token renovado
+    // automaticamente e funciona sem manutenção manual.
+    //
+    // O liveSnapshot (Playwright) e ml_ui_chip_counts (HTTP Fetcher) foram
+    // REMOVIDOS da hierarquia. Ambos dependem de mecanismos frágeis que
+    // não são viáveis para SaaS.
 
-    // #1: ml_ui_chip_counts — HTTP Fetcher direto (precisão 100%)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const uiCounts = (dashboard as any)?.ml_ui_chip_counts as
-      | { today: number; upcoming: number; in_transit: number; finalized: number }
-      | null
-      | undefined;
-    if (uiCounts && typeof uiCounts.today === "number") {
-      return {
-        today: uiCounts.today,
-        upcoming: uiCounts.upcoming,
-        in_transit: uiCounts.in_transit,
-        finalized: uiCounts.finalized,
-        cancelled: 0,
-      };
-    }
-
-    // #2: ml_live_chip_counts — classificador OAuth (fallback)
+    // #1: ml_live_chip_counts — classificador OAuth (fonte principal)
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
       return {
@@ -1483,38 +1471,14 @@ export default function MercadoLivrePage({
       };
     }
 
-    // #3: liveSnapshot — scraper Playwright legado (fallback de emergência)
-    if (
-      scopedLiveSnapshot?.counters &&
-      typeof scopedLiveSnapshot.counters.today === "number"
-    ) {
-      return {
-        today: scopedLiveSnapshot.counters.today,
-        upcoming: scopedLiveSnapshot.counters.upcoming,
-        in_transit: scopedLiveSnapshot.counters.in_transit,
-        finalized: scopedLiveSnapshot.counters.finalized,
-        cancelled: 0,
-      };
-    }
-
     return localCounts;
   }, [selectedDashboardDeposits, dashboard, scopedLiveSnapshot]);
 
   // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
-  // FIX 2026-05-06: Mesma hierarquia do useMemo acima (ml_ui > ml_live > live_snapshot > local).
+  // FIX 2026-05-06 (DEFINITIVO): Classificador OAuth como fonte única.
   const chipMeta = useMemo(() => {
-    if (dashboard?.ml_ui_chip_counts && typeof dashboard.ml_ui_chip_counts.today === "number") {
-      return {
-        source: "ml_ui" as const,
-        stale: Boolean(dashboard.ml_ui_chip_counts_stale),
-        ageSeconds: dashboard.ml_ui_chip_counts_age_seconds ?? null,
-      };
-    }
     if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
       return { source: "ml_live" as const, stale: false, ageSeconds: null };
-    }
-    if (scopedLiveSnapshot?.counters && typeof scopedLiveSnapshot.counters.today === "number") {
-      return { source: "live_snapshot" as const, stale: false, ageSeconds: null };
     }
     return { source: "local" as const, stale: false, ageSeconds: null };
   }, [dashboard, scopedLiveSnapshot]);

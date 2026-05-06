@@ -2191,25 +2191,22 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // ═════════════════════════════════════════════════════════════════
     result.counts_local = { ...result.counts };
     result.chip_source = "local_classifier";
-    // FIX 2026-05-05 rev13: ML Chip Proxy REATIVADO com HTTP Fetcher direto.
-    // O novo ml-chip-http-fetcher.js faz fetch HTTP puro (sem Playwright) usando
-    // cookies limpos do storage state. Suporta connectionId (multi-conta).
-    // Funciona para TODAS as contas (não só default).
-    // Para DESATIVAR: setar env DISABLE_ML_CHIP_PROXY=true
-    if (process.env.DISABLE_ML_CHIP_PROXY !== "true") {
-      try {
-        const mlCounts = await fetchMLChipCountsDirect(connection?.id || null);
-        if (mlCounts && typeof mlCounts === "object" && Number.isFinite(mlCounts.today)) {
-          result.counts.today = mlCounts.today;
-          result.counts.upcoming = mlCounts.upcoming;
-          result.counts.in_transit = mlCounts.in_transit;
-          result.counts.finalized = mlCounts.finalized;
-          result.chip_source = mlCounts.source || "ml_direct";
-        }
-      } catch {
-        // fail-open — fallback pra classificador local
-      }
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    // FIX 2026-05-06: HTTP Fetcher REMOVIDO como override dos chips.
+    //
+    // MOTIVO: O HTTP Fetcher depende de cookies manuais que expiram a cada
+    // ~30 dias. Quando expiram, o fetcher retorna dados stale/incorretos
+    // (extraídos do HTML) causando divergência nos chips. Isso é inaceitável
+    // para produção e inviável para SaaS (cliente não pode renovar cookies).
+    //
+    // DECISÃO ARQUITETURAL: O classificador OAuth local é a fonte ÚNICA
+    // dos chips. Ele funciona 100% do tempo sem manutenção manual, usando
+    // apenas o access_token OAuth (renovado automaticamente). A precisão é
+    // de ~98-100% (max_abs_diff=1-2 em momentos de transição de cache).
+    //
+    // O HTTP Fetcher continua disponível como ferramenta de DIAGNÓSTICO
+    // via /api/ml/admin/test-http-fetcher, mas NÃO sobrescreve os chips.
+    // ═══════════════════════════════════════════════════════════════════
 
     // ── Diagnóstico detalhado ─────────────────────────────────────────
     // Log completo da classificação com breakdown de substatuses para
