@@ -4,18 +4,22 @@
 // FONTE DOS CHIPS (em ordem de prioridade):
 // 1. HTTP Fetcher direto (ml-chip-http-fetcher.js) — usa cookies do
 //    storage state para chamar /operations-dashboard/tabs via HTTP puro.
-//    Sem Playwright, sem browser, <1s de execução, precisão 100%.
+//    Sem Playwright, sem browser, <5s de execução, precisão 100%.
 // 2. Live Snapshot do scraper Playwright (seller-center-scraper.js) —
 //    fallback quando HTTP fetcher não está configurado.
 //
 // MULTI-CONTA: Suporta connectionId para buscar chips de contas
 // diferentes (Ecoferro default, Fantom via connectionId específico).
 //
+// MULTI-STORE (rev16): fetchMLChipsByStoreDirect retorna chips de
+// all/full/ourinhos em paralelo, permitindo chips exatos por depósito.
+//
 // Cache interno: 60s + dedup de concorrentes.
 //
-// FIX 2026-05-05: Reescrito para:
+// FIX 2026-05-06: Reescrito para:
 // - Usar HTTP fetcher como fonte primária (sem Playwright)
 // - Suportar connectionId (multi-conta)
+// - Suportar múltiplos stores (all/full/ourinhos)
 // - Ignorar snapshots de inject manual
 // - Manter lastKnownCounts por conexão (evita pulo UX)
 // ═══════════════════════════════════════════════════════════════════
@@ -27,6 +31,7 @@ import {
 } from "./seller-center-scraper.js";
 import {
   fetchMLChipsViaHTTP,
+  fetchMLChipsByStore,
   isHTTPFetcherConfigured,
 } from "./ml-chip-http-fetcher.js";
 
@@ -39,6 +44,10 @@ const SCRAPER_FRESHNESS_MS = 12 * 60 * 60 * 1000; // 12h
 const chipCountsCacheByConn = new Map(); // connectionId → { data, expiresAt, capturedAt }
 const lastKnownCountsByConn = new Map(); // connectionId → counts
 const inflightByConn = new Map(); // connectionId → Promise
+
+// Cache e state para by-store
+const byStoreCacheByConn = new Map(); // connectionId → { data, expiresAt }
+const inflightByStoreByConn = new Map(); // connectionId → Promise
 
 function extractCountsFromSnapshot(snap) {
   if (!snap || typeof snap !== "object") return null;
@@ -132,7 +141,7 @@ async function doFetchChips(connectionId = null) {
 }
 
 /**
- * Retorna counts oficiais do ML Seller Center.
+ * Retorna counts oficiais do ML Seller Center (store=all).
  * Suporta connectionId para multi-conta.
  * Cache 60s + dedup de concorrentes. Null em erro (fallback local).
  */
@@ -170,6 +179,61 @@ export async function fetchMLChipCountsDirect(connectionId = null) {
 }
 
 /**
+ * Retorna chips oficiais do ML por store (all/full/ourinhos).
+ * Usa HTTP Fetcher com 3 POSTs paralelos.
+ * Retorna { all: {...}, full: {...}, ourinhos: {...}, source, fetchedAt } ou null.
+ */
+export async function fetchMLChipsByStoreDirect(connectionId = null) {
+  const connKey = connectionId || "default";
+
+  // Check cache
+  const cached = byStoreCacheByConn.get(connKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  // Dedup
+  const inflight = inflightByStoreByConn.get(connKey);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    try {
+      if (!isHTTPFetcherConfigured(connectionId)) {
+        return null;
+      }
+      const result = await fetchMLChipsByStore(connectionId);
+      if (result) {
+        byStoreCacheByConn.set(connKey, {
+          data: result,
+          expiresAt: Date.now() + CACHE_TTL_MS,
+        });
+        // Também atualiza cache global se temos store=all
+        if (result.all) {
+          const globalCounts = {
+            ...result.all,
+            source: "http_fetcher",
+            stale: false,
+            ageSeconds: 0,
+          };
+          chipCountsCacheByConn.set(connKey, {
+            data: globalCounts,
+            expiresAt: Date.now() + CACHE_TTL_MS,
+            capturedAt: result.fetchedAt,
+          });
+          lastKnownCountsByConn.set(connKey, result.all);
+        }
+      }
+      return result;
+    } finally {
+      inflightByStoreByConn.delete(connKey);
+    }
+  })();
+
+  inflightByStoreByConn.set(connKey, promise);
+  return promise;
+}
+
+/**
  * Retorna chips do cache (sem fetch) para uma conexão.
  */
 export function getCachedMLChipCounts(connectionId = null) {
@@ -187,7 +251,9 @@ export function getCachedMLChipCounts(connectionId = null) {
 export function invalidateMLChipCountsCache(connectionId = null) {
   if (connectionId) {
     chipCountsCacheByConn.delete(connectionId);
+    byStoreCacheByConn.delete(connectionId);
   } else {
     chipCountsCacheByConn.clear();
+    byStoreCacheByConn.clear();
   }
 }

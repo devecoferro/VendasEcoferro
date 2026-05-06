@@ -2,19 +2,25 @@
 // ML Chip HTTP Fetcher — busca chips DIRETAMENTE do ML Seller Center
 // via HTTP usando cookies do storage state (sem Playwright/browser).
 //
-// COMO FUNCIONA (rev15 — 2026-05-05):
+// COMO FUNCIONA (rev16 — 2026-05-06):
 // 1. Lê os cookies do storage state do Playwright (arquivo JSON no disco)
 // 2. Faz GET na página /vendas/omni/lista para obter o CSRF token
 // 3. Faz POST em /vendas/omni/lista/api/channels/event-request
 //    com o CSRF token + cookies → retorna os chips exatos
 // 4. Extrai os counters (TAB_TODAY, TAB_NEXT_DAYS, TAB_IN_THE_WAY, TAB_FINISHED)
 //
+// NOVIDADE rev16: Suporte a múltiplos stores (all/full/79856028).
+// - fetchMLChipsViaHTTP(connectionId) → retorna chips globais (store=all)
+// - fetchMLChipsByStore(connectionId) → retorna { all, full, ourinhos }
+//   com chips de cada store, em paralelo (1 CSRF + 3 POSTs)
+//
 // VANTAGENS:
 // - Sem Playwright/browser headless (economia de ~250MB RAM)
-// - Execução em <2s (vs 30-60s do scraper)
+// - Execução em <5s (vs 30-60s do scraper)
 // - Precisão 100% (usa o mesmo endpoint que o frontend JS do ML)
 // - Funciona em qualquer servidor (não precisa de Chrome instalado)
 // - Suporta múltiplas contas (connectionId)
+// - Suporta múltiplos stores (all/full/79856028)
 //
 // REQUISITO:
 // - Storage state válido com cookies do ML (gerado pelo login manual
@@ -39,11 +45,18 @@ const STORAGE_STATE_PATH =
 // Cache interno POR connectionId: 90s
 const CACHE_TTL_MS = 90 * 1000;
 const cacheByConnection = new Map(); // connectionId → { data, expiresAt }
+// Cache separado para by-store (all/full/ourinhos)
+const cacheByStoreByConnection = new Map(); // connectionId → { data, expiresAt }
 
 // ML Seller Center URLs
 const ML_BASE = "https://www.mercadolivre.com.br";
 const ML_PAGE_URL = `${ML_BASE}/vendas/omni/lista`;
 const ML_EVENT_REQUEST_URL = `${ML_PAGE_URL}/api/channels/event-request`;
+
+// Store IDs canônicos (descobertos via engenharia reversa)
+const STORE_ALL = "all";
+const STORE_FULL = "full";
+const STORE_OURINHOS = process.env.ML_OURINHOS_STORE_ID || "79856028";
 
 // User-Agent consistente
 const USER_AGENT =
@@ -102,14 +115,21 @@ function buildCookieHeader(storageState) {
 
 /**
  * Resolve o path do storage state para uma conexão específica.
+ * Hierarquia de busca:
+ * 1. ml-seller-center-state-{connectionId}.json (per-connection)
+ * 2. ml-seller-center-state.json (default/shared)
+ * Se nenhum existir, retorna null.
  */
 function resolveStatePath(connectionId) {
   if (!connectionId) return STORAGE_STATE_PATH;
+  // Tenta per-connection primeiro
   const perConnPath = STORAGE_STATE_PATH.replace(
     /\.json$/,
     `-${connectionId}.json`
   );
   if (fs.existsSync(perConnPath)) return perConnPath;
+  // Fallback para o default (compartilhado entre conexões)
+  if (fs.existsSync(STORAGE_STATE_PATH)) return STORAGE_STATE_PATH;
   return null;
 }
 
@@ -204,10 +224,13 @@ async function fetchCsrfToken(cookieHeader) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Faz POST no event-request do ML para obter os chips.
- * Retorna o body JSON da resposta ou null.
+ * Faz POST no event-request do ML para obter os chips de um store específico.
+ * @param {string} cookieHeader - Cookie header completo
+ * @param {string} csrfToken - CSRF token extraído da página
+ * @param {string} store - Store ID: "all", "full", ou "79856028" (Ourinhos)
+ * @returns {object|null} - Body JSON da resposta ou null
  */
-async function fetchEventRequest(cookieHeader, csrfToken) {
+async function fetchEventRequest(cookieHeader, csrfToken, store = "all") {
   const body = JSON.stringify({
     baseUrl: "/sales-omni",
     method: "GET",
@@ -218,7 +241,7 @@ async function fetchEventRequest(cookieHeader, csrfToken) {
       { key: "sellerSegmentType", value: "professional" },
       { key: "filters", value: "TAB_TODAY" },
       { key: "subFilters", value: "" },
-      { key: "store", value: "all" },
+      { key: "store", value: store },
       { key: "gmt", value: "-03:00" },
     ],
     pathParams: [],
@@ -249,22 +272,22 @@ async function fetchEventRequest(cookieHeader, csrfToken) {
     clearTimeout(timeout);
 
     if (res.status === 422) {
-      log.warn(`event-request: 422 validation error (CSRF token inválido ou body incorreto)`);
+      log.warn(`event-request [store=${store}]: 422 validation error (CSRF token inválido ou body incorreto)`);
       return null;
     }
 
     if (res.status === 403) {
-      log.warn(`event-request: 403 forbidden (CSRF rejeitado)`);
+      log.warn(`event-request [store=${store}]: 403 forbidden (CSRF rejeitado)`);
       return null;
     }
 
     if (res.status >= 300 && res.status < 400) {
-      log.warn(`event-request: redirect ${res.status} (sessão expirada)`);
+      log.warn(`event-request [store=${store}]: redirect ${res.status} (sessão expirada)`);
       return null;
     }
 
     if (!res.ok) {
-      log.warn(`event-request: HTTP ${res.status}`);
+      log.warn(`event-request [store=${store}]: HTTP ${res.status}`);
       return null;
     }
 
@@ -272,15 +295,15 @@ async function fetchEventRequest(cookieHeader, csrfToken) {
     try {
       return JSON.parse(text);
     } catch {
-      log.warn(`event-request: resposta não é JSON (${text.slice(0, 100)})`);
+      log.warn(`event-request [store=${store}]: resposta não é JSON (${text.slice(0, 100)})`);
       return null;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("abort")) {
-      log.warn("event-request: timeout (15s)");
+      log.warn(`event-request [store=${store}]: timeout (15s)`);
     } else {
-      log.warn(`event-request: fetch error — ${msg}`);
+      log.warn(`event-request [store=${store}]: fetch error — ${msg}`);
     }
     return null;
   }
@@ -338,7 +361,7 @@ function extractCountersFromResponse(responseBody) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Busca os chips do ML Seller Center via HTTP direto.
+ * Busca os chips do ML Seller Center via HTTP direto (store=all).
  * Fluxo: GET page → extract CSRF → POST event-request → extract counters.
  * Suporta connectionId para multi-conta.
  * Retorna { today, upcoming, in_transit, finalized, source: "http_fetcher" } ou null.
@@ -373,8 +396,8 @@ export async function fetchMLChipsViaHTTP(connectionId = null) {
   }
   log.info(`CSRF token obtido para connection=${cacheKey}: ${csrfToken.slice(0, 8)}...`);
 
-  // Step 2: POST event-request with CSRF token
-  const responseBody = await fetchEventRequest(cookieHeader, csrfToken);
+  // Step 2: POST event-request with CSRF token (store=all)
+  const responseBody = await fetchEventRequest(cookieHeader, csrfToken, STORE_ALL);
   if (!responseBody) {
     log.warn(`event-request falhou para connection=${cacheKey}`);
     return null;
@@ -405,13 +428,130 @@ export async function fetchMLChipsViaHTTP(connectionId = null) {
 }
 
 /**
+ * Busca chips de TODOS os stores (all/full/ourinhos) em paralelo.
+ * Usa um único CSRF token (obtido 1x) e faz 3 POSTs paralelos.
+ *
+ * Retorna:
+ * {
+ *   all: { today, upcoming, in_transit, finalized },
+ *   full: { today, upcoming, in_transit, finalized },
+ *   ourinhos: { today, upcoming, in_transit, finalized },
+ *   source: "http_fetcher",
+ *   fetchedAt: "ISO string"
+ * }
+ * ou null se falhar.
+ */
+export async function fetchMLChipsByStore(connectionId = null) {
+  const cacheKey = connectionId || "default";
+
+  // Check cache
+  const cached = cacheByStoreByConnection.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  // Load storage state
+  const storageState = loadAndValidateState(connectionId);
+  if (!storageState) return null;
+
+  // Build cookie header
+  const cookieHeader = buildCookieHeader(storageState);
+  if (!cookieHeader) {
+    log.warn(`[by-store] Nenhum cookie ML válido para connection=${cacheKey}`);
+    return null;
+  }
+
+  log.info(`[by-store] Buscando chips de 3 stores para connection=${cacheKey}`);
+
+  // Step 1: Fetch CSRF token (1x)
+  const csrfToken = await fetchCsrfToken(cookieHeader);
+  if (!csrfToken) {
+    log.warn(`[by-store] Não foi possível obter CSRF token para connection=${cacheKey}`);
+    return null;
+  }
+
+  // Step 2: POST event-request para cada store em paralelo
+  const stores = [
+    { key: "all", storeId: STORE_ALL },
+    { key: "full", storeId: STORE_FULL },
+    { key: "ourinhos", storeId: STORE_OURINHOS },
+  ];
+
+  const results = await Promise.all(
+    stores.map(async ({ key, storeId }) => {
+      try {
+        const responseBody = await fetchEventRequest(cookieHeader, csrfToken, storeId);
+        if (!responseBody) return { key, counters: null };
+        const counters = extractCountersFromResponse(responseBody);
+        return { key, counters };
+      } catch (err) {
+        log.warn(`[by-store] Falha ao buscar store=${key}`, err instanceof Error ? err : new Error(String(err)));
+        return { key, counters: null };
+      }
+    })
+  );
+
+  // Montar resultado
+  const byStore = {};
+  let anySuccess = false;
+  for (const { key, counters } of results) {
+    if (counters) {
+      byStore[key] = counters;
+      anySuccess = true;
+    } else {
+      byStore[key] = null;
+    }
+  }
+
+  if (!anySuccess) {
+    log.warn(`[by-store] Nenhum store retornou dados para connection=${cacheKey}`);
+    return null;
+  }
+
+  const data = {
+    ...byStore,
+    source: "http_fetcher",
+    fetchedAt: new Date().toISOString(),
+  };
+
+  log.info(`[by-store] Chips obtidos para connection=${cacheKey}:`, {
+    all: byStore.all,
+    full: byStore.full,
+    ourinhos: byStore.ourinhos,
+  });
+
+  // Cache por connection
+  cacheByStoreByConnection.set(cacheKey, {
+    data,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
+
+  // Também atualiza o cache global (store=all) se disponível
+  if (byStore.all) {
+    const globalData = {
+      ...byStore.all,
+      source: "http_fetcher",
+      fetchedAt: data.fetchedAt,
+    };
+    cacheByConnection.set(cacheKey, {
+      data: globalData,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    });
+  }
+
+  return data;
+}
+
+/**
  * Invalida o cache do fetcher (para uma conexão ou todas).
  */
 export function invalidateHTTPChipCache(connectionId = null) {
   if (connectionId) {
     cacheByConnection.delete(connectionId);
+    cacheByStoreByConnection.delete(connectionId);
   } else {
     cacheByConnection.clear();
+    cacheByStoreByConnection.clear();
   }
 }
 

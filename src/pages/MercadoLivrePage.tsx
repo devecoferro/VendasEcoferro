@@ -1492,30 +1492,57 @@ export default function MercadoLivrePage({
     ) as Record<ShipmentBucket, number>;
 
     // Hierarquia de fontes pros chips (maior prioridade primeiro):
-    // 1. ml_live_chip_counts — classificador OAuth (fonte principal, 100% automático) ⭐
-    // 2. localCounts — classificação interna do app (fallback final)
+    // 1. ml_ui_chip_counts / ml_ui_chip_counts_by_store — HTTP Fetcher (100% preciso) ⭐
+    // 2. ml_live_chip_counts — classificador OAuth (fallback automático)
+    // 3. localCounts — classificação interna do app (fallback final)
     //
-    // FIX 2026-05-06 (DEFINITIVO): Classificador OAuth como fonte ÚNICA.
-    //
-    // MOTIVO: O HTTP Fetcher (ml_ui_chip_counts) depende de cookies manuais
-    // que expiram a cada ~30 dias. Quando expiram, retorna dados incorretos
-    // causando divergência. O classificador OAuth usa access_token renovado
-    // automaticamente e funciona sem manutenção manual.
-    //
-    // O liveSnapshot (Playwright) e ml_ui_chip_counts (HTTP Fetcher) foram
-    // REMOVIDOS da hierarquia. Ambos dependem de mecanismos frágeis que
-    // não são viáveis para SaaS.
+    // FIX 2026-05-06 rev8 (DEFINITIVO): HTTP Fetcher como fonte PRIMÁRIA.
+    // Consulta diretamente o endpoint BFF do ML Seller Center.
+    // Quando cookies válidos: precisão 100% (mesmos números da tela ML).
+    // Quando cookies expiram: retorna null, cai para classificador OAuth.
 
-    // #1: ml_live_chip_counts — classificador OAuth (fonte principal)
-    // FIX 2026-05-06: Quando um depósito específico está selecionado,
-    // usar localCounts (filtrado por selectedDashboardDeposits) em vez
-    // do ml_live_chip_counts global. O ML Seller Center faz o mesmo:
-    // quando você seleciona "Full", os chips mudam para mostrar apenas
-    // os pedidos Full. Os localCounts já estão corretos porque o backend
-    // faz ML AUTHORITATIVE OVERRIDE nos deposit.counts por depósito.
+    // #1: ml_ui_chip_counts_by_store (HTTP Fetcher por depósito)
+    const byStore = (dashboard as any)?.ml_ui_chip_counts_by_store;
+    if (byStore && selectedDepositFilters.length > 0) {
+      // Mapear filtro de depósito para store key
+      const key = (selectedDepositFilters[0] || "").toLowerCase();
+      let storeKey: string | null = null;
+      if (key === "full" || key.includes("full") || key.includes("fulfillment")) {
+        storeKey = "full";
+      } else if (key !== "without-deposit" && key !== "without_deposit") {
+        storeKey = "ourinhos";
+      }
+      if (storeKey && byStore[storeKey]) {
+        const storeCounts = byStore[storeKey];
+        return {
+          today: storeCounts.today ?? 0,
+          upcoming: storeCounts.upcoming ?? 0,
+          in_transit: storeCounts.in_transit ?? 0,
+          finalized: storeCounts.finalized ?? 0,
+          cancelled: 0,
+        };
+      }
+    }
+
+    // #1b: ml_ui_chip_counts global (HTTP Fetcher store=all)
+    const uiCounts = (dashboard as any)?.ml_ui_chip_counts;
+    if (uiCounts && typeof uiCounts.today === "number") {
+      if (selectedDepositFilters.length > 0) {
+        // Depósito selecionado mas sem by_store — usar localCounts
+        return localCounts;
+      }
+      return {
+        today: uiCounts.today,
+        upcoming: uiCounts.upcoming,
+        in_transit: uiCounts.in_transit,
+        finalized: uiCounts.finalized,
+        cancelled: 0,
+      };
+    }
+
+    // #2: ml_live_chip_counts (classificador OAuth — fallback)
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
-      // Se há filtro de depósito ativo, usar contagem local (já filtrada)
       if (selectedDepositFilters.length > 0) {
         return localCounts;
       }
@@ -1528,14 +1555,21 @@ export default function MercadoLivrePage({
       };
     }
 
+    // #3: localCounts (fallback final)
     return localCounts;
   }, [selectedDashboardDeposits, selectedDepositFilters, dashboard, scopedLiveSnapshot]);
 
   // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
-  // FIX 2026-05-06 (DEFINITIVO): Classificador OAuth como fonte única.
-  // Quando depósito específico está selecionado, fonte é "ml_live_deposit"
-  // (counts locais derivados do ML override por depósito).
+  // FIX 2026-05-06 rev8: HTTP Fetcher como fonte primária.
   const chipMeta = useMemo(() => {
+    const byStore = (dashboard as any)?.ml_ui_chip_counts_by_store;
+    const uiCounts = (dashboard as any)?.ml_ui_chip_counts;
+    if (uiCounts && typeof uiCounts.today === "number") {
+      if (selectedDepositFilters.length > 0 && byStore) {
+        return { source: "http_fetcher_store" as const, stale: false, ageSeconds: 0 };
+      }
+      return { source: "http_fetcher" as const, stale: false, ageSeconds: 0 };
+    }
     if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
       if (selectedDepositFilters.length > 0) {
         return { source: "ml_live_deposit" as const, stale: false, ageSeconds: null };

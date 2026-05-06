@@ -3,8 +3,7 @@ import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listC
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
-// import { fetchMLChipCountsDirect } from "./_lib/ml-chip-proxy.js"; // DESATIVADO 2026-05-06 — OAuth é fonte única
-// import { getCachedLiveSnapshot } from "./_lib/seller-center-scraper.js"; // DESATIVADO 2026-05-06
+import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
 import {
   getMirrorEntityStatusBreakdown,
   getSellerCenterMirrorOverview,
@@ -2990,17 +2989,42 @@ export async function buildDashboardPayload(options = {}) {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // FIX 2026-05-06 rev2: ml_ui_chip_counts DESATIVADO.
+    // ═════════════════════════════════════════════════════════════════
+  // FIX 2026-05-06 rev8: HTTP Fetcher REATIVADO como fonte de verdade.
   //
-  // MOTIVO: Dependia de HTTP Fetcher (cookies manuais) ou scraper Playwright.
-  // Ambos são instáveis e causam divergência quando expiram.
-  // O frontend agora usa EXCLUSIVAMENTE ml_live_chip_counts (classificador OAuth).
-  // ml_ui_chip_counts fica null — frontend cai direto para ml_live_chip_counts.
-  // ═══════════════════════════════════════════════════════════════════
+  // O HTTP Fetcher consulta diretamente o endpoint BFF do ML Seller Center
+  // e retorna os números EXATOS que o usuário vê na tela.
+  // Quando o storage state está válido, é 100% preciso.
+  // Quando não está, retorna null e o frontend cai para ml_live_chip_counts.
+  //
+  // NOVO: ml_ui_chip_counts_by_store retorna chips por depósito
+  // (all/full/ourinhos) para que o frontend use diretamente.
+  // ═════════════════════════════════════════════════════════════════
   let mlUiChipCounts = null;
   let mlUiChipCountsStale = false;
   let mlUiChipCountsAgeSeconds = null;
+  let mlUiChipCountsByStore = null;
+
+  try {
+    // Busca chips de todos os stores em paralelo (all/full/ourinhos)
+    const byStoreResult = await fetchMLChipsByStoreDirect(
+      baseConnection?.id || null
+    );
+    if (byStoreResult && byStoreResult.all) {
+      mlUiChipCounts = byStoreResult.all;
+      mlUiChipCountsStale = false;
+      mlUiChipCountsAgeSeconds = 0;
+      mlUiChipCountsByStore = {
+        all: byStoreResult.all || null,
+        full: byStoreResult.full || null,
+        ourinhos: byStoreResult.ourinhos || null,
+      };
+    }
+  } catch (err) {
+    // HTTP Fetcher falhou (cookies expirados?) — fallback para ml_live_chip_counts
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[dashboard] HTTP Fetcher by-store falhou: ${msg}`);
+  }
 
   const payload = {
     backend_secure: true,
@@ -3020,6 +3044,10 @@ export async function buildDashboardPayload(options = {}) {
     // que fallback pra classifier local, que diverge muito).
     ml_ui_chip_counts_stale: mlUiChipCountsStale,
     ml_ui_chip_counts_age_seconds: mlUiChipCountsAgeSeconds,
+    // Contagens da UI do ML por store (all/full/ourinhos).
+    // Fonte de verdade MÁXIMA por depósito — bate 100% com o ML.
+    // Se null, o frontend usa localCounts (deposit.counts).
+    ml_ui_chip_counts_by_store: mlUiChipCountsByStore,
     // Contagens LIVE dos chips — ML API como fonte de verdade.
     // Pack-deduplicated, classificado por substatus real do ML.
     // Se null, o frontend usa counts dos deposits (fallback local).
