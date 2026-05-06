@@ -2427,34 +2427,41 @@ export async function buildDashboardPayload(options = {}) {
       // O ML mostra today=91 mesmo no domingo (screenshots 06/05/2026).
       // Pedidos prontos para coleta continuam em "Envios de hoje" sempre.
 
-      // Finalizadas: ML Seller Center exibe finalizacoes ate ~2 dias atras
-      // (brief 2026-04-28). Antes era so HOJE → Ourinhos finalized = 22
-      // (so reclamacoes), faltavam Entregues/Nao entregues/Devolucoes etc.
-      // Janela de 2 dias inclui ontem + hoje + (ate 2d atras), espelhando
-      // o que o ML mostra quando o operador abre Finalizadas.
+      // FIX 2026-05-06 rev3: Finalizadas = Entregues HOJE + Claims/Mediações ativas.
+      //
+      // ENGENHARIA REVERSA DEFINITIVA (screenshots ML 06/05/2026):
+      // O chip "Finalizadas" do ML Seller Center conta APENAS:
+      //   1. Pedidos entregues/não-entregues/devolvidos HOJE (exceptionDateKey === todayKey)
+      //   2. Claims/mediações ativas (isOrderUnderReview = true)
+      //
+      // Antes usávamos janela de 2 dias (ageDays <= 2) que inflava o chip:
+      //   - App: 22 (global), ML: 7 (global) — diferença de +15
+      //   - App: 10 (Ourinhos), ML: 6 (Ourinhos) — diferença de +4
+      //
+      // Com janela HOJE + claims, os números devem bater ~100% com o ML.
       if (bucket === "finalized") {
-        const snapshot = getShipmentSnapshot(order);
-        const statusHistory = snapshot.status_history || {};
-        // Brief 2026-04-28: ML schema novo (x-format-new) nao retorna
-        // status_history. Usamos last_updated do shipment como fallback
-        // (data da ultima mudanca de status — em terminal states corresponde
-        // ao momento de delivered/cancelled/etc). sale_date e last resort.
-        const exceptionDateKey =
-          getDateKey(statusHistory.date_cancelled) ||
-          getDateKey(statusHistory.date_not_delivered) ||
-          getDateKey(statusHistory.date_returned) ||
-          getDateKey(statusHistory.date_delivered) ||
-          getDateKey(snapshot.last_updated) ||
-          getDateKey(order.sale_date);
-        if (!exceptionDateKey) {
-          continue;
-        }
-        const ageDays =
-          (new Date(todayKey + "T12:00:00-03:00").getTime() -
-            new Date(exceptionDateKey + "T12:00:00-03:00").getTime()) /
-          86400000;
-        if (!Number.isFinite(ageDays) || ageDays < 0 || ageDays > 2) {
-          continue; // fora da janela de 2 dias
+        // Claims/mediações ativas SEMPRE contam (independente da data)
+        if (isOrderUnderReview(order)) {
+          // Passa direto — claim ativo conta no chip
+        } else {
+          // Pedidos terminais (delivered/not_delivered/cancelled/returned):
+          // só contam se a data do evento é HOJE.
+          const snapshot = getShipmentSnapshot(order);
+          const statusHistory = snapshot.status_history || {};
+          const exceptionDateKey =
+            getDateKey(statusHistory.date_cancelled) ||
+            getDateKey(statusHistory.date_not_delivered) ||
+            getDateKey(statusHistory.date_returned) ||
+            getDateKey(statusHistory.date_delivered) ||
+            getDateKey(snapshot.last_updated) ||
+            getDateKey(order.sale_date);
+          if (!exceptionDateKey) {
+            continue;
+          }
+          // Apenas HOJE (ageDays === 0, ou seja, mesmo dia)
+          if (exceptionDateKey !== todayKey) {
+            continue;
+          }
         }
       }
 
@@ -2852,6 +2859,48 @@ export async function buildDashboardPayload(options = {}) {
         if (!dedupeKey || !dedupeInBucket.has(dedupeKey)) {
           newCounts[mlBucket] += 1;
           if (dedupeKey) dedupeInBucket.add(dedupeKey);
+        }
+      }
+
+      // FIX 2026-05-06 rev3: Regras específicas do ML Seller Center POR DEPÓSITO.
+      //
+      // CROSS-DOCKING (Ourinhos): O ML Seller Center na visão por depósito
+      // mostra invoice_pending em "Envios de hoje" (NF-e para gerenciar).
+      // Porém o classificador GLOBAL coloca invoice_pending em "upcoming".
+      // Reclassificamos: upcoming → today para pedidos invoice_pending.
+      //
+      // FULL: Regras específicas (today=0, finalized=só claims).
+      if (deposit.logistic_type === "cross_docking" || deposit.key === "ourinhos" || deposit.key === "without-deposit") {
+        // Reclassificar invoice_pending de upcoming → today
+        const reclassifyIds = [];
+        const reclassifyDedupe = new Set();
+        for (const order of ordersForDeposit) {
+          const mlBucket = order.order_id
+            ? mlBucketByMlOrderId.get(String(order.order_id))
+            : null;
+          if (mlBucket !== "upcoming") continue;
+          // Verificar se é invoice_pending
+          const snapshot = getShipmentSnapshot(order);
+          const sub = normalizeState(snapshot.substatus || "");
+          if (sub !== "invoice_pending" && sub !== "ready_to_print") continue;
+          const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
+          const shippingId = order.shipping_id ? String(order.shipping_id) : null;
+          const mlOrderId = order.order_id ? String(order.order_id) : null;
+          const dedupeId = packId || shippingId || mlOrderId;
+          if (dedupeId && reclassifyDedupe.has(dedupeId)) continue;
+          if (dedupeId) reclassifyDedupe.add(dedupeId);
+          reclassifyIds.push(order.id);
+        }
+        // Mover de upcoming → today
+        if (reclassifyIds.length > 0) {
+          newCounts.today += reclassifyIds.length;
+          newCounts.upcoming -= reclassifyIds.length;
+          if (newCounts.upcoming < 0) newCounts.upcoming = 0;
+          for (const id of reclassifyIds) {
+            newOrderIds.today.push(id);
+            const idx = newOrderIds.upcoming.indexOf(id);
+            if (idx !== -1) newOrderIds.upcoming.splice(idx, 1);
+          }
         }
       }
 
