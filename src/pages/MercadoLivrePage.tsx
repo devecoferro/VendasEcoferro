@@ -1507,8 +1507,18 @@ export default function MercadoLivrePage({
     // não são viáveis para SaaS.
 
     // #1: ml_live_chip_counts — classificador OAuth (fonte principal)
+    // FIX 2026-05-06: Quando um depósito específico está selecionado,
+    // usar localCounts (filtrado por selectedDashboardDeposits) em vez
+    // do ml_live_chip_counts global. O ML Seller Center faz o mesmo:
+    // quando você seleciona "Full", os chips mudam para mostrar apenas
+    // os pedidos Full. Os localCounts já estão corretos porque o backend
+    // faz ML AUTHORITATIVE OVERRIDE nos deposit.counts por depósito.
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
+      // Se há filtro de depósito ativo, usar contagem local (já filtrada)
+      if (selectedDepositFilters.length > 0) {
+        return localCounts;
+      }
       return {
         today: liveCounts.today,
         upcoming: liveCounts.upcoming,
@@ -1519,16 +1529,21 @@ export default function MercadoLivrePage({
     }
 
     return localCounts;
-  }, [selectedDashboardDeposits, dashboard, scopedLiveSnapshot]);
+  }, [selectedDashboardDeposits, selectedDepositFilters, dashboard, scopedLiveSnapshot]);
 
   // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
   // FIX 2026-05-06 (DEFINITIVO): Classificador OAuth como fonte única.
+  // Quando depósito específico está selecionado, fonte é "ml_live_deposit"
+  // (counts locais derivados do ML override por depósito).
   const chipMeta = useMemo(() => {
     if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
+      if (selectedDepositFilters.length > 0) {
+        return { source: "ml_live_deposit" as const, stale: false, ageSeconds: null };
+      }
       return { source: "ml_live" as const, stale: false, ageSeconds: null };
     }
     return { source: "local" as const, stale: false, ageSeconds: null };
-  }, [dashboard, scopedLiveSnapshot]);
+  }, [dashboard, scopedLiveSnapshot, selectedDepositFilters]);
 
   // IDs dos pedidos que compõem a lista abaixo do chip selecionado.
   //
@@ -2345,9 +2360,11 @@ export default function MercadoLivrePage({
                           ? chipMeta.stale
                             ? `Fonte: chip ML (cache stale, ${chipMeta.ageSeconds ?? "?"}s) — atualizando em background`
                             : "Fonte: chip ML (Seller Center)"
-                          : chipMeta.source === "ml_live"
-                            ? "Fonte: API ML (classifier local)"
-                            : "Fonte: classifier local (pode divergir do ML)"
+                          : chipMeta.source === "ml_live_deposit"
+                            ? "Fonte: API ML (filtrado por depósito)"
+                            : chipMeta.source === "ml_live"
+                              ? "Fonte: API ML (classifier local)"
+                              : "Fonte: classifier local (pode divergir do ML)"
                     }
                   >
                     <span>{filterOption.label}</span>
