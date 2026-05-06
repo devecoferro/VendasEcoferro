@@ -2082,13 +2082,20 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         shipment.logisticType === "fulfillment" ||
         (pack.deposit_key && String(pack.deposit_key).startsWith("node:"));
 
-      // today — prontos pra envio/coleta (ambos cross e full)
+      // today — prontos pra envio/coleta
       if (
         sub === "ready_for_pickup" ||
         sub === "packed" ||
         sub === "ready_to_pack"
       ) {
-        addMlOrderIds("today", pack.ml_order_ids);
+        // FIX 2026-05-06: Full NÃO tem "Envios de hoje" no ML Seller Center.
+        // Screenshots ML 06/05/2026: Full chip "Envios de hoje" = 0 (sem badge).
+        // Pedidos Full com esses substatuses são processados pelo ML automaticamente
+        // no centro de distribuição e não aparecem no chip operacional.
+        // Apenas cross-docking conta em "today".
+        if (!isFull) {
+          addMlOrderIds("today", pack.ml_order_ids);
+        }
         continue;
       }
 
@@ -2849,6 +2856,45 @@ export async function buildDashboardPayload(options = {}) {
           newCounts[mlBucket] += 1;
           if (dedupeKey) dedupeInBucket.add(dedupeKey);
         }
+      }
+
+      // FIX 2026-05-06: Regras específicas do ML Seller Center para Full.
+      // Screenshots ML 06/05/2026:
+      //   - "Envios de hoje" = 0 (sem badge) — Full não tem operações de envio
+      //   - "Finalizadas" = 1 (apenas claims/mediações ativas)
+      //     Pedidos delivered/not_delivered/cancelled/returned aparecem em
+      //     "Encerradas" DENTRO da aba, mas NÃO contam no CHIP.
+      // O ML trata Full diferente: o vendedor não tem ação operacional
+      // (envio é feito pelo ML), então chips só mostram exceções.
+      if (deposit.key === "fulfillment") {
+        // Full NÃO tem "Envios de hoje"
+        newCounts.today = 0;
+        newOrderIds.today = [];
+
+        // Full "Finalizadas" = APENAS claims/mediações (isOrderUnderReview)
+        // Pedidos entregues/não entregues/cancelados não contam no chip.
+        let claimCount = 0;
+        const claimOrderIds = [];
+        const claimDedupe = new Set();
+        for (const order of ordersForDeposit) {
+          const mlBucket = order.order_id
+            ? mlBucketByMlOrderId.get(String(order.order_id))
+            : null;
+          if (mlBucket !== "finalized") continue;
+          if (!isOrderUnderReview(order)) continue;
+          const packId = order.raw_data?.pack_id
+            ? String(order.raw_data.pack_id)
+            : null;
+          const shippingId = order.shipping_id ? String(order.shipping_id) : null;
+          const mlOrderId = order.order_id ? String(order.order_id) : null;
+          const dedupeId = packId || shippingId || mlOrderId;
+          if (dedupeId && claimDedupe.has(dedupeId)) continue;
+          if (dedupeId) claimDedupe.add(dedupeId);
+          claimCount++;
+          claimOrderIds.push(order.id);
+        }
+        newCounts.finalized = claimCount;
+        newOrderIds.finalized = claimOrderIds;
       }
 
       deposit.counts = newCounts;
