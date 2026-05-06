@@ -1,0 +1,12 @@
+# VendasEcoferro - Windsurf AI Rules
+
+BEFORE making any code changes, you MUST read:
+1. `docs/SYSTEM-MEMORY.md`
+2. `docs/CHANGELOG.md`
+3. The most recent file in `docs/sessions/`
+
+## Core Rules
+- Stack: React, TypeScript, Node.js, SQLite.
+- ML Integration: We use direct HTTP Fetcher (see `docs/ml-http-fetcher-memory.md`), NOT Playwright.
+- Multi-seller: Always respect `connection_id` (default vs "fantom").
+- Documentation: Document all completed tasks in `docs/sessions/`.

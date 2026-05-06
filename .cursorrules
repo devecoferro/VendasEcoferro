@@ -1,0 +1,19 @@
+# VendasEcoferro - Cursor AI Rules
+
+You are an AI assistant helping with the VendasEcoferro project.
+BEFORE making any code changes or answering architectural questions, you MUST read the following files to understand the system context:
+
+1. `docs/SYSTEM-MEMORY.md` (System architecture, history, and decisions)
+2. `docs/CHANGELOG.md` (Current version and recent changes)
+3. `docs/sessions/` (Read the most recent file to know what was done last)
+
+## Project Stack
+- Frontend: React + TypeScript + Vite + shadcn/ui
+- Backend: Node.js + Express
+- Database: SQLite
+- Integration: Mercado Livre (OAuth + HTTP Fetcher)
+
+## Core Rules
+- NEVER use Playwright or headless browsers for ML data fetching. We use direct HTTP Fetcher (see `docs/ml-http-fetcher-memory.md`).
+- ALWAYS respect the `connection_id` for multi-seller support (null/default for EcoFerro, "fantom" for Fantom).
+- When finishing a task, document it in `docs/sessions/YYYY-MM-DD-description.md`.
