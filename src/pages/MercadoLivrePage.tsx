@@ -1353,6 +1353,31 @@ export default function MercadoLivrePage({
   // sem incluí-lo no array de deps (evita TDZ por hoisting).
   permittedOrdersRef.current = permittedOrders;
 
+  // Resolve todos os deposit keys equivalentes ao filtro selecionado.
+  // Ourinhos tem 2 store_ids (79856028 e 79854288) com o mesmo label;
+  // o ML agrupa ambos sob "Ourinhos Rua Dario Alonso". Sem essa expansão,
+  // pedidos do segundo store_id ficam invisíveis quando o filtro está ativo.
+  const expandedDepositKeys = useMemo(() => {
+    if (selectedDepositFilters.length === 0) return new Set<string>();
+    // Coleta os labels dos keys selecionados
+    const selectedLabels = new Set(
+      selectedDepositFilters.map((key) => {
+        const option = depositOptions.find((o) => o.key === key);
+        return (option?.displayLabel || option?.label || key).toLowerCase();
+      })
+    );
+    // Expande: inclui TODOS os keys de pedidos cujo label bate
+    const expanded = new Set(selectedDepositFilters);
+    for (const order of permittedOrders) {
+      const deposit = getDepositInfo(order);
+      const label = deposit.displayLabel.toLowerCase();
+      if (selectedLabels.has(label)) {
+        expanded.add(deposit.key);
+      }
+    }
+    return expanded;
+  }, [depositOptions, permittedOrders, selectedDepositFilters]);
+
   // Orders escopados pelo filtro de deposito do topo (DepositFilterMenu),
   // sem filtrar por bucket/shipmentFilter. Alimenta o ColetasPanel, que
   // internamente reclassifica por bucket primario (today/upcoming) e
@@ -1360,9 +1385,9 @@ export default function MercadoLivrePage({
   const coletasScopedOrders = useMemo(() => {
     if (selectedDepositFilters.length === 0) return permittedOrders;
     return permittedOrders.filter((order) =>
-      selectedDepositFilters.includes(getDepositInfo(order).key)
+      expandedDepositKeys.has(getDepositInfo(order).key)
     );
-  }, [permittedOrders, selectedDepositFilters]);
+  }, [expandedDepositKeys, permittedOrders, selectedDepositFilters]);
 
   const orderMap = useMemo(
     () => new Map(permittedOrders.map((order) => [order.id, order])),
@@ -1760,7 +1785,12 @@ export default function MercadoLivrePage({
     }
 
     return bucketOrders.filter((order) => {
-      if (getDepositInfo(order).key !== operationalFocus.depositKey) {
+      // Usa expandedDepositKeys para incluir todos os store_ids equivalentes
+      // (ex: Ourinhos tem 79856028 e 79854288 com mesmo label)
+      const orderKey = getDepositInfo(order).key;
+      if (expandedDepositKeys.size > 0) {
+        if (!expandedDepositKeys.has(orderKey)) return false;
+      } else if (orderKey !== operationalFocus.depositKey) {
         return false;
       }
 

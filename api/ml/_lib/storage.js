@@ -538,6 +538,26 @@ function buildOrderSummariesQuery({
   const safeLimit = hasPagination ? sanitizePaginationLimit(limit) : null;
   const safeOffset = hasPagination ? sanitizePaginationOffset(offset) : 0;
 
+  // Prioridade operacional: pedidos ready_to_ship (especialmente invoice_pending)
+  // devem vir PRIMEIRO na paginação. Isso garante que a primeira página (1000)
+  // contenha todos os pedidos que precisam de ação imediata, evitando que o
+  // usuário veja lista vazia enquanto as páginas seguintes carregam.
+  const isOperationalScope = String(scope || "").trim().toLowerCase() === "operational";
+  const orderByClause = isOperationalScope && hasPagination
+    ? `ORDER BY
+        CASE
+          WHEN lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), '')) = 'ready_to_ship'
+            AND lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.substatus'), '')) = 'invoice_pending'
+          THEN 0
+          WHEN lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), '')) = 'ready_to_ship'
+          THEN 1
+          WHEN lower(COALESCE(json_extract(raw_data, '$.shipment_snapshot.status'), '')) = 'shipped'
+          THEN 2
+          ELSE 3
+        END,
+        sort_sale_date DESC, order_id DESC`
+    : `ORDER BY sort_sale_date DESC, order_id DESC`;
+
   const sql = `
     WITH filtered_orders AS (
       SELECT
@@ -556,7 +576,7 @@ function buildOrderSummariesQuery({
     SELECT *
     FROM filtered_orders
     WHERE row_number = 1
-    ORDER BY sort_sale_date DESC, order_id DESC
+    ${orderByClause}
     ${hasPagination ? "LIMIT ? OFFSET ?" : ""}
   `;
 
