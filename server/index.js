@@ -1136,141 +1136,37 @@ httpServer = app.listen(APP_PORT, APP_HOST, () => {
       }, 2 * 60 * 1000);
     }
 
-    // ─── ML UI Scraper (Seller Center DOM — LEGADO, DESLIGADO) ──────
+    // ═══════════════════════════════════════════════════════════════════
+    // HARDENING 2026-05-07: Scraper Round-Robin REMOVIDO de produção.
     //
-    // Esta rotina chamava `scrapeMlSellerCenter` (DOM scraping de chips)
-    // a cada 5min. Foi SUBSTITUÍDA pelo live-snapshot (XHR interception)
-    // em `scrapeMlLiveSnapshot`, que é mais preciso e resiliente a
-    // mudanças de layout.
+    // O scraper (seller-center-scraper.js / maybeRefreshLiveSnapshotInBackground)
+    // dependia de cookies/Playwright para raspar o ML Seller Center.
+    // Removido definitivamente: sem setInterval, sem setTimeout, sem import.
     //
-    // O live-snapshot é invocado sob demanda pelo endpoint
-    // `/api/ml/live-snapshot` (usado pelo frontend) e tem seu próprio
-    // auto-refresh em background via `maybeRefreshLiveSnapshotInBackground`.
-
-    // ─── Round-robin de scopes do scraper ────────────────────────
-    // Antes: só "all" era refrescado em background. Outros scopes
-    // (ourinhos/full/without_deposit) só atualizavam quando alguem
-    // abria o filtro correspondente — chip ficava STALE por horas.
-    // Operador reportou "Ourinhos nao bate" em 2026-04-26 com chip
-    // ate 17h velho.
-    //
-    // Solucao: cron 180s rotaciona entre os 4 scopes. Cada scope refresh
-    // a cada ~12min. maybeRefreshLiveSnapshotInBackground tem dedup
-    // interno (skip se cache fresh) entao o custo real e baixo.
-    //
-    // Why 180s (antes 60s): com 60s o warm browser pool nunca chegava
-    // ao limite de idle (5min antes, 60s agora) — Chromium ficava sempre
-    // alocado em memoria (~250MB constantes). Com 180s, gap entre scrapes
-    // permite browser fechar e liberar RAM. Operador pode forcar refresh
-    // sob demanda na UI se quiser dado fresco.
-    const SCRAPER_SCOPES = ["all", "ourinhos", "full", "without_deposit"];
-    let scraperScopeIndex = 0;
-    let scraperRoundRobinRunning = false;
-    const SCRAPER_ROUND_ROBIN_INTERVAL_MS = 180_000;
-    const scraperRoundRobinIntervalId = setInterval(async () => {
-      if (scraperRoundRobinRunning) return;
-      scraperRoundRobinRunning = true;
-      try {
-        const scope = SCRAPER_SCOPES[scraperScopeIndex];
-        scraperScopeIndex = (scraperScopeIndex + 1) % SCRAPER_SCOPES.length;
-        const { maybeRefreshLiveSnapshotInBackground } = await import(
-          "../api/ml/_lib/seller-center-scraper.js"
-        );
-        const result = maybeRefreshLiveSnapshotInBackground(scope);
-        if (result.triggered) {
-          log.info(`[scraper-rr] disparou refresh scope="${scope}"`);
-        }
-      } catch (err) {
-        log.warn(
-          `[scraper-rr] erro`,
-          err instanceof Error ? err : new Error(String(err))
-        );
-      } finally {
-        scraperRoundRobinRunning = false;
-      }
-    }, SCRAPER_ROUND_ROBIN_INTERVAL_MS);
-    // Primeira execucao 30s apos boot — aquece SO o scope "all" (mais
-    // usado pelo dashboard). Outros scopes vao rotacionar pelo round-robin
-    // a cada 180s. Antes disparava os 4 em paralelo num for-loop sem
-    // delay (boot+30s = 4 scrapes simultaneos), brigando pela 1 vCPU do
-    // VPS — cada scrape virava 3+ min e travava a partir dali (race do
-    // warm pool, browser-closed em cascata). Fix 2026-04-29.
-    setTimeout(async () => {
-      try {
-        const { maybeRefreshLiveSnapshotInBackground } = await import(
-          "../api/ml/_lib/seller-center-scraper.js"
-        );
-        maybeRefreshLiveSnapshotInBackground("all");
-      } catch {
-        /* best-effort */
-      }
-    }, 30_000);
-    // Cleanup no shutdown
-    process.on("SIGTERM", () => clearInterval(scraperRoundRobinIntervalId));
-    process.on("SIGINT", () => clearInterval(scraperRoundRobinIntervalId));
+    // Fonte única dos chips: OAuth (fetchMLLiveChipBucketsDetailed).
+    // Endpoint /api/ml/live-snapshot permanece no código mas NÃO é
+    // chamado automaticamente — só responde se o frontend solicitar.
+    // ═══════════════════════════════════════════════════════════════════
   }, 10_000);
 
-  // ─── ML Chip HTTP Fetcher (sem Playwright) ──────────────────────────
-  // Busca os chips DIRETAMENTE do ML Seller Center via HTTP usando cookies
-  // do storage state. Muito mais leve que o Playwright (~1s vs 30-60s).
-  // Roda a cada 2 minutos e injeta os counters no cache do live-snapshot
-  // com source="http_direct" (aceito pelo ml-chip-proxy e live-snapshot).
-  const HTTP_CHIP_FETCH_INTERVAL_MS = 2 * 60 * 1000; // 2 min
-  let httpChipFetchRunning = false;
-
-  async function runHTTPChipFetch() {
-    if (httpChipFetchRunning) return;
-    httpChipFetchRunning = true;
-    try {
-      const { fetchMLChipsViaHTTP } = await import(
-        "../api/ml/_lib/ml-chip-http-fetcher.js"
-      );
-      const { injectLiveSnapshotCounters } = await import(
-        "../api/ml/_lib/seller-center-scraper.js"
-      );
-
-      // Busca para a conexão default (Ecoferro)
-      const counters = await fetchMLChipsViaHTTP();
-      if (counters) {
-        injectLiveSnapshotCounters(counters, null, { source: "http_direct" });
-        log.info("[http-chip-fetcher] Ecoferro chips injetados", counters);
-      }
-
-      // Busca para conexões adicionais (Fantom, etc)
-      // Verifica se há storage states per-connection
-      const { listConnections } = await import("../api/ml/_lib/storage.js");
-      const connections = listConnections();
-      for (const conn of connections) {
-        if (!conn.id || conn.id === "default") continue;
-        try {
-          const connCounters = await fetchMLChipsViaHTTP(conn.id);
-          if (connCounters) {
-            injectLiveSnapshotCounters(connCounters, conn.id, { source: "http_direct" });
-            log.info(`[http-chip-fetcher] ${conn.label || conn.id} chips injetados`, connCounters);
-          }
-        } catch (err) {
-          log.warn(
-            `[http-chip-fetcher] erro conexão ${conn.id}`,
-            err instanceof Error ? err : new Error(String(err))
-          );
-        }
-      }
-    } catch (err) {
-      log.warn(
-        "[http-chip-fetcher] erro",
-        err instanceof Error ? err : new Error(String(err))
-      );
-    } finally {
-      httpChipFetchRunning = false;
-    }
+  // ═══════════════════════════════════════════════════════════════════
+  // HARDENING 2026-05-07: HTTP Fetcher REMOVIDO de produção.
+  //
+  // O HTTP Fetcher (ml-chip-http-fetcher.js) usava cookies do ML para
+  // buscar chips via HTTP. Removido definitivamente:
+  // - sem import ativo
+  // - sem setInterval ativo
+  // - sem setTimeout ativo
+  // - sem fallback ativo
+  // - sem execução em background
+  //
+  // Feature flag (desativada por padrão, NÃO usar em produção):
+  const ENABLE_ML_HTTP_FETCHER_DIAGNOSTIC = process.env.ENABLE_ML_HTTP_FETCHER_DIAGNOSTIC === "true";
+  if (ENABLE_ML_HTTP_FETCHER_DIAGNOSTIC) {
+    log.warn("[HARDENING] HTTP Fetcher diagnostic ATIVADO via env — NÃO USAR EM PRODUÇÃO");
   }
-
-  // Primeira execução 15s após boot
-  setTimeout(runHTTPChipFetch, 15_000);
-  // Depois a cada 2 minutos
-  const httpChipFetchIntervalId = setInterval(runHTTPChipFetch, HTTP_CHIP_FETCH_INTERVAL_MS);
-  process.on("SIGTERM", () => clearInterval(httpChipFetchIntervalId));
-  process.on("SIGINT", () => clearInterval(httpChipFetchIntervalId));
+  // Fonte única dos chips: OAuth (fetchMLLiveChipBucketsDetailed).
+  // ═══════════════════════════════════════════════════════════════════
 
   // Inicia auto-backup (a cada 6h, primeiro backup 1min apos boot)
   startAutoBackup();
