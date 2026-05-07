@@ -41,7 +41,7 @@ console.log("\n═══ GRUPO 1: Lógica da guarda assertConnectionBelongsToPro
 const storageSrc = readFile("api/ml/_lib/storage.js");
 
 assert(
-  storageSrc.includes("export function assertConnectionBelongsToProfile(connectionId, profileId, profileRole)"),
+  storageSrc.includes("export function assertConnectionBelongsToProfile(connectionId, profileId, profileRole"),
   "Função assertConnectionBelongsToProfile exportada com assinatura correta"
 );
 
@@ -59,8 +59,8 @@ assert(
 
 assert(
   storageSrc.includes("!connection.profile_id") &&
-  storageSrc.includes("acesso restrito a admin"),
-  "Conexão sem owner (legado) é restrita a admin"
+  storageSrc.includes("Connection has no tenant owner"),
+  "Conexão sem owner bloqueia com 'Connection has no tenant owner'"
 );
 
 assert(

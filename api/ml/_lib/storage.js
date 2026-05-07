@@ -322,28 +322,52 @@ export function listConnectionsForProfile(profileId, profileRole) {
 
 /**
  * Multi-tenant: retorna a conexão default para um perfil.
- * Se o perfil é admin, retorna a mais antiga (comportamento legado).
- * Se o perfil é operator, retorna a mais antiga que pertence a ele.
+ * Sprint 2026-05-07: Admin também usa query profile-scoped.
+ * Se admin não tem conexão própria, retorna a mais antiga com owner definido.
+ * Operator retorna a mais antiga que pertence a ele.
+ * NUNCA retorna conexão com profile_id null (orphã).
  */
 export function getDefaultConnectionForProfile(profileId, profileRole) {
-  if (profileRole === "admin") {
-    return getLatestConnection(); // admin: comportamento legado
-  }
-  const row = db
+  // Primeiro tenta conexão do próprio perfil
+  const ownRow = db
     .prepare(`SELECT * FROM ml_connections WHERE profile_id = ? ORDER BY datetime(created_at) ASC LIMIT 1`)
     .get(profileId);
-  return mapConnection(row);
+  if (ownRow) return mapConnection(ownRow);
+
+  // Admin: se não tem conexão própria, retorna a mais antiga com owner definido
+  if (profileRole === "admin") {
+    const anyRow = db
+      .prepare(`SELECT * FROM ml_connections WHERE profile_id IS NOT NULL ORDER BY datetime(created_at) ASC LIMIT 1`)
+      .get();
+    return mapConnection(anyRow);
+  }
+
+  // Operator sem conexão: retorna null
+  return null;
 }
 
 /**
  * Multi-tenant guard: valida que connectionId pertence ao perfil.
- * Admins podem acessar qualquer conexão.
- * Operators só acessam conexões vinculadas ao seu profile_id.
- * Conexões sem profile_id (legado) são acessíveis por admins.
  *
- * @throws {Error} com statusCode 403 se acesso negado
+ * REGRAS SaaS (Sprint 2026-05-07):
+ * 1. Conexão não encontrada → 404
+ * 2. Conexão com profile_id null (sem tenant owner) → BLOQUEIA (403)
+ *    - Nenhuma rota user-facing pode retornar dados de conexão órfã
+ *    - Admin pode acessar APENAS via fluxo administrativo explícito
+ *      (passando options.adminContext = true)
+ * 3. Operator acessando conexão de outro perfil → 403
+ * 4. Admin acessando conexão de outro perfil → permitido com audit log
+ *
+ * @param {string} connectionId
+ * @param {string} profileId
+ * @param {string} profileRole
+ * @param {object} [options]
+ * @param {boolean} [options.adminContext=false] - Se true, permite admin acessar conexão sem owner
+ * @param {string} [options.route] - Nome da rota para audit log
+ * @param {string} [options.reason] - Motivo do acesso administrativo
+ * @throws {Error} com statusCode 403/404 se acesso negado
  */
-export function assertConnectionBelongsToProfile(connectionId, profileId, profileRole) {
+export function assertConnectionBelongsToProfile(connectionId, profileId, profileRole, options = {}) {
   const connection = getConnectionById(connectionId);
   if (!connection) {
     const err = new Error("Conexao nao encontrada.");
@@ -351,10 +375,36 @@ export function assertConnectionBelongsToProfile(connectionId, profileId, profil
     throw err;
   }
 
-  // Admin pode acessar qualquer conexão (com log de auditoria)
+  // ── REGRA 2: Conexão sem tenant owner (profile_id null) ──────────
+  // Bloqueia em rotas user-facing. Admin só acessa com contexto explícito.
+  if (!connection.profile_id) {
+    if (profileRole === "admin" && options.adminContext === true) {
+      // Admin bypass explícito com audit log completo
+      recordAuditLog({
+        req: { profile: { id: profileId, username: "admin" }, headers: {}, socket: {} },
+        action: "admin_bypass.orphan_connection_access",
+        targetType: "ml_connection",
+        targetId: connectionId,
+        payload: {
+          adminProfileId: profileId,
+          targetProfileId: null,
+          targetConnectionId: connectionId,
+          route: options.route || "unknown",
+          timestamp: new Date().toISOString(),
+          reason: options.reason || "explicit admin context"
+        }
+      });
+      return connection;
+    }
+    // Bloqueia: conexão sem owner não pode ser acessada em rota user-facing
+    const err = new Error("Connection has no tenant owner");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  // ── REGRA 4: Admin acessando conexão de outro perfil ─────────────
   if (profileRole === "admin") {
-    // Log de auditoria: admin acessando conexão de outro perfil
-    if (connection.profile_id && connection.profile_id !== profileId) {
+    if (connection.profile_id !== profileId) {
       recordAuditLog({
         req: { profile: { id: profileId, username: "admin" }, headers: {}, socket: {} },
         action: "admin_bypass.connection_access",
@@ -364,21 +414,16 @@ export function assertConnectionBelongsToProfile(connectionId, profileId, profil
           adminProfileId: profileId,
           targetProfileId: connection.profile_id,
           targetConnectionId: connectionId,
-          timestamp: new Date().toISOString()
+          route: options.route || "unknown",
+          timestamp: new Date().toISOString(),
+          reason: options.reason || "admin cross-tenant access"
         }
       });
     }
     return connection;
   }
 
-  // Conexão sem owner (legado): só admin acessa
-  if (!connection.profile_id) {
-    const err = new Error("Conexao sem owner — acesso restrito a admin.");
-    err.statusCode = 403;
-    throw err;
-  }
-
-  // Operator: só acessa suas próprias conexões
+  // ── REGRA 3: Operator acessando conexão de outro perfil ──────────
   if (connection.profile_id !== profileId) {
     const err = new Error("Acesso negado: conexao pertence a outro perfil.");
     err.statusCode = 403;

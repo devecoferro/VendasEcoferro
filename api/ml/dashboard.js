@@ -1,5 +1,5 @@
 import { db } from "../_lib/db.js";
-import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listConnections, assertConnectionBelongsToProfile } from "./_lib/storage.js";
+import { getConnectionById, getLatestConnection, getDefaultConnectionForProfile, getOrderSummariesByScope, listConnections, assertConnectionBelongsToProfile } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
@@ -3099,14 +3099,24 @@ export default async function handler(request, response) {
 
   try {
     const { profile } = await requireAuthenticatedProfile(request);
-    // Brief 2026-04-28 multi-seller fase 2: query param connection_id
-    // escopa o dashboard pra um seller especifico (EcoFerro vs Fantom).
-    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
+    // Sprint 2026-05-07 multi-tenant: connection_id obrigatório ou default do perfil.
+    // Não usa fallback legado (getLatestConnection) em rota user-facing.
     let connectionId = request.query.connection_id
       ? String(request.query.connection_id).trim()
       : null;
     if (connectionId) {
+      // Valida ownership: bloqueia cross-tenant e profile_id null
       assertConnectionBelongsToProfile(connectionId, profile.id, profile.role);
+    } else {
+      // Sem connection_id explícito: resolve default do perfil (tenant-scoped)
+      const defaultConn = getDefaultConnectionForProfile(profile.id, profile.role);
+      if (!defaultConn) {
+        return response.status(404).json({
+          error: "Nenhuma conexao ML vinculada ao seu perfil.",
+          backend_secure: true,
+        });
+      }
+      connectionId = defaultConn.id;
     }
     const payload = await buildDashboardPayload({
       allowCache: true,

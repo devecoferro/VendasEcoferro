@@ -6,6 +6,7 @@ import {
   getOrderSummariesByScope,
   getPaginatedOrderRows,
   getPaginatedOrderSummaries,
+  getDefaultConnectionForProfile,
   assertConnectionBelongsToProfile,
 } from "./_lib/storage.js";
 import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
@@ -474,15 +475,17 @@ export default async function handler(request, response) {
     const { profile } = await requireAuthenticatedProfile(request);
 
     const scope = String(request.query.scope || "all").trim().toLowerCase();
-    // Brief 2026-04-28 multi-seller fase 2: connection_id filtra pedidos
-    // por conexao ML (EcoFerro vs Fantom). Sem o param, retorna todos
-    // (back-compat).
-    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
-    const connectionId = request.query.connection_id
+    // Sprint 2026-05-07 multi-tenant: connection_id obrigatório ou default do perfil.
+    // Não usa fallback legado em rota user-facing.
+    let connectionId = request.query.connection_id
       ? String(request.query.connection_id).trim()
       : null;
     if (connectionId) {
       assertConnectionBelongsToProfile(connectionId, profile.id, profile.role);
+    } else {
+      // Sem connection_id explícito: resolve default do perfil (tenant-scoped)
+      const defaultConn = getDefaultConnectionForProfile(profile.id, profile.role);
+      connectionId = defaultConn?.id || null;
     }
     const hasExplicitLimit =
       request.query.limit != null && String(request.query.limit).trim() !== "";

@@ -20,7 +20,7 @@
 
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
-import { getLatestConnection, getConnectionById, getOperationalOrders, assertConnectionBelongsToProfile } from "./_lib/storage.js";
+import { getLatestConnection, getConnectionById, getDefaultConnectionForProfile, getOperationalOrders, assertConnectionBelongsToProfile } from "./_lib/storage.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
 
 // Máximo de shipment_ids por request à API do ML (evita 414 URI Too Long)
@@ -203,23 +203,24 @@ export default async function handler(request, response) {
   }
 
   try {
-    // ── Resolve conexão ──────────────────────────────────────────────
+    // ── Resolve conexão ──────────────────────────────────────────────────────
     // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
+    // Não usa fallback legado (getLatestConnection) em rota user-facing.
     let connection;
     if (connectionId) {
       connection = assertConnectionBelongsToProfile(connectionId, request.profile.id, request.profile.role);
-    }
-    if (!connection) {
-      connection = getLatestConnection();
+    } else {
+      // Sem connection_id explícito: resolve default do perfil (tenant-scoped)
+      connection = getDefaultConnectionForProfile(request.profile.id, request.profile.role);
     }
     if (!connection) {
       return response.status(400).json({
         success: false,
-        error: "Nenhuma conexao ML encontrada.",
+        error: "Nenhuma conexao ML vinculada ao seu perfil.",
       });
     }
 
-    // ── Busca pedidos operacionais ───────────────────────────────────
+    // ── Busca pedidos operacionais ───────────────────────────────────────
     const allOrders = getOperationalOrders({ connectionId: connection.id });
 
     let targetOrders;
