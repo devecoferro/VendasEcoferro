@@ -1881,6 +1881,25 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
 
     const validConnection = await ensureValidAccessToken(connection);
     if (!validConnection?.access_token) return null;
+
+    // ─── GUARDA SaaS: assertOAuthTokenBelongsToConnection ───────────
+    // Garante que o token renovado ainda pertence ao seller_id da conexão.
+    // Se por qualquer motivo (bug de refresh, race condition, corrupção de DB)
+    // o token apontar para outro seller, BLOQUEIA o cálculo imediatamente.
+    // Isso impede que o dashboard de uma conta mostre dados de outra.
+    if (
+      connection.seller_id &&
+      validConnection.seller_id &&
+      String(connection.seller_id) !== String(validConnection.seller_id)
+    ) {
+      console.error("[SECURITY] OAuth token seller mismatch", {
+        connection_id: connection.id,
+        expected_seller: connection.seller_id,
+        token_seller: validConnection.seller_id,
+      });
+      return null; // Bloqueia — não mostra chip de outra conta
+    }
+
     const token = validConnection.access_token;
     const sellerId = String(validConnection.seller_id);
     const todayKey = getCalendarKey(new Date());
