@@ -53,7 +53,8 @@ import mlOrderDocumentsHandler from "../api/ml/order-documents.js";
 import mlOrderDocumentsFileHandler from "../api/ml/order-documents-file.js";
 import mlPrivateSellerCenterSnapshotsHandler from "../api/ml/private-seller-center-snapshots.js";
 import mlPrivateSellerCenterComparisonHandler from "../api/ml/private-seller-center-comparison.js";
-import mlLiveSnapshotHandler from "../api/ml/live-snapshot.js";
+// HARDENING: import desativado — endpoint retorna 410 Gone
+// import mlLiveSnapshotHandler from "../api/ml/live-snapshot.js";
 import debugReportsHandler from "../api/debug-reports.js";
 import debugReportsScreenshotHandler from "../api/debug-reports-screenshot.js";
 import nfeGenerateHandler from "../api/nfe/generate.js";
@@ -388,7 +389,16 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
 );
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
-app.get("/api/ml/live-snapshot", apiLimiter, (req, res) => mlLiveSnapshotHandler(req, res));
+// HARDENING 2026-05-07: Endpoint live-snapshot DESATIVADO.
+// O scraper Playwright não é mais necessário — chips vêm 100% do OAuth.
+// Manter o import comentado para referência futura.
+app.get("/api/ml/live-snapshot", apiLimiter, (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: "Endpoint descontinuado. Chips agora são 100% OAuth (ml_live_chip_counts). Scraper desativado.",
+    migration: "Use GET /api/ml/dashboard?connectionId=X para obter chips em tempo real."
+  });
+});
 // Debug reports (bugs/sugestoes dos usuarios). app.all pra cobrir GET/POST/PATCH/DELETE.
 app.all("/api/debug-reports", apiLimiter, (req, res) => debugReportsHandler(req, res));
 app.get("/api/debug-reports/screenshot", apiLimiter, (req, res) => debugReportsScreenshotHandler(req, res));

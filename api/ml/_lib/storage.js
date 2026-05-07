@@ -1,5 +1,6 @@
 import { randomUUID, createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 import { db } from "./db.js";
+import { recordAuditLog } from "../../_lib/audit-log.js";
 
 // ─── Token Encryption ──────────────────────────────────────────────
 // Criptografa access_token e refresh_token antes de salvar no SQLite.
@@ -350,8 +351,23 @@ export function assertConnectionBelongsToProfile(connectionId, profileId, profil
     throw err;
   }
 
-  // Admin pode acessar qualquer conexão
+  // Admin pode acessar qualquer conexão (com log de auditoria)
   if (profileRole === "admin") {
+    // Log de auditoria: admin acessando conexão de outro perfil
+    if (connection.profile_id && connection.profile_id !== profileId) {
+      recordAuditLog({
+        req: { profile: { id: profileId, username: "admin" }, headers: {}, socket: {} },
+        action: "admin_bypass.connection_access",
+        targetType: "ml_connection",
+        targetId: connectionId,
+        payload: {
+          adminProfileId: profileId,
+          targetProfileId: connection.profile_id,
+          targetConnectionId: connectionId,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
     return connection;
   }
 
