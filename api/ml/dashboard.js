@@ -120,9 +120,24 @@ const calendarFormatter = new Intl.DateTimeFormat("en-CA", {
 // cache, ambos retornavam o mesmo payload.
 let dashboardCacheByConnection = new Map();
 
-export function invalidateDashboardCache() {
-  dashboardCacheByConnection.clear();
-  liveChipDetailedCache.clear();
+/**
+ * Invalida o cache do dashboard.
+ * @param {string|null} connectionId - Se fornecido, invalida apenas essa conta.
+ *   Se null/undefined, invalida TODAS as contas (comportamento legado).
+ *
+ * Para SaaS multi-conta: o webhook passa o connectionId da conta que mudou,
+ * evitando recálculo desnecessário das outras contas.
+ */
+export function invalidateDashboardCache(connectionId = null) {
+  if (connectionId) {
+    // Invalidação cirúrgica: apenas a conta afetada
+    dashboardCacheByConnection.delete(connectionId);
+    liveChipDetailedCache.delete(connectionId);
+  } else {
+    // Invalidação global (fallback seguro)
+    dashboardCacheByConnection.clear();
+    liveChipDetailedCache.clear();
+  }
 }
 
 function normalizeState(value, fallback = "none") {

@@ -139,7 +139,7 @@ export default async function handler(request, response) {
     //
     // O liveChipDetailedCache é limpo por invalidateDashboardCache().
     // ══════════════════════════════════════════════════════════════════
-    invalidateDashboardCache();
+    invalidateDashboardCache(connection.id);
     invalidateOrdersCache();
 
     const updatedFrom =
