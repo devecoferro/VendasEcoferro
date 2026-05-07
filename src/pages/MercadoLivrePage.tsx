@@ -1359,13 +1359,21 @@ export default function MercadoLivrePage({
   // pedidos do segundo store_id ficam invisíveis quando o filtro está ativo.
   const expandedDepositKeys = useMemo(() => {
     if (selectedDepositFilters.length === 0) return new Set<string>();
-    // Coleta os labels dos keys selecionados
-    const selectedLabels = new Set(
-      selectedDepositFilters.map((key) => {
-        const option = depositOptions.find((o) => o.key === key);
-        return (option?.displayLabel || option?.label || key).toLowerCase();
-      })
-    );
+    // Resolve labels dos keys selecionados diretamente dos pedidos
+    // (sem depender de depositOptions que é declarado depois)
+    const selectedLabels = new Set<string>();
+    for (const order of permittedOrders) {
+      const deposit = getDepositInfo(order);
+      if (selectedDepositFilters.includes(deposit.key)) {
+        selectedLabels.add(deposit.displayLabel.toLowerCase());
+      }
+    }
+    // Fallback: se nenhum pedido tem o key selecionado, usa o key como label
+    if (selectedLabels.size === 0) {
+      for (const key of selectedDepositFilters) {
+        selectedLabels.add(key.toLowerCase());
+      }
+    }
     // Expande: inclui TODOS os keys de pedidos cujo label bate
     const expanded = new Set(selectedDepositFilters);
     for (const order of permittedOrders) {
@@ -1376,7 +1384,7 @@ export default function MercadoLivrePage({
       }
     }
     return expanded;
-  }, [depositOptions, permittedOrders, selectedDepositFilters]);
+  }, [permittedOrders, selectedDepositFilters]);
 
   // Orders escopados pelo filtro de deposito do topo (DepositFilterMenu),
   // sem filtrar por bucket/shipmentFilter. Alimenta o ColetasPanel, que
