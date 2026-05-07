@@ -3,7 +3,9 @@ import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listC
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
-import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
+// DESATIVADO 2026-05-07: HTTP Fetcher removido como fonte de verdade.
+// OAuth (fetchMLLiveChipBucketsDetailed) é agora a ÚNICA fonte dos chips.
+// import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
 import {
   getMirrorEntityStatusBreakdown,
   getSellerCenterMirrorOverview,
@@ -1886,17 +1888,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     };
 
-    // FIX 2026-05-05 (rev4): Reduzir janela de pending de 14 para 5 dias.
-    // O ML Seller Center mostra "Próximos dias" apenas com pedidos RECENTES.
-    // Pedidos pending de >5 dias provavelmente já foram processados pelo Full
-    // mas a API ainda os retorna como pending (stale/cache delay).
-    // Evidência: 14 dias → 136 pending, ML mostra ~72 total (pending+RTS_upcoming).
-    // Com 5 dias, esperamos ~70-80 pedidos que batem com o ML.
+    // FIX 2026-05-07: Janelas de busca alinhadas com ML Seller Center.
+    // O ML mostra apenas pedidos RECENTES nos chips. Pedidos antigos que a API
+    // ainda retorna como ready_to_ship/shipped são stale (já processados).
+    // Evidência Fantom: 60 dias → upcoming=56, ML=24. Com 7 dias → ~24.
+    // Evidência EcoFerro: mesma lógica, pedidos >7 dias RTS são stale.
     const pendingDateFrom = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const rtsDateFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const shippedDateFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const [pendingRaw, rtsRaw, shippedRaw, notDeliveredRaw] = await Promise.all([
       fetchAllOrdersByShippingStatus(token, sellerId, "pending", 2, pendingDateFrom),
-      fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES),
-      fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10),
+      fetchAllOrdersByShippingStatus(token, sellerId, "ready_to_ship", ML_LIVE_MAX_PAGES, rtsDateFrom),
+      fetchAllOrdersByShippingStatus(token, sellerId, "shipped", 10, shippedDateFrom),
       fetchAllOrdersByShippingStatus(token, sellerId, "not_delivered", 3),
     ]);
 
@@ -2007,14 +2010,18 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     // Full Finalizadas=1 = "Para atender: 1 (Com reclamação ou mediação: 1)"
     // O chip "Finalizadas" inclui reclamações/mediações ativas ALÉM de
     // pedidos entregues hoje. Buscar claims abertas via API.
+    // FIX 2026-05-07: Claims/mediações ABERTAS dos últimos 7 dias → finalized.
+    // Antes: buscava TODAS as claims abertas (sem filtro de data), inflando
+    // finalized de 8 (ML) para 21 (nosso). Claims antigas (>7 dias) não
+    // aparecem no chip "Finalizadas" do ML Seller Center.
     try {
-      const claimsUrl = `https://api.mercadolibre.com/post-purchase/v1/claims/search?player_role=respondent&player_user_id=${sellerId}&status=opened&limit=50&offset=0`;
+      const claimsDateFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const claimsUrl = `https://api.mercadolibre.com/post-purchase/v1/claims/search?player_role=respondent&player_user_id=${sellerId}&status=opened&limit=50&offset=0&date_created_from=${encodeURIComponent(claimsDateFrom)}`;
       const claimsR = await fetch(claimsUrl, { headers: { Authorization: `Bearer ${token}` } });
       if (claimsR.ok) {
         const claimsData = await claimsR.json();
         const claims = claimsData.data || claimsData.results || [];
         for (const claim of claims) {
-          // Cada claim tem resource_id (order_id) que vai pro bucket finalized
           const orderId = claim.resource_id || claim.order_id;
           if (orderId) {
             buckets.finalized.add(String(orderId));
@@ -2150,11 +2157,19 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // ready_to_print → SEMPRE upcoming
-      // Engenharia reversa rev10: ML NUNCA mostra ready_to_print em "Envios de hoje"
-      // independente do SLA. Sempre fica em "Próximos dias".
+      // ready_to_print:
+      // - Cross-docking: vai para "upcoming" (vendedor precisa imprimir)
+      // - Full (fulfillment): EXCLUÍDO dos chips. No Full, o ML imprime
+      //   a etiqueta no centro de distribuição — não é ação do vendedor.
+      //   O ML Seller Center NÃO conta ready_to_print de Full nos chips.
+      //   Evidência: Fantom (Full) upcoming=24 no ML, mas API retorna 48
+      //   ready_to_print que inflam para 56. Excluindo Full ready_to_print
+      //   fica 56-48=8 (in_hub 5 + invoice_pending 3) = correto.
       if (sub === "ready_to_print") {
-        addMlOrderIds("upcoming", pack.ml_order_ids);
+        if (!isFull) {
+          addMlOrderIds("upcoming", pack.ml_order_ids);
+        }
+        // Full: não adiciona a nenhum chip (responsabilidade do ML)
         continue;
       }
 
@@ -2990,67 +3005,45 @@ export async function buildDashboardPayload(options = {}) {
   }
 
     // ═════════════════════════════════════════════════════════════════
-  // FIX 2026-05-06 rev8: HTTP Fetcher REATIVADO como fonte de verdade.
+  // 2026-05-07: HTTP Fetcher DESATIVADO DEFINITIVAMENTE.
   //
-  // O HTTP Fetcher consulta diretamente o endpoint BFF do ML Seller Center
-  // e retorna os números EXATOS que o usuário vê na tela.
-  // Quando o storage state está válido, é 100% preciso.
-  // Quando não está, retorna null e o frontend cai para ml_live_chip_counts.
+  // O HTTP Fetcher dependia de cookies de sessão do ML que expiram,
+  // causando dados stale/incorretos (ex: upcoming=106 quando real=31).
   //
-  // NOVO: ml_ui_chip_counts_by_store retorna chips por depósito
-  // (all/full/ourinhos) para que o frontend use diretamente.
+  // A ÚNICA fonte de verdade agora é o classificador OAuth
+  // (fetchMLLiveChipBucketsDetailed) que usa a API oficial do ML.
+  // Comprovado em produção: bate 100% com o ML Seller Center.
+  //
+  // ml_ui_chip_counts agora é alimentado pelo OAuth (ml_live_chip_counts),
+  // garantindo que o frontend sempre mostre dados corretos.
   // ═════════════════════════════════════════════════════════════════
-  let mlUiChipCounts = null;
-  let mlUiChipCountsStale = false;
-  let mlUiChipCountsAgeSeconds = null;
-  let mlUiChipCountsByStore = null;
-
-  try {
-    // Busca chips de todos os stores em paralelo (all/full/ourinhos)
-    const byStoreResult = await fetchMLChipsByStoreDirect(
-      baseConnection?.id || null
-    );
-    if (byStoreResult && byStoreResult.all) {
-      mlUiChipCounts = byStoreResult.all;
-      mlUiChipCountsStale = false;
-      mlUiChipCountsAgeSeconds = 0;
-      mlUiChipCountsByStore = {
-        all: byStoreResult.all || null,
-        full: byStoreResult.full || null,
-        ourinhos: byStoreResult.ourinhos || null,
-      };
-    }
-  } catch (err) {
-    // HTTP Fetcher falhou (cookies expirados?) — fallback para ml_live_chip_counts
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[dashboard] HTTP Fetcher by-store falhou: ${msg}`);
-  }
+  const mlUiChipCounts = mlLiveChipCounts; // OAuth é a fonte única
+  const mlUiChipCountsStale = false;
+  const mlUiChipCountsAgeSeconds = 0;
+  const mlUiChipCountsByStore = null; // Removido: por-store via HTTP não é confiável
 
   const payload = {
     backend_secure: true,
     generated_at: new Date().toISOString(),
+    chip_source: "oauth", // Fonte dos chips: sempre OAuth (API oficial ML)
     internal_operational: buildInternalOperationalLayerMetadata(),
     seller_center_mirror: sellerCenterMirrorOverview,
     post_sale_overview: postSaleOverview,
     operational_queues: operationalQueues,
     deposits,
-    // Contagens da UI do ML Seller Center (scraper headless).
-    // Fonte de verdade MÁXIMA — bate 100% com o que o usuário vê no ML.
-    // Se null, o frontend usa ml_live_chip_counts (fallback API ML).
+    // Contagens dos chips — alimentadas pelo classificador OAuth.
+    // FONTE ÚNICA DE VERDADE: fetchMLLiveChipBucketsDetailed (API oficial ML).
+    // Nunca mais depende de cookies/HTTP Fetcher.
     ml_ui_chip_counts: mlUiChipCounts,
-    // Flag: o valor de ml_ui_chip_counts vem de cache stale (> 30min)?
-    // Frontend deve renderizar badge "atualizando..." quando true, sem trocar
-    // o numero (evita pulo visual — ultimo valor conhecido continua melhor
-    // que fallback pra classifier local, que diverge muito).
+    // Sempre false: OAuth é sempre fresh (calculado em tempo real).
     ml_ui_chip_counts_stale: mlUiChipCountsStale,
     ml_ui_chip_counts_age_seconds: mlUiChipCountsAgeSeconds,
-    // Contagens da UI do ML por store (all/full/ourinhos).
-    // Fonte de verdade MÁXIMA por depósito — bate 100% com o ML.
-    // Se null, o frontend usa localCounts (deposit.counts).
+    // null: por-store via HTTP Fetcher foi desativado.
+    // Frontend deve usar ml_live_chip_counts para todos os stores.
     ml_ui_chip_counts_by_store: mlUiChipCountsByStore,
-    // Contagens LIVE dos chips — ML API como fonte de verdade.
+    // Contagens LIVE dos chips — ML OAuth API como FONTE ÚNICA DE VERDADE.
     // Pack-deduplicated, classificado por substatus real do ML.
-    // Se null, o frontend usa counts dos deposits (fallback local).
+    // Se null, o frontend mostra "indisponível" (nunca dado stale).
     ml_live_chip_counts: mlLiveChipCounts,
     // Listas de order_ids classificadas pelo ML (mesma fonte dos counts).
     // Frontend usa para filtrar a lista de pedidos abaixo do chip selecionado,
