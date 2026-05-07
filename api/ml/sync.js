@@ -9,6 +9,7 @@ import {
   replaceOrdersByOrderIds,
   updateConnectionLastSync,
   upsertOrders,
+  assertConnectionBelongsToProfile,
 } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { syncClaims, syncPacks, syncReturns } from "./_lib/mirror-sync.js";
@@ -1204,7 +1205,7 @@ export default async function handler(request, response) {
   }
 
   try {
-    await requireAuthenticatedProfile(request);
+    const { profile } = await requireAuthenticatedProfile(request);
 
     const {
       connection_id,
@@ -1219,7 +1220,8 @@ export default async function handler(request, response) {
       return response.status(400).json({ success: false, error: "connection_id is required" });
     }
 
-    const connection = getConnectionById(connection_id);
+    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
+    const connection = assertConnectionBelongsToProfile(connection_id, profile.id, profile.role);
     if (!connection?.id) {
       return response.status(404).json({
         success: false,

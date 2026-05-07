@@ -288,6 +288,8 @@ export default async function handler(request, response) {
         access_token: tokenData.access_token,
         refresh_token: tokenData.refresh_token,
         token_expires_at: new Date(Date.now() + tokenData.expires_in * 1000).toISOString(),
+        // Sprint 2026-05-07 multi-tenant: vincula conexão ao perfil que autorizou.
+        profile_id: profile?.profile?.id || profile?.id || null,
       });
 
       return response.status(200).json({

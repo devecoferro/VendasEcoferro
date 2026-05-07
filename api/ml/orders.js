@@ -6,6 +6,7 @@ import {
   getOrderSummariesByScope,
   getPaginatedOrderRows,
   getPaginatedOrderSummaries,
+  assertConnectionBelongsToProfile,
 } from "./_lib/storage.js";
 import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
 
@@ -470,15 +471,19 @@ export default async function handler(request, response) {
   }
 
   try {
-    await requireAuthenticatedProfile(request);
+    const { profile } = await requireAuthenticatedProfile(request);
 
     const scope = String(request.query.scope || "all").trim().toLowerCase();
     // Brief 2026-04-28 multi-seller fase 2: connection_id filtra pedidos
     // por conexao ML (EcoFerro vs Fantom). Sem o param, retorna todos
     // (back-compat).
+    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
     const connectionId = request.query.connection_id
       ? String(request.query.connection_id).trim()
       : null;
+    if (connectionId) {
+      assertConnectionBelongsToProfile(connectionId, profile.id, profile.role);
+    }
     const hasExplicitLimit =
       request.query.limit != null && String(request.query.limit).trim() !== "";
     const hasExplicitOffset =

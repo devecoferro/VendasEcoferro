@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { db } from "../_lib/db.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
-import { getConnectionById } from "./_lib/storage.js";
+import { getConnectionById, assertConnectionBelongsToProfile } from "./_lib/storage.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
 import { validate, StockUpdateSchema } from "../_lib/validation.js";
@@ -530,9 +530,12 @@ export default async function mlStockHandler(req, res) {
     return res.status(400).json({ error: "connection_id obrigatório" });
   }
 
-  const baseConnection = getConnectionById(connectionId);
-  if (!baseConnection) {
-    return res.status(404).json({ error: "Conexão não encontrada" });
+  // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
+  let baseConnection;
+  try {
+    baseConnection = assertConnectionBelongsToProfile(connectionId, req.profile.id, req.profile.role);
+  } catch (err) {
+    return res.status(err.statusCode || 403).json({ error: err.message });
   }
 
   // GET /api/ml/stock?connection_id=X&skus=YA001,YA002 → retorna só os locations

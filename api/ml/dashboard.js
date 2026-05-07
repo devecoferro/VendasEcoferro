@@ -1,5 +1,5 @@
 import { db } from "../_lib/db.js";
-import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listConnections } from "./_lib/storage.js";
+import { getConnectionById, getLatestConnection, getOrderSummariesByScope, listConnections, assertConnectionBelongsToProfile } from "./_lib/storage.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
@@ -3098,19 +3098,24 @@ export default async function handler(request, response) {
   }
 
   try {
-    await requireAuthenticatedProfile(request);
+    const { profile } = await requireAuthenticatedProfile(request);
     // Brief 2026-04-28 multi-seller fase 2: query param connection_id
     // escopa o dashboard pra um seller especifico (EcoFerro vs Fantom).
-    const connectionId = request.query.connection_id
+    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
+    let connectionId = request.query.connection_id
       ? String(request.query.connection_id).trim()
       : null;
+    if (connectionId) {
+      assertConnectionBelongsToProfile(connectionId, profile.id, profile.role);
+    }
     const payload = await buildDashboardPayload({
       allowCache: true,
       connectionId,
     });
     return response.status(200).json(payload);
   } catch (error) {
-    return response.status(500).json({
+    const status = error?.statusCode || 500;
+    return response.status(status).json({
       error: error instanceof Error ? error.message : "Unknown error",
       backend_secure: true,
     });

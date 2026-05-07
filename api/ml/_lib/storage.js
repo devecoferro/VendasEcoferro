@@ -101,6 +101,7 @@ function mapConnection(row) {
     refresh_token: decryptToken(row.refresh_token),
     token_expires_at: row.token_expires_at,
     last_sync_at: row.last_sync_at,
+    profile_id: row.profile_id || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -303,8 +304,89 @@ export function listConnections() {
     .map(mapConnection);
 }
 
+/**
+ * Multi-tenant: lista apenas conexões que pertencem ao perfil.
+ * Se profile_id for null na conexão (legado), admin pode acessar.
+ */
+export function listConnectionsForProfile(profileId, profileRole) {
+  if (profileRole === "admin") {
+    // Admin vê todas (inclusive legado sem profile_id)
+    return listConnections();
+  }
+  return db
+    .prepare(`SELECT * FROM ml_connections WHERE profile_id = ? ORDER BY datetime(created_at) DESC`)
+    .all(profileId)
+    .map(mapConnection);
+}
+
+/**
+ * Multi-tenant: retorna a conexão default para um perfil.
+ * Se o perfil é admin, retorna a mais antiga (comportamento legado).
+ * Se o perfil é operator, retorna a mais antiga que pertence a ele.
+ */
+export function getDefaultConnectionForProfile(profileId, profileRole) {
+  if (profileRole === "admin") {
+    return getLatestConnection(); // admin: comportamento legado
+  }
+  const row = db
+    .prepare(`SELECT * FROM ml_connections WHERE profile_id = ? ORDER BY datetime(created_at) ASC LIMIT 1`)
+    .get(profileId);
+  return mapConnection(row);
+}
+
+/**
+ * Multi-tenant guard: valida que connectionId pertence ao perfil.
+ * Admins podem acessar qualquer conexão.
+ * Operators só acessam conexões vinculadas ao seu profile_id.
+ * Conexões sem profile_id (legado) são acessíveis por admins.
+ *
+ * @throws {Error} com statusCode 403 se acesso negado
+ */
+export function assertConnectionBelongsToProfile(connectionId, profileId, profileRole) {
+  const connection = getConnectionById(connectionId);
+  if (!connection) {
+    const err = new Error("Conexao nao encontrada.");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  // Admin pode acessar qualquer conexão
+  if (profileRole === "admin") {
+    return connection;
+  }
+
+  // Conexão sem owner (legado): só admin acessa
+  if (!connection.profile_id) {
+    const err = new Error("Conexao sem owner — acesso restrito a admin.");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  // Operator: só acessa suas próprias conexões
+  if (connection.profile_id !== profileId) {
+    const err = new Error("Acesso negado: conexao pertence a outro perfil.");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return connection;
+}
+
 export function upsertConnection(connection) {
   const existing = getConnectionBySellerId(connection.seller_id);
+
+  // Sprint 2026-05-07 multi-tenant: impedir que um perfil roube
+  // a conexão de outro perfil (cross-tenant hijack).
+  if (existing?.profile_id && connection.profile_id &&
+      existing.profile_id !== connection.profile_id) {
+    const err = new Error(
+      `Seller ${connection.seller_id} ja pertence a outro perfil. ` +
+      `Desconecte primeiro pelo painel do owner original.`
+    );
+    err.statusCode = 403;
+    throw err;
+  }
+
   const id = existing?.id || connection.id || randomUUID();
   const createdAt = existing?.created_at || nowIso();
   const updatedAt = nowIso();
@@ -319,6 +401,7 @@ export function upsertConnection(connection) {
         refresh_token,
         token_expires_at,
         last_sync_at,
+        profile_id,
         created_at,
         updated_at
       ) VALUES (
@@ -329,6 +412,7 @@ export function upsertConnection(connection) {
         @refresh_token,
         @token_expires_at,
         @last_sync_at,
+        @profile_id,
         @created_at,
         @updated_at
       )
@@ -338,6 +422,7 @@ export function upsertConnection(connection) {
         refresh_token = excluded.refresh_token,
         token_expires_at = excluded.token_expires_at,
         last_sync_at = COALESCE(excluded.last_sync_at, ml_connections.last_sync_at),
+        profile_id = COALESCE(excluded.profile_id, ml_connections.profile_id),
         updated_at = excluded.updated_at
     `
   ).run({
@@ -348,6 +433,7 @@ export function upsertConnection(connection) {
     refresh_token: encryptToken(connection.refresh_token) || null,
     token_expires_at: connection.token_expires_at || null,
     last_sync_at: connection.last_sync_at || existing?.last_sync_at || null,
+    profile_id: connection.profile_id || existing?.profile_id || null,
     created_at: createdAt,
     updated_at: updatedAt,
   });

@@ -20,7 +20,7 @@
 
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
-import { getLatestConnection, getConnectionById, getOperationalOrders } from "./_lib/storage.js";
+import { getLatestConnection, getConnectionById, getOperationalOrders, assertConnectionBelongsToProfile } from "./_lib/storage.js";
 import { recordAuditLog } from "../_lib/audit-log.js";
 
 // Máximo de shipment_ids por request à API do ML (evita 414 URI Too Long)
@@ -204,9 +204,10 @@ export default async function handler(request, response) {
 
   try {
     // ── Resolve conexão ──────────────────────────────────────────────
+    // Sprint 2026-05-07 multi-tenant: valida ownership da conexão.
     let connection;
     if (connectionId) {
-      connection = getConnectionById(connectionId);
+      connection = assertConnectionBelongsToProfile(connectionId, request.profile.id, request.profile.role);
     }
     if (!connection) {
       connection = getLatestConnection();
