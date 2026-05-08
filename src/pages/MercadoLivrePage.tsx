@@ -1525,55 +1525,14 @@ export default function MercadoLivrePage({
     ) as Record<ShipmentBucket, number>;
 
     // Hierarquia de fontes pros chips (maior prioridade primeiro):
-    // 1. ml_ui_chip_counts / ml_ui_chip_counts_by_store — HTTP Fetcher (100% preciso) ⭐
-    // 2. ml_live_chip_counts — classificador OAuth (fallback automático)
-    // 3. localCounts — classificação interna do app (fallback final)
+    // 1. ml_live_chip_counts — classificador OAuth (FONTE ÚNICA DE VERDADE)
+    // 2. localCounts — classificação interna do app (fallback final)
     //
-    // FIX 2026-05-06 rev8 (DEFINITIVO): HTTP Fetcher como fonte PRIMÁRIA.
-    // Consulta diretamente o endpoint BFF do ML Seller Center.
-    // Quando cookies válidos: precisão 100% (mesmos números da tela ML).
-    // Quando cookies expiram: retorna null, cai para classificador OAuth.
+    // SAAS-GATE 2026-05-08: HTTP Fetcher (cookies/scraper) removido.
+    // Chips vêm 100% do OAuth (ml_live_chip_counts) via API oficial ML.
+    // ml_ui_chip_counts no backend é alias de ml_live_chip_counts.
 
-    // #1: ml_ui_chip_counts_by_store (HTTP Fetcher por depósito)
-    const byStore = (dashboard as any)?.ml_ui_chip_counts_by_store;
-    if (byStore && selectedDepositFilters.length > 0) {
-      // Mapear filtro de depósito para store key
-      const key = (selectedDepositFilters[0] || "").toLowerCase();
-      let storeKey: string | null = null;
-      if (key === "full" || key.includes("full") || key.includes("fulfillment")) {
-        storeKey = "full";
-      } else if (key !== "without-deposit" && key !== "without_deposit") {
-        storeKey = "ourinhos";
-      }
-      if (storeKey && byStore[storeKey]) {
-        const storeCounts = byStore[storeKey];
-        return {
-          today: storeCounts.today ?? 0,
-          upcoming: storeCounts.upcoming ?? 0,
-          in_transit: storeCounts.in_transit ?? 0,
-          finalized: storeCounts.finalized ?? 0,
-          cancelled: 0,
-        };
-      }
-    }
-
-    // #1b: ml_ui_chip_counts global (HTTP Fetcher store=all)
-    const uiCounts = (dashboard as any)?.ml_ui_chip_counts;
-    if (uiCounts && typeof uiCounts.today === "number") {
-      if (selectedDepositFilters.length > 0) {
-        // Depósito selecionado mas sem by_store — usar localCounts
-        return localCounts;
-      }
-      return {
-        today: uiCounts.today,
-        upcoming: uiCounts.upcoming,
-        in_transit: uiCounts.in_transit,
-        finalized: uiCounts.finalized,
-        cancelled: 0,
-      };
-    }
-
-    // #2: ml_live_chip_counts (classificador OAuth — fallback)
+    // #1: ml_live_chip_counts (classificador OAuth — FONTE ÚNICA)
     const liveCounts = dashboard?.ml_live_chip_counts;
     if (liveCounts && typeof liveCounts.today === "number") {
       if (selectedDepositFilters.length > 0) {
@@ -1588,21 +1547,13 @@ export default function MercadoLivrePage({
       };
     }
 
-    // #3: localCounts (fallback final)
+    // #2: localCounts (fallback final)
     return localCounts;
   }, [selectedDashboardDeposits, selectedDepositFilters, dashboard, scopedLiveSnapshot]);
 
   // Indicadores de fonte dos chips — usado pra mostrar badge de staleness.
-  // FIX 2026-05-06 rev8: HTTP Fetcher como fonte primária.
+  // SAAS-GATE 2026-05-08: OAuth é a única fonte. HTTP Fetcher removido.
   const chipMeta = useMemo(() => {
-    const byStore = (dashboard as any)?.ml_ui_chip_counts_by_store;
-    const uiCounts = (dashboard as any)?.ml_ui_chip_counts;
-    if (uiCounts && typeof uiCounts.today === "number") {
-      if (selectedDepositFilters.length > 0 && byStore) {
-        return { source: "http_fetcher_store" as const, stale: false, ageSeconds: 0 };
-      }
-      return { source: "http_fetcher" as const, stale: false, ageSeconds: 0 };
-    }
     if (dashboard?.ml_live_chip_counts && typeof dashboard.ml_live_chip_counts.today === "number") {
       if (selectedDepositFilters.length > 0) {
         return { source: "ml_live_deposit" as const, stale: false, ageSeconds: null };
@@ -2426,17 +2377,11 @@ export default function MercadoLivrePage({
                         : "text-[#666666] hover:bg-white/70"
                     } ${chipMeta.stale ? "opacity-70" : ""}`}
                     title={
-                      chipMeta.source === "live_snapshot"
-                        ? "Fonte: live snapshot ML (1:1 com Seller Center)"
-                        : chipMeta.source === "ml_ui"
-                          ? chipMeta.stale
-                            ? `Fonte: chip ML (cache stale, ${chipMeta.ageSeconds ?? "?"}s) — atualizando em background`
-                            : "Fonte: chip ML (Seller Center)"
-                          : chipMeta.source === "ml_live_deposit"
-                            ? "Fonte: API ML (filtrado por depósito)"
-                            : chipMeta.source === "ml_live"
-                              ? "Fonte: API ML (classifier local)"
-                              : "Fonte: classifier local (pode divergir do ML)"
+                      chipMeta.source === "ml_live_deposit"
+                        ? "Fonte: API ML OAuth (filtrado por depósito)"
+                        : chipMeta.source === "ml_live"
+                          ? "Fonte: API ML OAuth (classifier local)"
+                          : "Fonte: classifier local (pode divergir do ML)"
                     }
                   >
                     <span>{filterOption.label}</span>
@@ -2451,11 +2396,7 @@ export default function MercadoLivrePage({
                   ⚠ Chip ML indisponível — contagem local
                 </span>
               )}
-              {chipMeta.source === "ml_ui" && chipMeta.stale && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700">
-                  ↻ Sincronizando ML{chipMeta.ageSeconds != null ? ` (${chipMeta.ageSeconds}s)` : ""}
-                </span>
-              )}
+
             </div>
             <div className="inline-flex items-center gap-2 rounded-full border border-[#e6e6e6] bg-white px-4 py-2 text-[15px] text-[#5a6d92] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               <span className="font-medium">Etiquetas imprimíveis</span>
