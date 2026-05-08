@@ -108,7 +108,7 @@ test(
   "Cache é invalidado ANTES do sync (invalidação imediata)",
   (() => {
     // Buscar a CHAMADA (não o import) de invalidateDashboardCache
-    const callIdx = notificationsCode.indexOf("invalidateDashboardCache();");
+    const callIdx = notificationsCode.indexOf("invalidateDashboardCache(connection.id)");
     const syncIdx = notificationsCode.indexOf("runMercadoLivreSync({");
     return callIdx > 0 && syncIdx > 0 && callIdx < syncIdx;
   })()
