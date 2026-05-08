@@ -662,11 +662,11 @@ export default function MercadoLivrePage({
     error: liveSnapshotError,
     refresh: refreshLiveSnapshot,
   } = useMLLiveSnapshot({
-    enabled: true,
-    pollingIntervalMs: 30_000,
+    // SAAS-GATE 2026-05-08: live-snapshot desativado (410 Gone).
+    // Chips vêm 100% do OAuth (ml_live_chip_counts). Não chamar o endpoint.
+    enabled: false,
+    pollingIntervalMs: 0,
     scope: liveSnapshotScope,
-    // Brief 2026-04-28 multi-seller: passa connection_id pro scraper
-    // escolher storage state correto (EcoFerro vs Fantom).
     connectionId: resolvedConnectionId,
   });
 
