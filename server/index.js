@@ -346,6 +346,18 @@ app.use("/api", (req, res, next) => {
       candidate = "";
     }
   }
+  // Fallback: quando Origin e Referer estao ausentes (Chrome em HTTP puro
+  // nao envia Origin em same-origin POSTs), verificar o Host header.
+  // O Host nao pode ser forjado por atacantes cross-origin, entao e seguro
+  // como ultimo recurso. Apenas valido se APP_BASE_URL esta configurado.
+  if (!candidate && APP_BASE_URL_SEC) {
+    const hostHeader = String(req.headers.host || "").trim();
+    if (hostHeader) {
+      // Construir candidate a partir do Host, usando o protocolo do APP_BASE_URL
+      const proto = APP_BASE_URL_SEC.startsWith("https://") ? "https" : "http";
+      candidate = `${proto}://${hostHeader}`;
+    }
+  }
   if (!candidate || !ALLOWED_ORIGINS_SEC.has(candidate)) {
     return res.status(403).json({ error: "origin_not_allowed" });
   }
