@@ -246,8 +246,15 @@ app.use(express.urlencoded({ extended: true, limit: "8mb" }));
 // inline script do Vite); ajustar depois de rodar em prod. Outras
 // headers sao conservadoras.
 const APP_BASE_URL_SEC = String(process.env.APP_BASE_URL || "").trim();
+// Para staging HTTP: o browser pode enviar Origin com https:// mesmo quando a
+// URL é http:// (cache de upgrade-insecure-requests ou comportamento do browser).
+// Incluir a variante https:// do APP_BASE_URL na whitelist resolve isso sem
+// comprometer a segurança (o domínio é o mesmo, só o protocolo muda).
+const _appBaseUrlVariants = APP_BASE_URL_SEC
+  ? [APP_BASE_URL_SEC, APP_BASE_URL_SEC.replace(/^http:\/\//, "https://")]
+  : [];
 const ALLOWED_ORIGINS_SEC = new Set(
-  [APP_BASE_URL_SEC, "https://vendas.ecoferro.com.br"]
+  [..._appBaseUrlVariants, "https://vendas.ecoferro.com.br"]
     .filter(Boolean)
     .map((u) => {
       try {
