@@ -29,6 +29,17 @@ export const APP_SESSION_TTL_DAYS = Math.max(
   Number.parseInt(process.env.APP_SESSION_TTL_DAYS || "7", 10) || 7
 );
 
+// ─── Feature flags SLA-aware classifier ──────────────────────────────────────
+// ML_USE_SHIPMENT_SLA_FOR_PROMISES=true  → usa GET /shipments/{id}/sla como
+//   fonte primária da promessa operacional (today vs upcoming) em vez de
+//   shipping_option.estimated_delivery_limit. Padrão: false (rollout gradual).
+// ML_SLA_SHADOW_COMPARE=true  → executa ambos os classificadores em paralelo
+//   e loga divergências sem alterar o resultado. Padrão: false.
+export const ML_USE_SHIPMENT_SLA_FOR_PROMISES =
+  String(process.env.ML_USE_SHIPMENT_SLA_FOR_PROMISES || "").toLowerCase() === "true";
+export const ML_SLA_SHADOW_COMPARE =
+  String(process.env.ML_SLA_SHADOW_COMPARE || "").toLowerCase() === "true";
+
 export function ensureDataDirectory() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(path.join(DATA_DIR, "backups"), { recursive: true });
