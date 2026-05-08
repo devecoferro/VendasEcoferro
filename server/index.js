@@ -297,7 +297,10 @@ app.use((req, res, next) => {
         "object-src 'none'", // bloqueia <object>, <embed> (plugins legados)
         "worker-src 'self' blob:", // Web Workers restritos
         "manifest-src 'self'", // PWA manifest
-        "upgrade-insecure-requests", // força https em requests mixos
+        // upgrade-insecure-requests só em produção HTTPS (evita tela branca em
+        // staging HTTP onde o browser tenta carregar assets via https:// sem
+        // certificado válido, resultando em ERR_CERT_AUTHORITY_INVALID).
+        ...(APP_BASE_URL_SEC.startsWith("https://") ? ["upgrade-insecure-requests"] : []),
       ].join("; ")
     );
   }
