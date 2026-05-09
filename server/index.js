@@ -80,6 +80,7 @@ import adminHealthHandler from "../api/admin/health.js";
 import errorLogHandler from "../api/error-log.js";
 import adminTotpHandler from "../api/admin/totp.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
+import publicStockExportHandler from "../api/public/stock-export.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
 import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
@@ -434,6 +435,10 @@ app.get("/api/admin/health", apiLimiter, (req, res) => adminHealthHandler(req, r
 app.post("/api/error-log", apiLimiter, (req, res) => errorLogHandler(req, res));
 app.post("/api/admin/totp/:action", apiLimiter, (req, res) => adminTotpHandler(req, res));
 app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsite(req, res));
+// Endpoint publico read-only consumido pelo Supabase do site novo (Lovable).
+// Auth via Bearer token (env STOCK_EXPORT_TOKEN). Soma estoque por SKU
+// agregando todas as connections (Fantom + EcoFerro).
+app.get("/api/public/stock-export", apiLimiter, (req, res) => publicStockExportHandler(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
 app.all("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
