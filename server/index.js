@@ -32,6 +32,7 @@ import {
 import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
 import tenantSettingsHandler from "../api/tenant-settings.js";
+import labelTemplatesHandler from "../api/label-templates.js";
 import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlDiagnosticsHandler, {
@@ -380,6 +381,10 @@ app.get("/api/health/dependencies", (_req, res) => {
 app.all("/api/app-auth", loginLimiter, authLimiter, (req, res) => appAuthHandler(req, res));
 app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
 app.all("/api/tenant-settings", apiLimiter, (req, res) => tenantSettingsHandler(req, res));
+// Label templates: CRUD de templates de etiqueta por tenant
+app.all("/api/label-templates", apiLimiter, (req, res) => labelTemplatesHandler(req, res));
+app.all("/api/label-templates/:id", apiLimiter, (req, res) => labelTemplatesHandler(req, res));
+app.all("/api/label-templates/:id/set-default", apiLimiter, (req, res) => labelTemplatesHandler(req, res));
 
 // ─── ML API (rate limited) ──────────────────────────────────────────
 app.all("/api/ml/auth", authLimiter, (req, res) => mlAuthHandler(req, res));

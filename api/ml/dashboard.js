@@ -557,6 +557,20 @@ function isOrderForCollection(order) {
   return NATIVE_TODAY_SUBSTATUSES.has(normalizeState(getShipmentSnapshot(order).substatus));
 }
 
+// Para Reservar (UpSeller: allocateStatus=out_stock/to_allocate)
+// Pedido pago mas com shipping.status=pending: o ML ainda está processando
+// o envio (criando shipment, alocando estoque Full, etc).
+// Esses pedidos exigem atenção operacional pois podem expirar se não
+// processados a tempo. Equivale ao estado "Para Reservar" do UpSeller.
+function isOrderPendingStock(order) {
+  const rawData = getRawData(order);
+  const orderStatus = normalizeState(rawData.status || order.order_status || "");
+  const { status: shipmentStatus } = getShipmentStatus(order);
+  // Pedido pago/confirmado mas envio ainda pendente de processamento
+  const isPaid = ["paid", "confirmed"].includes(orderStatus);
+  const isShipmentPending = shipmentStatus === "pending";
+  return isPaid && isShipmentPending;
+}
 function isOrderOverdue(order, todayKey) {
   const { status } = getShipmentStatus(order);
   if (
@@ -566,7 +580,6 @@ function isOrderOverdue(order, todayKey) {
   ) {
     return false;
   }
-
   const { operationalDueDateKey } = getOperationalDates(order);
   return isSameOrPastCalendarDay(operationalDueDateKey, todayKey);
 }
@@ -1601,22 +1614,22 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
   const invoicePendingOrderIds = [];
   const underReviewOrderIds = [];
   const collectionOrderIds = [];
-
+  const pendingStockOrderIds = [];
   for (const order of orders) {
     if (isOrderReadyToPrintLabel(order)) {
       readyToPrintOrderIds.push(order.order_id);
     }
-
     if (isOrderInvoicePending(order)) {
       invoicePendingOrderIds.push(order.order_id);
     }
-
     if (isOrderUnderReview(order)) {
       underReviewOrderIds.push(order.order_id);
     }
-
     if (isOrderForCollection(order)) {
       collectionOrderIds.push(order.order_id);
+    }
+    if (isOrderPendingStock(order)) {
+      pendingStockOrderIds.push(order.order_id);
     }
   }
 
@@ -1637,6 +1650,13 @@ function buildOperationalQueues(orders, sellerId, postSaleOverview) {
     .map((document) => document.order_id);
 
   return {
+    // Para Reservar: pedidos pagos aguardando processamento do envio pelo ML.
+    // Equivale ao estado "Para Reservar" do UpSeller (allocateStatus=out_stock/pending).
+    pending_stock: buildQueueEntry(
+      "Para Reservar",
+      pendingStockOrderIds,
+      "Pedidos pagos com envio ainda pendente de processamento pelo ML. Requerem aten\u00e7\u00e3o para n\u00e3o expirar."
+    ),
     ready_to_print: buildQueueEntry(
       "Prontas para imprimir",
       readyToPrintOrderIds,
