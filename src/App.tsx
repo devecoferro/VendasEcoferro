@@ -28,6 +28,7 @@ const ReportDebugPage = lazy(() => import("./pages/ReportDebugPage"));
 const AdminHealthPage = lazy(() => import("./pages/AdminHealthPage"));
 const AdminSecurityPage = lazy(() => import("./pages/AdminSecurityPage"));
 const TenantSettingsPage = lazy(() => import("./pages/TenantSettingsPage"));
+const LabelTemplatesPage = lazy(() => import("./pages/LabelTemplatesPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -95,6 +96,7 @@ const App = () => (
                   <Route path="/admin/health" element={<AdminHealthPage />} />
                   <Route path="/admin/security" element={<AdminSecurityPage />} />
                   <Route path="/admin/tenant-settings" element={<TenantSettingsPage />} />
+                  <Route path="/admin/label-templates" element={<LabelTemplatesPage />} />
                 </Route>
 
                   <Route path="*" element={<NotFound />} />
