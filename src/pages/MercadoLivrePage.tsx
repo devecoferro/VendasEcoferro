@@ -126,6 +126,7 @@ import {
   getShipmentPresentation,
   isOrderForCollection,
   isOrderInvoicePending,
+  isOrderPendingStock,
   isOrderReadyToPrintLabel,
   isOrderReadyForInvoiceLabel,
   canPrintMLShippingLabel,
@@ -166,6 +167,7 @@ const SHIPMENT_FILTERS: Array<{ key: ShipmentBucket; label: string }> = [
 
 type QuickSalesStatusFilter =
   | "all"
+  | "pending_stock"
   | "ready"
   | "invoice_pending"
   | "under_review"
@@ -188,9 +190,10 @@ const QUICK_SALES_STATUS_OPTIONS: Array<{
   label: string;
 }> = [
   { value: "all", label: "Todos" },
+  { value: "pending_stock", label: "Para Reservar" },
   { value: "ready", label: "Prontas para enviar" },
   { value: "invoice_pending", label: "NF-e sem emitir" },
-  { value: "under_review", label: "Em revisão" },
+  { value: "under_review", label: "Em revis\u00e3o" },
   { value: "collection", label: "Para coleta" },
 ];
 
@@ -308,6 +311,8 @@ function matchesQuickSalesFilters(order: MLOrder, filters: QuickSalesFilters): b
   }
 
   switch (filters.status) {
+    case "pending_stock":
+      return isOrderPendingStock(order);
     case "ready":
       return isOrderReadyToPrintLabel(order);
     case "invoice_pending":
