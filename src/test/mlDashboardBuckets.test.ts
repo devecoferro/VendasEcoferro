@@ -319,3 +319,58 @@ describe("classifyFulfillmentOrder — cobertura basica", () => {
     ).toBe("finalized");
   });
 });
+
+// ─── FIX 2026-05-11: Full packed/ready_to_pack → today ───────────────────────
+// Regressão: esses pedidos estavam em today=3 no ML Seller Center mas
+// today=0 no app por causa da regra "Full NÃO tem Envios de hoje" que
+// zerava newCounts.today incondicionalmente no ML AUTHORITATIVE OVERRIDE.
+// A correção remove o zero incondicional — o override (mlBucketByMlOrderId)
+// já classifica corretamente esses pedidos como today.
+// Ref: DIAGNOSTICO_ARQUITETURA_ML.md § Causa Raiz 2026-05-11
+describe("classifyFulfillmentOrder — substatus packed/ready_to_pack (FIX 2026-05-11)", () => {
+  function buildFulfillmentNodeOrder(overrides: Record<string, unknown> = {}) {
+    return buildOrder({
+      shipmentStatus: "ready_to_ship",
+      shipmentSubstatus: "packed",
+      depositKey: "node:BRSP19",
+      logisticType: "unknown",
+      ...overrides,
+    });
+  }
+
+  it("Full packed → today (deposit node:BRSP19)", () => {
+    const order = buildFulfillmentNodeOrder({ shipmentSubstatus: "packed" });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-05-11", null)
+    ).toBe("today");
+  });
+
+  it("Full ready_to_pack → today (deposit node:BRSP04)", () => {
+    const order = buildFulfillmentNodeOrder({
+      shipmentSubstatus: "ready_to_pack",
+      depositKey: "node:BRSP04",
+    });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-05-11", null)
+    ).toBe("today");
+  });
+
+  it("Full ready_for_pickup → today (deposit node:BRPE01)", () => {
+    const order = buildFulfillmentNodeOrder({
+      shipmentSubstatus: "ready_for_pickup",
+      depositKey: "node:BRPE01",
+    });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-05-11", null)
+    ).toBe("today");
+  });
+
+  it("Full in_warehouse → null (informativo, ML nao conta no chip de hoje)", () => {
+    // in_warehouse sem SLA vencido = ML está preparando o envio internamente.
+    // O Seller Center não mostra esses pedidos em "Envios de hoje".
+    const order = buildFulfillmentNodeOrder({ shipmentSubstatus: "in_warehouse" });
+    expect(
+      __dashboardTestables.classifyFulfillmentOrder(order, "2026-05-11", null)
+    ).toBeNull();
+  });
+});

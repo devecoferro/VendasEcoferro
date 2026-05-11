@@ -3181,9 +3181,22 @@ export async function buildDashboardPayload(options = {}) {
       // O ML trata Full diferente: o vendedor não tem ação operacional
       // (envio é feito pelo ML), então chips só mostram exceções.
       if (deposit.key === "fulfillment") {
-        // Full NÃO tem "Envios de hoje"
-        newCounts.today = 0;
-        newOrderIds.today = [];
+        // FIX 2026-05-11: A regra "Full NÃO tem Envios de hoje" era incorreta.
+        //
+        // DIAGNÓSTICO PROD 2026-05-11: 3 pedidos Full com substatus
+        // packed/ready_to_pack estavam em today=3 no ML Seller Center mas
+        // today=0 no app — exatamente por causa desta regra que zerava
+        // newCounts.today incondicionalmente.
+        //
+        // REGRA CORRETA: O ML Seller Center mostra "Envios de hoje" para Full
+        // quando há pedidos com substatus packed/ready_to_pack/ready_for_pickup.
+        // Esses pedidos precisam de ação do vendedor (emitir NF-e, preparar
+        // coleta). O zero era observado em 06/05 porque não havia pedidos
+        // nesse estado — não é uma regra permanente.
+        //
+        // SOLUÇÃO: Manter newCounts.today/newOrderIds.today como calculados
+        // pelo override (mlBucketByMlOrderId), que já é a fonte autoritativa
+        // do ML. Não zeramos mais — o override já é correto.
 
         // Full "Finalizadas" = APENAS claims/mediações (isOrderUnderReview)
         // Pedidos entregues/não entregues/cancelados não contam no chip.
