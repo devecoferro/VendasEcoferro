@@ -8,7 +8,12 @@ import { timingSafeEqual } from "node:crypto";
 
 const logger = createLogger("ml-notifications");
 
-const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments", "post_purchase", "invoices"]);
+// Tópicos suportados pelo webhook ML.
+// "payments" adicionado em 2026-05-11 (Fase 1 — Plano de Adaptação UpSeller):
+// Quando um pagamento é aprovado, o ML dispara o tópico "payments".
+// Isso garante que pedidos recém-pagos apareçam imediatamente nos chips
+// sem aguardar o próximo ciclo de polling de 30s.
+const NOTIFICATION_TOPICS = new Set(["orders_v2", "shipments", "post_purchase", "invoices", "payments"]);
 
 // Secret compartilhado pra validar que o POST veio do ML e nao de um
 // atacante externo. Configurado no painel do ML como header customizado
@@ -191,6 +196,34 @@ export default async function handler(request, response) {
         reason: invoiceResult.reason,
         refreshed: invoiceResult.refreshed,
         order_ids: invoiceResult.order_ids,
+      });
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // TOPIC: payments — pagamento aprovado/recusado
+    //
+    // Quando o ML aprova um pagamento, dispara este tópico antes do
+    // orders_v2. Ao receber, fazemos sync incremental imediato para
+    // que o pedido apareça nos chips sem aguardar o polling de 30s.
+    // O cache já foi invalidado acima — o sync aqui atualiza o DB.
+    // ══════════════════════════════════════════════════════════════════
+    if (topic === "payments") {
+      const paymentResult = await runMercadoLivreSync({
+        connectionId: connection.id,
+        updatedFrom: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // últimos 5 min
+        pageLimit: 2,
+      });
+      logger.info("webhook payments: sync concluído", {
+        seller_id: sellerId,
+        synced: paymentResult.synced,
+        total_fetched: paymentResult.totalFetched,
+      });
+      return response.status(200).json({
+        status: "ok",
+        topic,
+        seller_id: sellerId,
+        synced: paymentResult.synced,
+        total_fetched: paymentResult.totalFetched,
       });
     }
 
