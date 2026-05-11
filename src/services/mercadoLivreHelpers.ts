@@ -726,6 +726,21 @@ export function isOrderFulfillment(order: MLOrder): boolean {
 }
 
 /**
+ * Para Reservar: pedido pago mas com shipping.status=pending.
+ * O ML ainda está processando o envio (criando shipment, alocando estoque Full, etc).
+ * Equivale ao estado "Para Reservar" do UpSeller (allocateStatus=out_stock/to_allocate).
+ */
+export function isOrderPendingStock(order: MLOrder): boolean {
+  const rawData = getRawData(order);
+  const orderStatus = normalizeState(rawData.status || order.order_status);
+  const shipmentSnapshot = getShipmentSnapshot(order);
+  const shipmentStatus = normalizeState(String(shipmentSnapshot.status || order.order_status || ""));
+  const isPaid = ["paid", "confirmed"].includes(orderStatus);
+  const isShipmentPending = shipmentStatus === "pending";
+  return isPaid && isShipmentPending;
+}
+
+/**
  * Verifica se o pedido tem etiqueta ML de envio disponivel para impressao.
  *
  * Pedidos FULL (fulfillment) NAO tem etiqueta ML publica — o ML gera
