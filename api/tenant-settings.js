@@ -13,7 +13,6 @@ import { db } from "./_lib/db.js";
 import {
   getAuthenticatedProfile,
   parseRequestBody,
-  requireAdmin,
 } from "./_lib/auth-server.js";
 
 // Sanitiza uma string de cor hex (#rrggbb ou #rgb).
@@ -64,8 +63,8 @@ function upsertSettings(profileId, { company_name, logo_url, primary_color, labe
 
 export default async function tenantSettingsHandler(req, res) {
   try {
-    const profile = await getAuthenticatedProfile(req);
-    if (!profile) {
+    const { authUser, profile } = await getAuthenticatedProfile(req);
+    if (!authUser || !profile || !profile.active) {
       return res.status(401).json({ error: "unauthenticated" });
     }
 
@@ -86,9 +85,8 @@ export default async function tenantSettingsHandler(req, res) {
 
     // POST — salva configurações (admin only)
     if (req.method === "POST") {
-      const adminCheck = requireAdmin(profile);
-      if (!adminCheck.ok) {
-        return res.status(403).json({ error: adminCheck.reason ?? "forbidden" });
+      if (profile.role !== "admin") {
+        return res.status(403).json({ error: "forbidden" });
       }
 
       const body = await parseRequestBody(req);
