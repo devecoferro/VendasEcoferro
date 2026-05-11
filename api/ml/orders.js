@@ -10,7 +10,7 @@ import {
   assertConnectionBelongsToProfile,
 } from "./_lib/storage.js";
 import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
-import { resolvePackKeyFromRow } from "./_lib/pack-utils.js";
+import { resolvePackKeyFromRow } from "../_lib/pack-utils.js";
 
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
