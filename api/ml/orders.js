@@ -15,7 +15,10 @@ const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirme
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
 const DELIVERED_STATUSES = new Set(["delivered"]);
 const FINAL_EXCEPTION_STATUSES = new Set(["cancelled", "not_delivered", "returned"]);
-const ORDERS_CACHE_TTL_MS = 5 * 60 * 1000;
+// TTL alinhado com o cache dos chips (ML_LIVE_DETAILED_CACHE_TTL_MS = 50s).
+// Reduzido de 5 min para 60s para evitar que o grid mostre dados mais
+// antigos que os chips, causando inconsistência visual.
+const ORDERS_CACHE_TTL_MS = 60 * 1000;
 const DEFAULT_PAGINATION_LIMIT = 300;
 // Dashboard view envia rows enxutas — 5000 por página ainda fica leve
 // (~1-2MB JSON) e permite ao cliente terminar a base inteira em poucas

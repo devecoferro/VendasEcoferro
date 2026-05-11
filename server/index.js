@@ -31,6 +31,7 @@ import {
 } from "../api/_lib/auth-server.js";
 import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
+import tenantSettingsHandler from "../api/tenant-settings.js";
 import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlDiagnosticsHandler, {
@@ -377,6 +378,7 @@ app.get("/api/health/dependencies", (_req, res) => {
 // ─── Auth (rate limited) ────────────────────────────────────────────
 app.all("/api/app-auth", loginLimiter, authLimiter, (req, res) => appAuthHandler(req, res));
 app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
+app.all("/api/tenant-settings", apiLimiter, (req, res) => tenantSettingsHandler(req, res));
 
 // ─── ML API (rate limited) ──────────────────────────────────────────
 app.all("/api/ml/auth", authLimiter, (req, res) => mlAuthHandler(req, res));

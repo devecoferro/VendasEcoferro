@@ -66,7 +66,10 @@ interface MercadoLivreDataState {
 }
 
 const DEFAULT_AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
-const DATA_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+// Cache do frontend alinhado com o backend (ORDERS_CACHE_TTL_MS = 60s).
+// Reduzido de 5 min para 60s para evitar que o grid mostre dados mais
+// antigos que os chips, causando inconsistência visual.
+const DATA_CACHE_TTL_MS = 60 * 1000; // 60 segundos (alinhado com chips)
 // 1000 pedidos por batch (backend aceita até 5000, ~1-2MB JSON).
 // Com base típica de 1200-1500 pedidos, carrega em 1-2 requests só —
 // reduz o tempo de "Atualizando base" drasticamente.

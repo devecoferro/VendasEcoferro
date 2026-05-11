@@ -12,12 +12,14 @@ import {
   LogOut,
   Package,
   ScanLine,
+  Settings2,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { APP_VERSION_LABEL } from "@/lib/version";
+import { useTenantSettings } from "@/hooks/useTenantSettings";
 
 interface SidebarNavItem {
   to: string;
@@ -69,6 +71,9 @@ function SidebarContent({
 }: SidebarContentProps) {
   const location = useLocation();
   const { currentUser, logout, canAccessModule } = useAuth();
+  const { settings: tenantSettings } = useTenantSettings();
+  const tenantName = tenantSettings?.company_name?.trim() || "EcoFerro";
+  const tenantLogoSrc = tenantSettings?.logo_url?.trim() || "/menu-ecoferro-logo-96.png";
 
   const navItems = useMemo(() => {
     // 2026-04-30: filtra items pelo allowedModules. Items sem moduleId
@@ -83,6 +88,7 @@ function SidebarContent({
         ...filteredBase,
         { to: "/users", icon: ShieldCheck, label: "Usuarios", moduleId: "users" },
         { to: "/ml-diagnostics", icon: Activity, label: "Diagnostico ML", moduleId: "ml_diagnostics" },
+        { to: "/admin/tenant-settings", icon: Settings2, label: "Configuracoes", moduleId: "tenant_settings" },
       ];
     }
 
@@ -101,8 +107,8 @@ function SidebarContent({
       <div className="flex items-center gap-3 border-b border-sidebar-border/80 px-4 py-5 sm:px-5">
         <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-sidebar-border/40">
           <img
-            src="/menu-ecoferro-logo-96.png"
-            alt="Logo EcoFerro"
+            src={tenantLogoSrc}
+            alt={`Logo ${tenantName}`}
             width={32}
             height={32}
             className="h-7 w-7 object-contain"
@@ -115,7 +121,7 @@ function SidebarContent({
           <div className="min-w-0 animate-slide-in">
             <div className="flex items-center gap-1.5">
               <h1 className="truncate text-[15px] font-bold tracking-tight text-sidebar-foreground">
-                EcoFerro
+                {tenantName}
               </h1>
               <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300 ring-1 ring-inset ring-emerald-500/30">
                 {APP_VERSION_LABEL}
