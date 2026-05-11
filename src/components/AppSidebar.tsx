@@ -14,6 +14,7 @@ import {
   ScanLine,
   Settings2,
   ShieldCheck,
+  Tag,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -89,6 +90,7 @@ function SidebarContent({
         { to: "/users", icon: ShieldCheck, label: "Usuarios", moduleId: "users" },
         { to: "/ml-diagnostics", icon: Activity, label: "Diagnostico ML", moduleId: "ml_diagnostics" },
         { to: "/admin/tenant-settings", icon: Settings2, label: "Configuracoes", moduleId: "tenant_settings" },
+        { to: "/admin/label-templates", icon: Tag, label: "Templates Etiqueta", moduleId: "label_templates" },
       ];
     }
 
