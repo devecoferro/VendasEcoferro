@@ -4,7 +4,7 @@ import { ML_USE_SHIPMENT_SLA_FOR_PROMISES, ML_SLA_SHADOW_COMPARE } from "../_lib
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
-import { resolvePackKeyFromApiOrder } from "../_lib/pack-utils.js";
+import { resolvePackKeyFromApiOrder, resolvePackKeyFromRow } from "../_lib/pack-utils.js";
 // DESATIVADO 2026-05-07: HTTP Fetcher removido como fonte de verdade.
 // OAuth (fetchMLLiveChipBucketsDetailed) é agora a ÚNICA fonte dos chips.
 // import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
@@ -2724,14 +2724,11 @@ export async function buildDashboardPayload(options = {}) {
         // Keep walking. Native ML buckets are computed separately.
       } else {
         // Dedup global por bucket — o mesmo envio não pode ser contado 2x.
-        // Fallback pack_id → shipping_id → order_id para que pedidos SEM
-        // pack_id mas com múltiplos items (cada item é 1 row no DB) contem
-        // como 1 só. Sem esse fallback, pedido com 3 items incrementa 3x.
-        // Alinhado com padrão já usado em outras partes do código (linha 1471).
-        const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
-        const shippingId = order.shipping_id ? String(order.shipping_id) : null;
-        const mlOrderId = order.order_id ? String(order.order_id) : null;
-        const dedupeId = packId || shippingId || mlOrderId;
+        // Usa resolvePackKeyFromRow (pack-utils.js) — mesma lógica dos chips
+        // e do grid, garantindo que todos os caminhos (chips, grid, mirror,
+        // snapshot) compartilhem uma única fonte de verdade para a chave de pack.
+        // Cf. Passo 1 do DIAGNOSTICO_ARQUITETURA_ML.md e commit 9175e2f.
+        const dedupeId = resolvePackKeyFromRow(order);
         const dedupeKey = dedupeId ? `${bucket}:${dedupeId}` : null;
         const isAlreadyCounted = dedupeKey && countedPacks.has(dedupeKey);
 
