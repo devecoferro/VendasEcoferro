@@ -1,8 +1,10 @@
 import { db } from "../_lib/db.js";
 import { getConnectionById, getLatestConnection, getDefaultConnectionForProfile, getOrderSummariesByScope, listConnections, assertConnectionBelongsToProfile } from "./_lib/storage.js";
+import { ML_USE_SHIPMENT_SLA_FOR_PROMISES, ML_SLA_SHADOW_COMPARE } from "../_lib/app-config.js";
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
+import { resolvePackKeyFromApiOrder, resolvePackKeyFromRow } from "../_lib/pack-utils.js";
 // DESATIVADO 2026-05-07: HTTP Fetcher removido como fonte de verdade.
 // OAuth (fetchMLLiveChipBucketsDetailed) é agora a ÚNICA fonte dos chips.
 // import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
@@ -133,10 +135,27 @@ export function invalidateDashboardCache(connectionId = null) {
     // Invalidação cirúrgica: apenas a conta afetada
     dashboardCacheByConnection.delete(connectionId);
     liveChipDetailedCache.delete(connectionId);
+    // SLA cache: não é keyed por connectionId, mas invalida tudo quando
+    // um webhook de shipment chega (os shipments afetados são da conexão).
+    // Alternativa mais cirúrgica: invalidar só os shipment_ids do webhook
+    // (feito em notifications.js quando shipment_id está disponível).
+    shipmentSlaCache.clear();
   } else {
     // Invalidação global (fallback seguro)
     dashboardCacheByConnection.clear();
     liveChipDetailedCache.clear();
+    shipmentSlaCache.clear();
+  }
+}
+
+/**
+ * Invalida o cache SLA de um shipment específico.
+ * Chamado pelo webhook de shipments quando o shipment_id está disponível.
+ * @param {string} shipmentId
+ */
+export function invalidateShipmentSlaCache(shipmentId) {
+  if (shipmentId) {
+    shipmentSlaCache.delete(String(shipmentId));
   }
 }
 
@@ -1693,6 +1712,80 @@ const ML_LIVE_MAX_PAGES = 15;
 const liveChipDetailedCache = new Map();
 const ML_LIVE_DETAILED_CACHE_TTL_MS = 50 * 1000;
 
+// ─── Cache SLA por shipment_id ─────────────────────────────────────────────
+// TTL = 120s. Invalidado via invalidateDashboardCache() (global) ou
+// diretamente por shipment_id no webhook de shipments.
+// Chave: shipment_id (string). Valor: { slaDate: string|null, expiresAt: number }.
+const shipmentSlaCache = new Map();
+const ML_SHIPMENT_SLA_CACHE_TTL_MS = 120 * 1000;
+
+/**
+ * Busca a data de promessa SLA de um shipment via GET /shipments/{id}/sla.
+ * Retorna a data ISO string ("expected_date") ou null se indisponível.
+ *
+ * Cache por shipment_id (120s). Usa o mesmo token da conexão.
+ * Normaliza os campos: expected_date → string ISO, status → on_time|delayed|null.
+ *
+ * @param {string} token - OAuth access token
+ * @param {string} shipmentId - ID do shipment
+ * @returns {Promise<{slaDate: string|null, slaStatus: string|null, promiseSource: string}>}
+ */
+async function fetchShipmentSla(token, shipmentId) {
+  const sid = String(shipmentId);
+  const cached = shipmentSlaCache.get(sid);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
+  try {
+    const r = await fetch(
+      `https://api.mercadolibre.com/shipments/${sid}/sla`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) {
+      const result = { slaDate: null, slaStatus: null, promiseSource: "sla_api_error" };
+      // Não cacheia erros (pode ser transitório)
+      return result;
+    }
+    const j = await r.json();
+    // Normaliza: expected_date pode ser string ISO ou null
+    const slaDate = typeof j.expected_date === "string" && j.expected_date
+      ? j.expected_date
+      : null;
+    const slaStatus = typeof j.status === "string" && j.status
+      ? j.status.toLowerCase()
+      : null;
+    const result = { slaDate, slaStatus, promiseSource: "sla_api" };
+    shipmentSlaCache.set(sid, { data: result, expiresAt: Date.now() + ML_SHIPMENT_SLA_CACHE_TTL_MS });
+    return result;
+  } catch {
+    return { slaDate: null, slaStatus: null, promiseSource: "sla_api_exception" };
+  }
+}
+
+/**
+ * Normaliza a promessa operacional de um shipment combinando:
+ * 1. Dados do /shipments/{id} (shipping_option.estimated_delivery_limit)
+ * 2. Dados do /shipments/{id}/sla (expected_date) — fonte primária quando flag ativa
+ *
+ * Retorna { slaDate: string|null, promiseSource: string }.
+ * promiseSource: "sla_api" | "shipment_edl" | "shipment_edf" | "none"
+ *
+ * @param {{ slaDate: string|null }} shipmentDetail - resultado de fetchShipmentDetails
+ * @param {{ slaDate: string|null, promiseSource: string }|null} slaApiResult - resultado de fetchShipmentSla
+ * @param {boolean} useSlaApi - se true, usa sla_api como fonte primária
+ */
+function normalizeShipmentOperationalPromise(shipmentDetail, slaApiResult, useSlaApi) {
+  if (useSlaApi && slaApiResult && slaApiResult.slaDate) {
+    return { slaDate: slaApiResult.slaDate, promiseSource: "sla_api" };
+  }
+  // Fallback: usa shipping_option.estimated_delivery_limit do /shipments/{id}
+  if (shipmentDetail && shipmentDetail.slaDate) {
+    return { slaDate: shipmentDetail.slaDate, promiseSource: "shipment_edl" };
+  }
+  return { slaDate: null, promiseSource: "none" };
+}
+
 // ── Classificação de ready_to_ship por substatus ──
 // ML Seller Center: a MAIORIA dos ready_to_ship aparece em "Envios de hoje".
 // Apenas substatuses específicos vão para "Próximos dias" ou são excluídos.
@@ -1766,13 +1859,17 @@ async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, m
 // NÃO o DB row id (ml_orders.id). O array `pack.ml_order_ids` armazena
 // ML order IDs. Se precisar cruzar com dados locais, use o mapa
 // mlOrderIdToDbId construído em buildDashboardPayload.
+// Refatorado 2026-05-11: usa resolvePackKeyFromApiOrder do módulo compartilhado
+// pack-utils.js para garantir que a chave de pack seja idêntica entre
+// dashboard.js (chips) e orders.js (grid). Cf. Passo 1 do DIAGNOSTICO_ARQUITETURA_ML.md.
 function deduplicateOrdersToPacks(orders) {
   const packs = new Map();
   for (const order of orders) {
-    const packId = order.pack_id ? String(order.pack_id) : null;
+    const key = resolvePackKeyFromApiOrder(order);
+    if (!key) continue;
+
     const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
     const mlOrderId = String(order.id); // ML API order.id = ML order ID externo
-    const key = packId || shippingId || mlOrderId;
 
     if (!packs.has(key)) {
       packs.set(key, {
@@ -2091,6 +2188,29 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
     }
     const shipmentMap = await fetchShipmentDetails(token, allShippingIds, 20);
 
+    // ─── SLA-aware: busca GET /shipments/{id}/sla em paralelo (Tarefa 2) ────────────
+    // Ativado quando ML_USE_SHIPMENT_SLA_FOR_PROMISES=true OU shadow mode ativo.
+    // Busca apenas os shipment_ids dos packs RTS (os únicos que usam SLA para
+    // classificar today vs upcoming). Shipped/nd não precisam de SLA.
+    const slaApiMap = new Map(); // shipment_id → { slaDate, slaStatus, promiseSource }
+    const needsSlaFetch = ML_USE_SHIPMENT_SLA_FOR_PROMISES || ML_SLA_SHADOW_COMPARE;
+    if (needsSlaFetch) {
+      const rtsShipmentIds = [];
+      for (const [, pack] of rtsPacks) {
+        if (pack.shipping_id) rtsShipmentIds.push(String(pack.shipping_id));
+      }
+      // Concorrência 20 (mesmo padrão de fetchShipmentDetails)
+      for (let i = 0; i < rtsShipmentIds.length; i += 20) {
+        const batch = rtsShipmentIds.slice(i, i + 20);
+        const results = await Promise.all(
+          batch.map((sid) => fetchShipmentSla(token, sid))
+        );
+        for (let k = 0; k < batch.length; k++) {
+          slaApiMap.set(batch[k], results[k]);
+        }
+      }
+    }
+
     // FIX 2026-05-05 (rev9): Pedidos PENDING NÃO vão para nenhum chip.
     // Engenharia reversa 2026-05-05: o chip "Próximos dias" do ML mostra
     // APENAS pedidos RTS (ready_to_ship) com data de coleta futura.
@@ -2207,8 +2327,33 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         continue;
       }
 
-      // Substatuses desconhecidos: usa SLA
-      const slaKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+      // ─── Classificação SLA-aware (Tarefa 3) ───────────────────────────────────────────
+      // Para substatuses desconhecidos (não capturados pelas regras acima),
+      // usa a data SLA para decidir today vs upcoming.
+      // Quando ML_USE_SHIPMENT_SLA_FOR_PROMISES=true, usa /shipments/{id}/sla
+      // como fonte primária. Caso contrário, usa shipping_option.estimated_delivery_limit.
+      const slaApiResult = slaApiMap.get(String(pack.shipping_id)) || null;
+      const { slaDate: resolvedSlaDate, promiseSource } = normalizeShipmentOperationalPromise(
+        shipment,
+        slaApiResult,
+        ML_USE_SHIPMENT_SLA_FOR_PROMISES
+      );
+      const slaKey = resolvedSlaDate ? getSlaDateKey(resolvedSlaDate) : null;
+
+      // Shadow mode: compara resultado SLA-api vs EDL e loga divergências
+      if (ML_SLA_SHADOW_COMPARE && slaApiResult && slaApiResult.slaDate) {
+        const edlKey = shipment.slaDate ? getSlaDateKey(shipment.slaDate) : null;
+        const slaApiKey = getSlaDateKey(slaApiResult.slaDate);
+        if (edlKey !== slaApiKey) {
+          console.log(
+            `[SLA-shadow] seller=${sellerId} sid=${pack.shipping_id}` +
+            ` sub=${sub} edl_key=${edlKey} sla_api_key=${slaApiKey}` +
+            ` sla_status=${slaApiResult.slaStatus}` +
+            ` diff=${edlKey && slaApiKey ? (slaApiKey > edlKey ? 'sla_later' : 'sla_earlier') : 'one_null'}`
+          );
+        }
+      }
+
       if (slaKey && slaKey > todayKey) {
         addMlOrderIds("upcoming", pack.ml_order_ids);
       } else if (slaKey) {
@@ -2275,6 +2420,23 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
       }
     }
 
+    // ─── Observabilidade SLA (Tarefa 4) ─────────────────────────────────────────────
+    // Conta quantos packs usaram cada promiseSource para classificação.
+    const slaObservability = {
+      promise_source_counts: {},
+      sla_api_fetched: slaApiMap.size,
+      sla_api_resolved: 0,
+      sla_api_errors: 0,
+      use_sla_for_promises: ML_USE_SHIPMENT_SLA_FOR_PROMISES,
+      shadow_compare: ML_SLA_SHADOW_COMPARE,
+    };
+    for (const [, v] of slaApiMap) {
+      const src = v.promiseSource || "unknown";
+      slaObservability.promise_source_counts[src] = (slaObservability.promise_source_counts[src] || 0) + 1;
+      if (v.slaDate) slaObservability.sla_api_resolved++;
+      if (src === "sla_api_error" || src === "sla_api_exception") slaObservability.sla_api_errors++;
+    }
+
     const result = {
       counts: {
         today: buckets.today.size,
@@ -2284,6 +2446,7 @@ export async function fetchMLLiveChipBucketsDetailed(connection) {
         cancelled: buckets.cancelled.size,
       },
       order_ids_by_bucket: buckets,
+      sla_observability: slaObservability,
     };
 
     // ═════════════════════════════════════════════════════════════════
@@ -2561,14 +2724,11 @@ export async function buildDashboardPayload(options = {}) {
         // Keep walking. Native ML buckets are computed separately.
       } else {
         // Dedup global por bucket — o mesmo envio não pode ser contado 2x.
-        // Fallback pack_id → shipping_id → order_id para que pedidos SEM
-        // pack_id mas com múltiplos items (cada item é 1 row no DB) contem
-        // como 1 só. Sem esse fallback, pedido com 3 items incrementa 3x.
-        // Alinhado com padrão já usado em outras partes do código (linha 1471).
-        const packId = order.raw_data?.pack_id ? String(order.raw_data.pack_id) : null;
-        const shippingId = order.shipping_id ? String(order.shipping_id) : null;
-        const mlOrderId = order.order_id ? String(order.order_id) : null;
-        const dedupeId = packId || shippingId || mlOrderId;
+        // Usa resolvePackKeyFromRow (pack-utils.js) — mesma lógica dos chips
+        // e do grid, garantindo que todos os caminhos (chips, grid, mirror,
+        // snapshot) compartilhem uma única fonte de verdade para a chave de pack.
+        // Cf. Passo 1 do DIAGNOSTICO_ARQUITETURA_ML.md e commit 9175e2f.
+        const dedupeId = resolvePackKeyFromRow(order);
         const dedupeKey = dedupeId ? `${bucket}:${dedupeId}` : null;
         const isAlreadyCounted = dedupeKey && countedPacks.has(dedupeKey);
 
@@ -2714,6 +2874,7 @@ export async function buildDashboardPayload(options = {}) {
   let mlLiveChipCounts = null;
   let mlLiveChipOrderIds = null;
   let mlBucketByMlOrderId = null; // ml_order_id → bucket (pra override)
+  let mlDetailedResults = []; // exposto para observabilidade SLA
   try {
     // Bug 2026-04-29: agregar TODAS as conexoes inflava ml_live_chip_counts
     // com pedidos Fantom enquanto deposits/allOrders eram so da baseConnection
@@ -2727,6 +2888,7 @@ export async function buildDashboardPayload(options = {}) {
       fetchMLLiveChipBucketsDetailed(c).catch(() => null)
     );
     const detailedResults = (await Promise.all(detailedPromises)).filter(Boolean);
+    mlDetailedResults = detailedResults;
     if (detailedResults.length > 0) {
       const mergedIds = {
         today: new Set(),
@@ -3083,6 +3245,14 @@ export async function buildDashboardPayload(options = {}) {
     // Frontend usa para filtrar a lista de pedidos abaixo do chip selecionado,
     // evitando divergência entre o número do chip e os cards exibidos.
     ml_live_chip_order_ids_by_bucket: mlLiveChipOrderIds,
+    // Observabilidade do classificador SLA-aware (Tarefa 4).
+    // Exposto no payload para diagnóstico e monitoramento de rollout.
+    // null quando ML_USE_SHIPMENT_SLA_FOR_PROMISES=false e ML_SLA_SHADOW_COMPARE=false.
+    sla_classifier_observability: (() => {
+      if (!mlDetailedResults || mlDetailedResults.length === 0) return null;
+      const obs = mlDetailedResults[0]?.sla_observability || null;
+      return obs;
+    })(),
   };
 
   if (allowCache) {
@@ -3140,4 +3310,8 @@ export const __dashboardTestables = {
   isSellerCenterMirrorFinalStatus,
   isOrderForCollection,
   isOrderUnderReview,
+  // SLA-aware classifier helpers (Tarefa 3)
+  fetchShipmentSla,
+  normalizeShipmentOperationalPromise,
+  getSlaDateKey,
 };

@@ -98,7 +98,9 @@ console.log();
 console.log("5. Webhook invalida cache imediatamente:");
 test(
   "notifications.js importa invalidateDashboardCache",
-  notificationsCode.includes('import { invalidateDashboardCache } from "./dashboard.js"')
+  // Aceita o import original OU o import expandido com invalidateShipmentSlaCache
+  notificationsCode.includes('import { invalidateDashboardCache') &&
+  notificationsCode.includes('from "./dashboard.js"')
 );
 test(
   "notifications.js importa invalidateOrdersCache",

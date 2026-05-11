@@ -1,7 +1,7 @@
 import { runMercadoLivreSync, getConnectionBySellerId } from "./sync.js";
 import { syncClaims, syncReturns } from "./_lib/mirror-sync.js";
 import { refreshNfeFromNotification } from "../nfe/_lib/mercado-livre-faturador.js";
-import { invalidateDashboardCache } from "./dashboard.js";
+import { invalidateDashboardCache, invalidateShipmentSlaCache } from "./dashboard.js";
 import { invalidateOrdersCache } from "./orders.js";
 import createLogger from "../_lib/logger.js";
 import { timingSafeEqual } from "node:crypto";
@@ -141,6 +141,16 @@ export default async function handler(request, response) {
     // ══════════════════════════════════════════════════════════════════
     invalidateDashboardCache(connection.id);
     invalidateOrdersCache();
+
+    // Invalidação cirúrgica do cache SLA por shipment_id (Tarefa 8).
+    // Quando o webhook traz um shipment_id explícito, invalida apenas esse
+    // shipment no cache SLA (evita recalcular todos os shipments).
+    // invalidateDashboardCache já limpa o shipmentSlaCache global como
+    // fallback seguro, mas a invalidação cirúrgica é mais eficiente.
+    const resourceInfo0 = resolveResourceId(payload);
+    if (resourceInfo0?.type === "shipments" && resourceInfo0?.id) {
+      invalidateShipmentSlaCache(resourceInfo0.id);
+    }
 
     const updatedFrom =
       connection.last_sync_at ||

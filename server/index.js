@@ -31,6 +31,7 @@ import {
 } from "../api/_lib/auth-server.js";
 import appAuthHandler from "../api/app-auth.js";
 import appUsersHandler from "../api/app-users.js";
+import tenantSettingsHandler from "../api/tenant-settings.js";
 import mlAuthHandler from "../api/ml/auth.js";
 import mlDashboardHandler from "../api/ml/dashboard.js";
 import mlDiagnosticsHandler, {
@@ -247,8 +248,15 @@ app.use(express.urlencoded({ extended: true, limit: "8mb" }));
 // inline script do Vite); ajustar depois de rodar em prod. Outras
 // headers sao conservadoras.
 const APP_BASE_URL_SEC = String(process.env.APP_BASE_URL || "").trim();
+// Para staging HTTP: o browser pode enviar Origin com https:// mesmo quando a
+// URL é http:// (cache de upgrade-insecure-requests ou comportamento do browser).
+// Incluir a variante https:// do APP_BASE_URL na whitelist resolve isso sem
+// comprometer a segurança (o domínio é o mesmo, só o protocolo muda).
+const _appBaseUrlVariants = APP_BASE_URL_SEC
+  ? [APP_BASE_URL_SEC, APP_BASE_URL_SEC.replace(/^http:\/\//, "https://")]
+  : [];
 const ALLOWED_ORIGINS_SEC = new Set(
-  [APP_BASE_URL_SEC, "https://vendas.ecoferro.com.br"]
+  [..._appBaseUrlVariants, "https://vendas.ecoferro.com.br"]
     .filter(Boolean)
     .map((u) => {
       try {
@@ -298,7 +306,10 @@ app.use((req, res, next) => {
         "object-src 'none'", // bloqueia <object>, <embed> (plugins legados)
         "worker-src 'self' blob:", // Web Workers restritos
         "manifest-src 'self'", // PWA manifest
-        "upgrade-insecure-requests", // força https em requests mixos
+        // upgrade-insecure-requests só em produção HTTPS (evita tela branca em
+        // staging HTTP onde o browser tenta carregar assets via https:// sem
+        // certificado válido, resultando em ERR_CERT_AUTHORITY_INVALID).
+        ...(APP_BASE_URL_SEC.startsWith("https://") ? ["upgrade-insecure-requests"] : []),
       ].join("; ")
     );
   }
@@ -337,6 +348,18 @@ app.use("/api", (req, res, next) => {
       candidate = "";
     }
   }
+  // Fallback: quando Origin e Referer estao ausentes (Chrome em HTTP puro
+  // nao envia Origin em same-origin POSTs), verificar o Host header.
+  // O Host nao pode ser forjado por atacantes cross-origin, entao e seguro
+  // como ultimo recurso. Apenas valido se APP_BASE_URL esta configurado.
+  if (!candidate && APP_BASE_URL_SEC) {
+    const hostHeader = String(req.headers.host || "").trim();
+    if (hostHeader) {
+      // Construir candidate a partir do Host, usando o protocolo do APP_BASE_URL
+      const proto = APP_BASE_URL_SEC.startsWith("https://") ? "https" : "http";
+      candidate = `${proto}://${hostHeader}`;
+    }
+  }
   if (!candidate || !ALLOWED_ORIGINS_SEC.has(candidate)) {
     return res.status(403).json({ error: "origin_not_allowed" });
   }
@@ -356,6 +379,7 @@ app.get("/api/health/dependencies", (_req, res) => {
 // ─── Auth (rate limited) ────────────────────────────────────────────
 app.all("/api/app-auth", loginLimiter, authLimiter, (req, res) => appAuthHandler(req, res));
 app.all("/api/app-users", apiLimiter, (req, res) => appUsersHandler(req, res));
+app.all("/api/tenant-settings", apiLimiter, (req, res) => tenantSettingsHandler(req, res));
 
 // ─── ML API (rate limited) ──────────────────────────────────────────
 app.all("/api/ml/auth", authLimiter, (req, res) => mlAuthHandler(req, res));
