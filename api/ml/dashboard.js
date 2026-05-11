@@ -4,6 +4,7 @@ import { ML_USE_SHIPMENT_SLA_FOR_PROMISES, ML_SLA_SHADOW_COMPARE } from "../_lib
 import { ensureValidAccessToken } from "./_lib/mercado-livre.js";
 import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 import { isBrazilianBusinessDay } from "../_lib/business-days.js";
+import { resolvePackKeyFromApiOrder } from "../_lib/pack-utils.js";
 // DESATIVADO 2026-05-07: HTTP Fetcher removido como fonte de verdade.
 // OAuth (fetchMLLiveChipBucketsDetailed) é agora a ÚNICA fonte dos chips.
 // import { fetchMLChipCountsDirect, fetchMLChipsByStoreDirect } from "./_lib/ml-chip-proxy.js";
@@ -1858,13 +1859,17 @@ async function fetchAllOrdersByShippingStatus(token, sellerId, shippingStatus, m
 // NÃO o DB row id (ml_orders.id). O array `pack.ml_order_ids` armazena
 // ML order IDs. Se precisar cruzar com dados locais, use o mapa
 // mlOrderIdToDbId construído em buildDashboardPayload.
+// Refatorado 2026-05-11: usa resolvePackKeyFromApiOrder do módulo compartilhado
+// pack-utils.js para garantir que a chave de pack seja idêntica entre
+// dashboard.js (chips) e orders.js (grid). Cf. Passo 1 do DIAGNOSTICO_ARQUITETURA_ML.md.
 function deduplicateOrdersToPacks(orders) {
   const packs = new Map();
   for (const order of orders) {
-    const packId = order.pack_id ? String(order.pack_id) : null;
+    const key = resolvePackKeyFromApiOrder(order);
+    if (!key) continue;
+
     const shippingId = order.shipping?.id ? String(order.shipping.id) : null;
     const mlOrderId = String(order.id); // ML API order.id = ML order ID externo
-    const key = packId || shippingId || mlOrderId;
 
     if (!packs.has(key)) {
       packs.set(key, {

@@ -10,6 +10,7 @@ import {
   assertConnectionBelongsToProfile,
 } from "./_lib/storage.js";
 import { getEmittedInvoiceLookup } from "./_lib/document-storage.js";
+import { resolvePackKeyFromRow } from "./_lib/pack-utils.js";
 
 const OPEN_STATUSES = new Set(["pending", "handling", "ready_to_ship", "confirmed", "paid"]);
 const TRANSIT_STATUSES = new Set(["shipped", "in_transit"]);
@@ -35,6 +36,7 @@ const CLIENT_RAW_DATA_KEYS = [
   "billing_info_status",
   "billing_info_snapshot",
   "shipping_id",
+  "pack_id",   // exposto para correlação visual no grid (Passo 1 do diagnóstico)
   "__nfe_emitted",
 ];
 
@@ -408,6 +410,10 @@ export function consolidateOrders(rows) {
     groupedOrders.set(orderId, {
       id: row.id,
       order_id: orderId,
+      // pack_key: chave de agrupamento por pack (pack_id → shipping_id → order_id).
+      // Exposta no grid para correlação visual com os chips (que contam packs,
+      // não pedidos individuais). Cf. Passo 1 do DIAGNOSTICO_ARQUITETURA_ML.md.
+      pack_key: resolvePackKeyFromRow(row),
       sale_number: row.sale_number ?? orderId,
       sale_date: row.sale_date ?? null,
       buyer_name: row.buyer_name ?? null,
