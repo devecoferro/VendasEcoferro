@@ -9,6 +9,7 @@ import {
   type MLOrder,
   type MLOrdersPagination,
 } from "@/services/mercadoLivreService";
+import { parseDate } from "@/services/mercadoLivreHelpers";
 
 interface UseMercadoLivreDataOptions {
   autoSync?: boolean;
@@ -217,6 +218,17 @@ function appendUniqueOrders(currentOrders: MLOrder[], nextOrders: MLOrder[]): ML
       mergedOrders.push(order);
     }
   }
+
+  // Reordena por sale_date DESC após merge para garantir que pedidos mais
+  // recentes fiquem no topo, independente da ordem de chegada das páginas.
+  // Sem isso, pedidos carregados em páginas posteriores (loadMoreOrders) ou
+  // via refresh parcial ficam no final do array, causando pedidos antigos
+  // no topo do grid mesmo com sort=sale_date_desc ativo.
+  mergedOrders.sort((a, b) => {
+    const aTime = parseDate(a.sale_date)?.getTime() ?? 0;
+    const bTime = parseDate(b.sale_date)?.getTime() ?? 0;
+    return bTime - aTime;
+  });
 
   return mergedOrders;
 }
