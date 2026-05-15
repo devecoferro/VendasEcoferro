@@ -263,22 +263,50 @@ export async function handleLookup(req, res) {
     return res.status(401).json({ error: "Sessao invalida." });
   }
 
-  const q = String(req.query.q || "").trim();
-  if (!q) return res.status(400).json({ error: "Parâmetro q obrigatório." });
+  const raw = String(req.query.q || "").trim();
+  if (!raw) return res.status(400).json({ error: "Parâmetro q obrigatório." });
+
+  // Detecta JSON do QR Code da etiqueta ML: {"id":"47052305648","t":"lm"}
+  let q = raw;
+  let isShippingIdLookup = false;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.id) {
+      q = String(parsed.id);
+      isShippingIdLookup = true;
+    }
+  } catch {
+    // não é JSON — usa o valor direto
+  }
 
   const companyMap = getCompanyMap();
 
   try {
-    // Tenta por sale_number / order_id primeiro
-    let rows = db.prepare(
-      `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
-              json_extract(raw_data, '$.pack_id') AS pack_id,
-              json_extract(raw_data, '$.shipment_snapshot.status') AS ship_status,
-              shipping_id, sale_date
-       FROM ml_orders WHERE sale_number = ? OR order_id = ?`
-    ).all(q, q);
+    let rows = [];
 
-    // Se não achou, tenta por pack_id
+    // Se veio do QR do ML (shipping_id), busca diretamente por shipping_id
+    if (isShippingIdLookup) {
+      rows = db.prepare(
+        `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
+                json_extract(raw_data, '$.pack_id') AS pack_id,
+                json_extract(raw_data, '$.shipment_snapshot.status') AS ship_status,
+                shipping_id, sale_date
+         FROM ml_orders WHERE shipping_id = ?`
+      ).all(q);
+    }
+
+    // Fallback: tenta por sale_number / order_id
+    if (rows.length === 0) {
+      rows = db.prepare(
+        `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
+                json_extract(raw_data, '$.pack_id') AS pack_id,
+                json_extract(raw_data, '$.shipment_snapshot.status') AS ship_status,
+                shipping_id, sale_date
+         FROM ml_orders WHERE sale_number = ? OR order_id = ?`
+      ).all(q, q);
+    }
+
+    // Fallback: tenta por pack_id
     if (rows.length === 0) {
       rows = db.prepare(
         `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
