@@ -83,6 +83,7 @@ import errorLogHandler from "../api/error-log.js";
 import adminTotpHandler from "../api/admin/totp.js";
 import { handleSyncToWebsite } from "../api/ml/sync-to-website.js";
 import publicStockExportHandler from "../api/public/stock-export.js";
+import publicProductsExportHandler from "../api/public/products-export.js";
 import { handleSyncReviews } from "../api/ml/sync-reviews.js";
 import mlLeadsHandler from "../api/ml/leads.js";
 import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
@@ -483,6 +484,8 @@ app.post("/api/ml/sync-to-website", syncLimiter, (req, res) => handleSyncToWebsi
 // Auth via Bearer token (env STOCK_EXPORT_TOKEN). Soma estoque por SKU
 // agregando todas as connections (Fantom + EcoFerro).
 app.get("/api/public/stock-export", apiLimiter, (req, res) => publicStockExportHandler(req, res));
+// Endpoint completo com price, thumbnail, item_id para o site novo (Lovable).
+app.get("/api/public/products-export", apiLimiter, (req, res) => publicProductsExportHandler(req, res));
 app.post("/api/ml/sync-reviews", syncLimiter, (req, res) => handleSyncReviews(req, res));
 app.get("/api/ml/leads", apiLimiter, (req, res) => mlLeadsHandler(req, res));
 app.all("/api/ml/sync-leads", syncLimiter, (req, res) => mlSyncLeadsHandler(req, res));
