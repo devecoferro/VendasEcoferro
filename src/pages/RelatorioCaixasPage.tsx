@@ -260,15 +260,18 @@ export default function RelatorioCaixasPage() {
   const handleExportCsv = () => {
     if (!list) return;
     const rows = [
-      ["Empresa", "Shipping ID", "Data/Hora Despacho", "Pedidos", "Total (R$)", "Pack ID", "Substatus"],
+      ["Empresa", "Shipping ID", "Conferido em", "Pedido", "Produto", "Comprador", "Qtd Pedidos", "Total (R$)", "Operador", "Sessão"],
       ...list.items.map((i) => [
         i.seller_nickname,
         i.shipping_id,
-        i.shipped_at ? new Date(i.shipped_at).toLocaleString("pt-BR") : "",
+        i.session_date ? new Date(i.session_date).toLocaleString("pt-BR") : "",
+        i.sale_number || "",
+        i.item_title || "",
+        i.buyer_name || "",
         String(i.order_count),
         i.total_amount.toFixed(2).replace(".", ","),
-        i.pack_id ? String(i.pack_id) : "",
-        i.substatus || "",
+        i.operator_name || "",
+        i.session_id || "",
       ]),
     ];
     const csv = rows.map((r) => r.map((c) => `"${c}"`).join(";")).join("\n");
@@ -300,10 +303,11 @@ export default function RelatorioCaixasPage() {
           <tr>
             <th>Empresa</th>
             <th>Shipping ID</th>
-            <th>Despachado em</th>
+            <th>Produto</th>
+            <th>Conferido em</th>
             <th>Pedidos</th>
             <th>Total</th>
-            <th>Obs.</th>
+            <th>Operador</th>
           </tr>
         </thead>
         <tbody>
@@ -311,10 +315,11 @@ export default function RelatorioCaixasPage() {
             <tr>
               <td>${i.seller_nickname}</td>
               <td class="mono">#${i.shipping_id}</td>
-              <td>${i.shipped_at ? new Date(i.shipped_at).toLocaleString("pt-BR") : "—"}</td>
+              <td>${i.item_title || "—"}</td>
+              <td>${i.session_date ? new Date(i.session_date).toLocaleString("pt-BR") : "—"}</td>
               <td class="center">${i.order_count}</td>
               <td class="right green">${formatCurrency(i.total_amount)}</td>
-              <td>${i.pack_id ? "Pack" : ""}${i.substatus ? ` ${i.substatus}` : ""}</td>
+              <td>${i.operator_name || "—"}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -413,7 +418,7 @@ export default function RelatorioCaixasPage() {
         </style>
       </head>
       <body>
-        <h1>Relatório de Caixas Despachadas</h1>
+            <h1>Relatório de Caixas — Conferência de Saída</h1>
         <p class="subtitle">Período: ${periodoLabel} · Gerado em: ${new Date().toLocaleString("pt-BR")}</p>
         ${body}
       </body>
@@ -699,10 +704,11 @@ export default function RelatorioCaixasPage() {
                       <tr className="border-b border-[#ededed] bg-[#fafafa]">
                         <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Empresa</th>
                         <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Shipping ID</th>
-                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Despachado em</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Produto</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Conferido em</th>
                         <th className="px-4 py-2.5 text-center font-semibold text-[#666]">Pedidos</th>
                         <th className="px-4 py-2.5 text-right font-semibold text-[#666]">Total</th>
-                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Obs.</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Operador</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -717,8 +723,11 @@ export default function RelatorioCaixasPage() {
                           <td className="px-4 py-2.5 font-mono text-[12px] text-[#444]">
                             #{item.shipping_id}
                           </td>
+                          <td className="max-w-[200px] truncate px-4 py-2.5 text-[#444]">
+                            {item.item_title || <span className="text-[#bbb]">—</span>}
+                          </td>
                           <td className="px-4 py-2.5 text-[#666]">
-                            {formatDateTime(item.shipped_at)}
+                            {formatDateTime(item.session_date)}
                           </td>
                           <td className="px-4 py-2.5 text-center font-semibold text-[#444]">
                             {item.order_count}
@@ -727,21 +736,14 @@ export default function RelatorioCaixasPage() {
                             {formatCurrency(item.total_amount)}
                           </td>
                           <td className="px-4 py-2.5 text-[#888]">
-                            {item.pack_id && (
-                              <span className="mr-1 rounded-full bg-[#f0f4ff] px-1.5 py-0.5 text-[11px] font-semibold text-[#2968c8]">
-                                Pack
-                              </span>
-                            )}
-                            {item.substatus && (
-                              <span className="text-[11px]">{item.substatus}</span>
-                            )}
+                            {item.operator_name || <span className="text-[#bbb]">—</span>}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                {list.total > list.items.length && (
+                {list.total > (list.items?.length ?? 0) && (
                   <div className="border-t border-[#ededed] px-5 py-3 text-center text-[12px] text-[#888]">
                     Exibindo {list.items.length} de {list.total} caixas. Exporte o CSV para ver todas.
                   </div>

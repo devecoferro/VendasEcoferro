@@ -1,9 +1,11 @@
 /**
  * ConferenciaSaidaPage — Conferência física de saída de caixas.
  *
- * O operador lê o QR Code da venda (etiqueta interna EcoFerro).
- * O sistema identifica automaticamente se é Fantom ou Ecoferro
- * e vai contabilizando as caixas em tempo real.
+ * Fluxo:
+ *  1. Operador lê QR Code / código de barras
+ *  2. Sistema busca o pedido no banco (lookup)
+ *  3. Sistema registra a leitura na tabela conferencia_saida (persistência)
+ *  4. Relatório de Caixas mostra apenas o que passou por aqui
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -24,15 +26,26 @@ import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { lookupOrder, type BoxLookupResult } from "@/services/boxReportService";
+import {
+  lookupOrder,
+  registrarConferencia,
+  type BoxLookupResult,
+} from "@/services/boxReportService";
+
+// ─── ID de sessão ─────────────────────────────────────────────────────────────
+// Gerado uma vez por montagem da página — identifica a "rodada" de conferência
+function generateSessionId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
 interface ScannedItem {
-  id: string; // sale_number ou pack_id
+  id: string; // shipping_id (chave de dedup)
   result: BoxLookupResult;
   scanned_at: Date;
   duplicate: boolean;
+  saved: boolean; // true = registrado no banco com sucesso
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -138,6 +151,14 @@ function ScannedCard({
             </span>
           )}
 
+          {/* Salvo no banco */}
+          {item.saved && !item.duplicate && (
+            <span className="flex items-center gap-1 rounded-full bg-[#f0fdf4] px-2 py-0.5 text-[11px] font-semibold text-[#166534]">
+              <CheckCircle2 className="h-3 w-3" />
+              Registrado
+            </span>
+          )}
+
           {/* Horário */}
           <span className="ml-auto text-[11px] text-[#aaa]">
             {item.scanned_at.toLocaleTimeString("pt-BR", {
@@ -179,6 +200,10 @@ function ScannedCard({
 export default function ConferenciaSaidaPage() {
   const { currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
+
+  // ID de sessão — identifica esta rodada de conferência
+  const sessionId = useRef(generateSessionId());
+
   const [items, setItems] = useState<ScannedItem[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
@@ -220,17 +245,48 @@ export default function ConferenciaSaidaPage() {
       setLastFeedback(null);
 
       try {
+        // 1. Busca o pedido no banco
         const result = await lookupOrder(q);
 
-        // Verificar duplicata — usa sale_number do primeiro pedido ou pack_id
-        const itemId = result.pack_id ? String(result.pack_id) : result.orders[0]?.sale_number || q;
+        // 2. Chave de dedup — usa shipping_id (mais confiável) ou pack_id ou sale_number
+        const itemId =
+          result.shipping_id ||
+          (result.pack_id ? String(result.pack_id) : null) ||
+          result.orders[0]?.sale_number ||
+          q;
+
         const isDuplicate = items.some((i) => i.id === itemId);
+
+        // 3. Registra no banco (mesmo se duplicado — o backend usa INSERT OR IGNORE)
+        let saved = false;
+        if (!isDuplicate && result.shipping_id) {
+          try {
+            await registrarConferencia({
+              session_id: sessionId.current,
+              shipping_id: result.shipping_id,
+              order_id: result.orders[0]?.order_id,
+              sale_number: result.orders[0]?.sale_number,
+              pack_id: result.pack_id ?? undefined,
+              connection_id: result.connection_id,
+              seller_nickname: result.company,
+              item_title: result.orders[0]?.item_title,
+              buyer_name: result.orders[0]?.buyer_name,
+              amount: result.total_amount,
+              order_count: result.orders.length,
+            });
+            saved = true;
+          } catch (saveErr) {
+            // Falha ao salvar não bloqueia a UI — apenas loga
+            console.warn("[conferencia] falha ao registrar no banco:", saveErr);
+          }
+        }
 
         const newItem: ScannedItem = {
           id: itemId,
           result,
           scanned_at: new Date(),
           duplicate: isDuplicate,
+          saved,
         };
 
         setItems((prev) => [newItem, ...prev]);
@@ -244,7 +300,11 @@ export default function ConferenciaSaidaPage() {
         } else {
           setLastFeedback({
             type: "ok",
-            message: `✓ ${result.company} — ${result.orders.length > 1 ? `Pack (${result.orders.length} pedidos)` : result.orders[0]?.item_title || q} — ${formatCurrency(result.total_amount)}`,
+            message: `✓ ${result.company} — ${
+              result.orders.length > 1
+                ? `Pack (${result.orders.length} pedidos)`
+                : result.orders[0]?.item_title || q
+            } — ${formatCurrency(result.total_amount)}`,
           });
         }
       } catch (err: unknown) {
@@ -261,16 +321,13 @@ export default function ConferenciaSaidaPage() {
   );
 
   // Auto-submit: processa automaticamente 500ms após parar de digitar
-  // (cobre leitores que não enviam Enter e leitores lentos)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInputValue(val);
 
-    // Cancela timer anterior
     if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
 
     if (val.trim().length >= 8) {
-      // Aguarda 500ms sem nova entrada para processar
       autoSubmitTimer.current = setTimeout(() => {
         void handleScan(val);
       }, 500);
@@ -279,7 +336,6 @@ export default function ConferenciaSaidaPage() {
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
-      // Enter imediato — cancela o timer de auto-submit
       if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
       void handleScan(inputValue);
     }
@@ -298,9 +354,11 @@ export default function ConferenciaSaidaPage() {
 
   const handleReset = () => {
     if (items.length === 0) return;
-    if (!window.confirm("Limpar toda a conferência atual?")) return;
+    if (!window.confirm("Limpar toda a conferência atual? Uma nova sessão será iniciada.")) return;
     setItems([]);
     setLastFeedback(null);
+    // Nova sessão para a próxima rodada
+    sessionId.current = generateSessionId();
     inputRef.current?.focus();
   };
 
@@ -314,12 +372,12 @@ export default function ConferenciaSaidaPage() {
               Conferência de Saída
             </h1>
             <p className="mt-0.5 text-[14px] text-[#666]">
-              Leia o QR Code da etiqueta para registrar a saída da caixa.
+              Leia o QR Code ou código de barras para registrar a saída da caixa.
             </p>
           </div>
           <Button
             variant="outline"
-            className="h-9 text-[13px] text-[#e53e3e] hover:border-[#e53e3e] hover:bg-[#fff5f5]"
+            className="h-9 text-[13px] text-[#e53e3e] hover:border-[#e53e3e] hover:bg-[#fff5f5] hover:text-[#e53e3e]"
             onClick={handleReset}
             disabled={items.length === 0}
           >
@@ -333,7 +391,7 @@ export default function ConferenciaSaidaPage() {
           <div className="mb-2 flex items-center gap-2">
             <Scan className="h-4 w-4 text-[#2968c8]" />
             <span className="text-[13px] font-semibold text-[#2968c8]">
-              Aguardando leitura do QR Code...
+              Aguardando leitura...
             </span>
             {loading && (
               <span className="ml-auto text-[12px] text-[#888]">Buscando...</span>
@@ -344,7 +402,7 @@ export default function ConferenciaSaidaPage() {
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="Aponte o leitor para o QR Venda ou digite o número do pedido"
+            placeholder="Aponte o leitor de QR Code ou código de barras"
             className="h-12 border-[#d0e0ff] bg-[#f8faff] text-[15px] font-mono focus:border-[#2968c8] focus:ring-[#2968c8]"
             disabled={loading}
             autoComplete="off"
@@ -368,7 +426,11 @@ export default function ConferenciaSaidaPage() {
         </div>
 
         {/* Cards de totais */}
-        <div className={`mb-5 grid gap-3 ${isAdmin ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-3"}`}>
+        <div
+          className={`mb-5 grid gap-3 ${
+            isAdmin ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-2"
+          }`}
+        >
           <StatCard
             label="Total caixas"
             value={totals.total}
@@ -407,7 +469,7 @@ export default function ConferenciaSaidaPage() {
               Nenhuma caixa conferida ainda
             </p>
             <p className="mt-1 text-[13px] text-[#aaa]">
-              Leia o QR Code da etiqueta para começar.
+              Leia o QR Code ou código de barras da etiqueta para começar.
             </p>
           </div>
         ) : (
@@ -441,6 +503,9 @@ export default function ConferenciaSaidaPage() {
               <CheckCircle2 className="h-4 w-4 text-[#22c55e]" />
               <span className="text-[13px] font-bold text-[#444]">
                 Resumo da conferência
+              </span>
+              <span className="ml-auto text-[11px] text-[#aaa]">
+                Sessão: {sessionId.current.slice(0, 12)}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-3 text-[13px] sm:grid-cols-3">

@@ -89,7 +89,7 @@ import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import mlSyncCustomersHandler from "../api/ml/sync-customers.js";
 import mlFixBrandsHandler from "../api/ml/fix-brands.js";
 import mlBoxesHandler from "../api/ml/boxes.js";
-import { handleSummary as boxReportSummary, handleDaily as boxReportDaily, handleList as boxReportList, handleToday as boxReportToday, handleLookup as boxReportLookup } from "../api/ml/box-report.js";
+import { handleSummary as boxReportSummary, handleDaily as boxReportDaily, handleList as boxReportList, handleLookup as boxReportLookup, handleRegistrarConferencia as boxReportRegistrar } from "../api/ml/box-report.js";
 import { runAutoEmitNfe } from "../api/nfe/_lib/auto-emit-nfe.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
@@ -431,7 +431,7 @@ app.all("/api/ml/boxes/:id", apiLimiter, (req, res) => mlBoxesHandler(req, res))
 app.get("/api/ml/box-report/summary", apiLimiter, (req, res) => boxReportSummary(req, res));
 app.get("/api/ml/box-report/daily", apiLimiter, (req, res) => boxReportDaily(req, res));
 app.get("/api/ml/box-report/list", apiLimiter, (req, res) => boxReportList(req, res));
-app.get("/api/ml/box-report/today", apiLimiter, (req, res) => boxReportToday(req, res));
+app.post("/api/ml/box-report/conferencia", apiLimiter, (req, res) => boxReportRegistrar(req, res));
 app.get("/api/ml/box-report/lookup", apiLimiter, (req, res) => boxReportLookup(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 // HARDENING 2026-05-07: Endpoint live-snapshot DESATIVADO.
