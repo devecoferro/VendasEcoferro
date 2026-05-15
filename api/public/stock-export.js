@@ -5,7 +5,7 @@
 // do site novo (patlhzysljihbqemsjzn).
 //
 // Auth: Bearer token via env STOCK_EXPORT_TOKEN.
-// Retorno: { generated_at, total, items: [{ sku, title, brand, stock, status }] }
+// Retorno: { generated_at, total, items: [{ sku, title, brand, stock, status, price, thumbnail, item_id, permalink }] }
 
 import { db } from "../_lib/db.js";
 import createLogger from "../_lib/logger.js";
@@ -44,6 +44,7 @@ export default async function handler(req, res) {
   try {
     // Agrupa por SKU somando available_quantity de todas as connections
     // (Fantom + EcoFerro). Inclui apenas SKUs com SKU não-nulo.
+    // Inclui price, thumbnail e item_id do anúncio com maior estoque (ou mais recente).
     const rows = db
       .prepare(
         `
@@ -52,7 +53,10 @@ export default async function handler(req, res) {
           SUM(available_quantity) AS stock,
           MAX(title) AS title,
           MAX(brand) AS brand,
-          GROUP_CONCAT(DISTINCT status) AS statuses
+          GROUP_CONCAT(DISTINCT status) AS statuses,
+          MAX(price) AS price,
+          MAX(thumbnail) AS thumbnail,
+          MAX(item_id) AS item_id
         FROM ml_stock
         WHERE sku IS NOT NULL AND TRIM(sku) <> ''
         GROUP BY sku
@@ -61,14 +65,34 @@ export default async function handler(req, res) {
       )
       .all();
 
-    const items = rows.map((r) => ({
-      sku: String(r.sku).trim(),
-      title: r.title ?? null,
-      brand: r.brand ?? null,
-      stock: Number(r.stock || 0),
-      // status é "active" se pelo menos uma connection tem ativo
-      status: typeof r.statuses === "string" && r.statuses.includes("active") ? "active" : "inactive",
-    }));
+    const items = rows.map((r) => {
+      // Converter thumbnail HTTP para HTTPS e aumentar resolução
+      let thumbnail = r.thumbnail ?? null;
+      if (thumbnail) {
+        thumbnail = thumbnail.replace(/^http:\/\//, "https://");
+        // ML thumbnails: trocar -I.jpg por -O.jpg para imagem maior (500x500)
+        thumbnail = thumbnail.replace(/-I\.jpg$/i, "-O.jpg").replace(/-I\.webp$/i, "-O.webp");
+      }
+
+      // Construir permalink do ML a partir do item_id
+      const itemId = r.item_id ?? null;
+      const permalink = itemId
+        ? `https://www.mercadolivre.com.br/p/${itemId}`
+        : null;
+
+      return {
+        sku: String(r.sku).trim(),
+        title: r.title ?? null,
+        brand: r.brand ?? null,
+        stock: Number(r.stock || 0),
+        // status é "active" se pelo menos uma connection tem ativo
+        status: typeof r.statuses === "string" && r.statuses.includes("active") ? "active" : "inactive",
+        price: r.price ? Number(r.price) : null,
+        thumbnail,
+        item_id: itemId,
+        permalink,
+      };
+    });
 
     return res.status(200).json({
       generated_at: new Date().toISOString(),
