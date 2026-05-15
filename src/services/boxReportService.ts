@@ -130,3 +130,29 @@ export async function getBoxReportList(params: {
 export async function getBoxReportToday(): Promise<TodayReport> {
   return fetchJson<TodayReport>(`${BASE}/today`);
 }
+
+export interface BoxLookupResult {
+  found: boolean;
+  q: string;
+  is_pack: boolean;
+  pack_id: number | null;
+  connection_id: string;
+  company: string;
+  ship_status: string | null;
+  shipping_id: string | null;
+  total_amount: number;
+  total_qty: number;
+  orders: Array<{
+    sale_number: string;
+    buyer_name: string;
+    item_title: string;
+    sku: string;
+    amount: number;
+    quantity: number;
+    sale_date: string;
+  }>;
+}
+
+export async function lookupOrder(q: string): Promise<BoxLookupResult> {
+  return fetchJson<BoxLookupResult>(`${BASE}/lookup?q=${encodeURIComponent(q)}`);
+}

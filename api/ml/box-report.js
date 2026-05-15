@@ -252,6 +252,82 @@ export async function handleList(req, res) {
 }
 
 /**
+ * GET /api/ml/box-report/lookup?q=SALE_NUMBER_OR_PACK_ID
+ * Busca um pedido pelo sale_number ou pack_id lido no QR Code.
+ * Retorna os dados do pedido + empresa identificada.
+ */
+export async function handleLookup(req, res) {
+  try {
+    await requireAuthenticatedProfile(req);
+  } catch {
+    return res.status(401).json({ error: "Sessao invalida." });
+  }
+
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "Parâmetro q obrigatório." });
+
+  const companyMap = getCompanyMap();
+
+  try {
+    // Tenta por sale_number / order_id primeiro
+    let rows = db.prepare(
+      `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
+              json_extract(raw_data, '$.pack_id') AS pack_id,
+              json_extract(raw_data, '$.shipment_snapshot.status') AS ship_status,
+              shipping_id, sale_date
+       FROM ml_orders WHERE sale_number = ? OR order_id = ?`
+    ).all(q, q);
+
+    // Se não achou, tenta por pack_id
+    if (rows.length === 0) {
+      rows = db.prepare(
+        `SELECT sale_number, order_id, connection_id, buyer_name, item_title, sku, amount, quantity,
+                json_extract(raw_data, '$.pack_id') AS pack_id,
+                json_extract(raw_data, '$.shipment_snapshot.status') AS ship_status,
+                shipping_id, sale_date
+         FROM ml_orders WHERE json_extract(raw_data, '$.pack_id') = ?`
+      ).all(q);
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Pedido não encontrado.", q });
+    }
+
+    // Monta resultado — pode ser 1 pedido ou múltiplos (pack)
+    const isPack = rows.length > 1 || rows[0].pack_id != null;
+    const connectionId = rows[0].connection_id;
+    const company = companyMap[connectionId] || connectionId;
+    const totalAmount = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const totalQty = rows.reduce((s, r) => s + (r.quantity || 1), 0);
+
+    return res.json({
+      found: true,
+      q,
+      is_pack: isPack,
+      pack_id: rows[0].pack_id,
+      connection_id: connectionId,
+      company,
+      ship_status: rows[0].ship_status,
+      shipping_id: rows[0].shipping_id,
+      total_amount: totalAmount,
+      total_qty: totalQty,
+      orders: rows.map((r) => ({
+        sale_number: r.sale_number,
+        buyer_name: r.buyer_name,
+        item_title: r.item_title,
+        sku: r.sku,
+        amount: r.amount,
+        quantity: r.quantity,
+        sale_date: r.sale_date,
+      })),
+    });
+  } catch (err) {
+    console.error("[box-report] lookup error:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
  * GET /api/ml/box-report/today
  * Visão do dia atual — caixas que saíram hoje, separadas por empresa.
  */

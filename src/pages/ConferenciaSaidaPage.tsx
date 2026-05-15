@@ -1,59 +1,58 @@
 /**
- * ConferenciaSaidaPage — Visão do dia: caixas que saíram hoje.
+ * ConferenciaSaidaPage — Conferência física de saída de caixas.
  *
- * Leitura automática dos pedidos ML já sincronizados.
- * "Caixa" = 1 shipping_id único com status shipped.
- * Separação por empresa (Ecoferro / Fantom).
+ * O operador lê o QR Code da venda (etiqueta interna EcoFerro).
+ * O sistema identifica automaticamente se é Fantom ou Ecoferro
+ * e vai contabilizando as caixas em tempo real.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  AlertCircle,
   Box,
   Building2,
   CheckCircle2,
-  Loader2,
   Package,
-  RefreshCw,
-  Truck,
+  QrCode,
+  RotateCcw,
+  Scan,
   TrendingUp,
+  X,
 } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import {
-  getBoxReportToday,
-  type TodayReport,
-  type TodayBoxCompany,
-} from "@/services/boxReportService";
+import { lookupOrder, type BoxLookupResult } from "@/services/boxReportService";
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Tipos ────────────────────────────────────────────────────────────────────
+
+interface ScannedItem {
+  id: string; // sale_number ou pack_id
+  result: BoxLookupResult;
+  scanned_at: Date;
+  duplicate: boolean;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatCurrency(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function formatTime(iso: string | null | undefined) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function isEcoferro(company: string) {
+  return company.toLowerCase().includes("ecoferro");
 }
 
-function formatDateBR(iso: string) {
-  const [y, m, d] = iso.split("-");
-  return `${d}/${m}/${y}`;
+function companyColor(company: string) {
+  return isEcoferro(company) ? "#2968c8" : "#7c3aed";
 }
 
-const SUBSTATUS_LABEL: Record<string, string> = {
-  out_for_delivery: "Em rota de entrega",
-  receiver_absent: "Destinatário ausente",
-  not_visited: "Não visitado",
-  at_customs: "Na alfândega",
-  null: "Em trânsito",
-};
+function companyBg(company: string) {
+  return isEcoferro(company) ? "#f0f4ff" : "#f5f0ff";
+}
 
-// ─── Card de totais ───────────────────────────────────────────────────────────
+// ─── Card de stat ─────────────────────────────────────────────────────────────
 
 function StatCard({
   label,
@@ -69,119 +68,107 @@ function StatCard({
   color?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-[#e5e5e5] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-      <div className="mb-3 flex items-center justify-between">
+    <div className="rounded-2xl border border-[#e5e5e5] bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+      <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-[#888]">
           {label}
         </span>
         <span style={{ color }}>{icon}</span>
       </div>
-      <p className="text-[28px] font-bold leading-none text-[#1a1a1a]">{value}</p>
-      {sub && <p className="mt-1.5 text-[12px] text-[#888]">{sub}</p>}
+      <p className="text-[24px] font-bold leading-none text-[#1a1a1a]">{value}</p>
+      {sub && <p className="mt-1 text-[12px] text-[#888]">{sub}</p>}
     </div>
   );
 }
 
-// ─── Card de empresa ──────────────────────────────────────────────────────────
+// ─── Item escaneado ───────────────────────────────────────────────────────────
 
-function CompanyCard({ company }: { company: TodayBoxCompany }) {
-  const [expanded, setExpanded] = useState(true);
-
-  const isEcoferro = company.seller_nickname.toLowerCase().includes("ecoferro");
-  const accentColor = isEcoferro ? "#2968c8" : "#7c3aed";
+function ScannedCard({
+  item,
+  index,
+  onRemove,
+}: {
+  item: ScannedItem;
+  index: number;
+  onRemove: (id: string) => void;
+}) {
+  const color = companyColor(item.result.company);
+  const bg = companyBg(item.result.company);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-      {/* Header da empresa */}
-      <button
-        className="flex w-full cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-[#fafafa]"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <div className="flex items-center gap-3">
-          <div
-            className="flex h-8 w-8 items-center justify-center rounded-xl"
-            style={{ backgroundColor: `${accentColor}15` }}
-          >
-            <Building2 className="h-4 w-4" style={{ color: accentColor }} />
-          </div>
-          <span className="text-[15px] font-bold text-[#1a1a1a]">
-            {company.seller_nickname}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 text-[13px]">
-          <div className="flex items-center gap-1.5 text-[#666]">
-            <Box className="h-4 w-4" />
-            <span className="font-bold text-[#222]">{company.total_boxes}</span>
-            <span>caixas</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-[#666]">
-            <Package className="h-4 w-4" />
-            <span className="font-bold text-[#222]">{company.total_orders}</span>
-            <span>pedidos</span>
-          </div>
-          <span className="font-bold text-[#22c55e]">
-            {formatCurrency(company.total_amount)}
-          </span>
-        </div>
-      </button>
-
-      {/* Lista de caixas */}
-      {expanded && (
-        <div className="border-t border-[#ededed]">
-          {company.boxes.length === 0 ? (
-            <p className="px-5 py-4 text-[13px] text-[#aaa]">
-              Nenhuma caixa despachada hoje.
-            </p>
-          ) : (
-            <div className="divide-y divide-[#f0f0f0]">
-              {company.boxes.map((box, idx) => (
-                <div
-                  key={box.shipping_id}
-                  className="flex flex-wrap items-center gap-3 px-5 py-3 text-[13px]"
-                >
-                  {/* Número sequencial */}
-                  <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#f0f4ff] text-[11px] font-bold text-[#2968c8]">
-                    {idx + 1}
-                  </span>
-
-                  {/* Shipping ID */}
-                  <span className="font-mono text-[12px] text-[#444]">
-                    #{box.shipping_id}
-                  </span>
-
-                  {/* Horário */}
-                  <span className="text-[#888]">{formatTime(box.shipped_at)}</span>
-
-                  {/* Pedidos */}
-                  <span className="flex items-center gap-1 text-[#666]">
-                    <Package className="h-3.5 w-3.5" />
-                    {box.order_count} {box.order_count === 1 ? "pedido" : "pedidos"}
-                  </span>
-
-                  {/* Pack */}
-                  {box.pack_id && (
-                    <span className="rounded-full bg-[#f0f4ff] px-2 py-0.5 text-[11px] font-semibold text-[#2968c8]">
-                      Pack
-                    </span>
-                  )}
-
-                  {/* Substatus */}
-                  {box.substatus && (
-                    <span className="rounded-full bg-[#fef9c3] px-2 py-0.5 text-[11px] font-semibold text-[#854d0e]">
-                      {SUBSTATUS_LABEL[box.substatus] || box.substatus}
-                    </span>
-                  )}
-
-                  {/* Valor */}
-                  <span className="ml-auto font-semibold text-[#22c55e]">
-                    {formatCurrency(box.total_amount)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+    <div
+      className={cn(
+        "flex items-start gap-3 rounded-xl border p-3 transition-all",
+        item.duplicate
+          ? "border-[#fbbf24] bg-[#fffbeb]"
+          : "border-[#e5e5e5] bg-white"
       )}
+    >
+      {/* Número sequencial */}
+      <div
+        className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[12px] font-bold"
+        style={{ backgroundColor: bg, color }}
+      >
+        {index + 1}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Empresa */}
+          <span
+            className="rounded-full px-2 py-0.5 text-[11px] font-bold"
+            style={{ backgroundColor: bg, color }}
+          >
+            {item.result.company}
+          </span>
+
+          {/* Pack */}
+          {item.result.is_pack && (
+            <span className="rounded-full bg-[#f0f4ff] px-2 py-0.5 text-[11px] font-semibold text-[#2968c8]">
+              Pack · {item.result.orders.length} pedidos
+            </span>
+          )}
+
+          {/* Duplicado */}
+          {item.duplicate && (
+            <span className="flex items-center gap-1 rounded-full bg-[#fef3c7] px-2 py-0.5 text-[11px] font-bold text-[#92400e]">
+              <AlertCircle className="h-3 w-3" />
+              Duplicado
+            </span>
+          )}
+
+          {/* Horário */}
+          <span className="ml-auto text-[11px] text-[#aaa]">
+            {item.scanned_at.toLocaleTimeString("pt-BR", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            })}
+          </span>
+        </div>
+
+        {/* Pedidos */}
+        <div className="mt-1.5 space-y-0.5">
+          {item.result.orders.map((o) => (
+            <div key={o.sale_number} className="flex items-center gap-2 text-[12px]">
+              <span className="font-mono text-[11px] text-[#888]">#{o.sale_number}</span>
+              <span className="truncate text-[#444]">{o.item_title}</span>
+              <span className="ml-auto flex-shrink-0 font-semibold text-[#22c55e]">
+                {formatCurrency(o.amount)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Remover */}
+      <button
+        className="flex-shrink-0 rounded-lg p-1 text-[#ccc] hover:bg-[#f5f5f5] hover:text-[#666]"
+        onClick={() => onRemove(item.id)}
+        title="Remover"
+      >
+        <X className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -189,152 +176,265 @@ function CompanyCard({ company }: { company: TodayBoxCompany }) {
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function ConferenciaSaidaPage() {
-  const [data, setData] = useState<TodayReport | null>(null);
+  const [items, setItems] = useState<ScannedItem[]>([]);
+  const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [lastFeedback, setLastFeedback] = useState<{
+    type: "ok" | "duplicate" | "error";
+    message: string;
+  } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await getBoxReportToday();
-      setData(result);
-      setLastUpdate(new Date());
-    } catch (err) {
-      toast.error("Erro ao carregar caixas de hoje");
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+  // Focar no input automaticamente
+  useEffect(() => {
+    inputRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    void load();
-    // Auto-refresh a cada 2 minutos
-    const interval = setInterval(() => void load(), 2 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [load]);
+  // Totais calculados
+  const totals = {
+    total: items.filter((i) => !i.duplicate).length,
+    ecoferro: items.filter((i) => !i.duplicate && isEcoferro(i.result.company)).length,
+    fantom: items.filter((i) => !i.duplicate && !isEcoferro(i.result.company)).length,
+    amount: items
+      .filter((i) => !i.duplicate)
+      .reduce((s, i) => s + i.result.total_amount, 0),
+    amountEcoferro: items
+      .filter((i) => !i.duplicate && isEcoferro(i.result.company))
+      .reduce((s, i) => s + i.result.total_amount, 0),
+    amountFantom: items
+      .filter((i) => !i.duplicate && !isEcoferro(i.result.company))
+      .reduce((s, i) => s + i.result.total_amount, 0),
+  };
 
-  const today = new Date();
-  const todayLabel = today.toLocaleDateString("pt-BR", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  });
+  const handleScan = useCallback(
+    async (value: string) => {
+      const q = value.trim();
+      if (!q) return;
+
+      setInputValue("");
+      setLoading(true);
+      setLastFeedback(null);
+
+      try {
+        const result = await lookupOrder(q);
+
+        // Verificar duplicata — usa sale_number do primeiro pedido ou pack_id
+        const itemId = result.pack_id ? String(result.pack_id) : result.orders[0]?.sale_number || q;
+        const isDuplicate = items.some((i) => i.id === itemId);
+
+        const newItem: ScannedItem = {
+          id: itemId,
+          result,
+          scanned_at: new Date(),
+          duplicate: isDuplicate,
+        };
+
+        setItems((prev) => [newItem, ...prev]);
+
+        if (isDuplicate) {
+          setLastFeedback({
+            type: "duplicate",
+            message: `⚠️ Duplicado! ${result.company} — #${itemId}`,
+          });
+          toast.warning(`Caixa duplicada: ${result.company} #${itemId}`);
+        } else {
+          setLastFeedback({
+            type: "ok",
+            message: `✓ ${result.company} — ${result.orders.length > 1 ? `Pack (${result.orders.length} pedidos)` : result.orders[0]?.item_title || q} — ${formatCurrency(result.total_amount)}`,
+          });
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Pedido não encontrado";
+        setLastFeedback({ type: "error", message: `✗ ${message} — "${q}"` });
+        toast.error(message);
+      } finally {
+        setLoading(false);
+        // Refocar no input para próxima leitura
+        setTimeout(() => inputRef.current?.focus(), 100);
+      }
+    },
+    [items]
+  );
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      void handleScan(inputValue);
+    }
+  };
+
+  const handleRemove = (id: string) => {
+    setItems((prev) => prev.filter((i) => i.id !== id));
+  };
+
+  const handleReset = () => {
+    if (items.length === 0) return;
+    if (!window.confirm("Limpar toda a conferência atual?")) return;
+    setItems([]);
+    setLastFeedback(null);
+    inputRef.current?.focus();
+  };
 
   return (
     <AppLayout>
-      <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
         {/* Header */}
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="mb-5 flex items-center justify-between">
           <div>
             <h1 className="text-[24px] font-bold text-[#1a1a1a] sm:text-[28px]">
               Conferência de Saída
             </h1>
-            <p className="mt-1 text-[14px] capitalize text-[#666]">{todayLabel}</p>
-            {lastUpdate && (
-              <p className="mt-0.5 text-[12px] text-[#aaa]">
-                Atualizado às{" "}
-                {lastUpdate.toLocaleTimeString("pt-BR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })}
-              </p>
-            )}
+            <p className="mt-0.5 text-[14px] text-[#666]">
+              Leia o QR Code da etiqueta para registrar a saída da caixa.
+            </p>
           </div>
           <Button
             variant="outline"
-            className="h-10 self-start text-[13px]"
-            onClick={load}
-            disabled={loading}
+            className="h-9 text-[13px] text-[#e53e3e] hover:border-[#e53e3e] hover:bg-[#fff5f5]"
+            onClick={handleReset}
+            disabled={items.length === 0}
           >
-            {loading ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-2 h-4 w-4" />
-            )}
-            Atualizar
+            <RotateCcw className="mr-1.5 h-4 w-4" />
+            Limpar
           </Button>
         </div>
 
-        {loading && !data ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-8 w-8 animate-spin text-[#2968c8]" />
-          </div>
-        ) : !data ? null : (
-          <>
-            {/* Cards de totais do dia */}
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
-              <StatCard
-                label="Caixas saídas hoje"
-                value={data.total_boxes}
-                sub="envios únicos"
-                icon={<Box className="h-5 w-5" />}
-                color="#2968c8"
-              />
-              <StatCard
-                label="Pedidos despachados"
-                value={data.total_orders}
-                icon={<Package className="h-5 w-5" />}
-                color="#7c3aed"
-              />
-              <StatCard
-                label="Faturamento do dia"
-                value={formatCurrency(data.total_amount)}
-                icon={<TrendingUp className="h-5 w-5" />}
-                color="#22c55e"
-              />
-            </div>
-
-            {/* Separação por empresa */}
-            {data.by_company.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#e5e5e5] py-20 text-center">
-                <Truck className="mb-3 h-10 w-10 text-[#ccc]" />
-                <p className="text-[15px] font-semibold text-[#888]">
-                  Nenhuma caixa despachada hoje
-                </p>
-                <p className="mt-1 text-[13px] text-[#aaa]">
-                  As caixas aparecem aqui automaticamente quando o status do envio muda para
-                  "Despachado" no Mercado Livre.
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                {/* Resumo consolidado quando há 2+ empresas */}
-                {data.by_company.length > 1 && (
-                  <div className="rounded-2xl border border-[#e5e5e5] bg-[#f8faff] p-4">
-                    <div className="mb-2 flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-[#2968c8]" />
-                      <span className="text-[13px] font-semibold text-[#444]">
-                        Consolidado — todas as empresas
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-6 text-[13px]">
-                      {data.by_company.map((c) => (
-                        <div key={c.connection_id} className="flex items-center gap-2">
-                          <span className="font-semibold text-[#222]">
-                            {c.seller_nickname}:
-                          </span>
-                          <span className="text-[#666]">
-                            {c.total_boxes} caixas · {c.total_orders} pedidos ·{" "}
-                            <span className="font-semibold text-[#22c55e]">
-                              {formatCurrency(c.total_amount)}
-                            </span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Cards por empresa */}
-                {data.by_company.map((company) => (
-                  <CompanyCard key={company.connection_id} company={company} />
-                ))}
-              </div>
+        {/* Campo de leitura */}
+        <div className="mb-5 rounded-2xl border-2 border-[#2968c8] bg-white p-4 shadow-[0_2px_8px_rgba(41,104,200,0.12)]">
+          <div className="mb-2 flex items-center gap-2">
+            <Scan className="h-4 w-4 text-[#2968c8]" />
+            <span className="text-[13px] font-semibold text-[#2968c8]">
+              Aguardando leitura do QR Code...
+            </span>
+            {loading && (
+              <span className="ml-auto text-[12px] text-[#888]">Buscando...</span>
             )}
-          </>
+          </div>
+          <Input
+            ref={inputRef}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Aponte o leitor para o QR Venda ou digite o número do pedido"
+            className="h-12 border-[#d0e0ff] bg-[#f8faff] text-[15px] font-mono focus:border-[#2968c8] focus:ring-[#2968c8]"
+            disabled={loading}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+          {/* Feedback da última leitura */}
+          {lastFeedback && (
+            <div
+              className={cn(
+                "mt-2 rounded-lg px-3 py-2 text-[13px] font-semibold",
+                lastFeedback.type === "ok" && "bg-[#f0fdf4] text-[#166534]",
+                lastFeedback.type === "duplicate" && "bg-[#fffbeb] text-[#92400e]",
+                lastFeedback.type === "error" && "bg-[#fef2f2] text-[#991b1b]"
+              )}
+            >
+              {lastFeedback.message}
+            </div>
+          )}
+        </div>
+
+        {/* Cards de totais */}
+        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard
+            label="Total caixas"
+            value={totals.total}
+            icon={<Box className="h-4 w-4" />}
+            color="#2968c8"
+          />
+          <StatCard
+            label="Ecoferro"
+            value={totals.ecoferro}
+            sub={formatCurrency(totals.amountEcoferro)}
+            icon={<Building2 className="h-4 w-4" />}
+            color="#2968c8"
+          />
+          <StatCard
+            label="Fantom"
+            value={totals.fantom}
+            sub={formatCurrency(totals.amountFantom)}
+            icon={<Building2 className="h-4 w-4" />}
+            color="#7c3aed"
+          />
+          <StatCard
+            label="Faturamento"
+            value={formatCurrency(totals.amount)}
+            icon={<TrendingUp className="h-4 w-4" />}
+            color="#22c55e"
+          />
+        </div>
+
+        {/* Lista de itens escaneados */}
+        {items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#e5e5e5] py-16 text-center">
+            <QrCode className="mb-3 h-10 w-10 text-[#ccc]" />
+            <p className="text-[15px] font-semibold text-[#888]">
+              Nenhuma caixa conferida ainda
+            </p>
+            <p className="mt-1 text-[13px] text-[#aaa]">
+              Leia o QR Code da etiqueta para começar.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[13px] font-semibold text-[#444]">
+                {items.length} {items.length === 1 ? "leitura" : "leituras"} realizadas
+              </span>
+              {items.some((i) => i.duplicate) && (
+                <span className="flex items-center gap-1 text-[12px] font-semibold text-[#92400e]">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {items.filter((i) => i.duplicate).length} duplicado(s)
+                </span>
+              )}
+            </div>
+            {items.map((item, idx) => (
+              <ScannedCard
+                key={`${item.id}-${item.scanned_at.getTime()}`}
+                item={item}
+                index={idx}
+                onRemove={handleRemove}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Resumo final quando há itens */}
+        {items.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-[#e5e5e5] bg-[#fafafa] p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-[#22c55e]" />
+              <span className="text-[13px] font-bold text-[#444]">
+                Resumo da conferência
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-[13px] sm:grid-cols-3">
+              <div className="rounded-xl bg-white p-3 text-center shadow-sm">
+                <p className="text-[22px] font-bold text-[#2968c8]">{totals.ecoferro}</p>
+                <p className="text-[11px] text-[#888]">Ecoferro</p>
+                <p className="text-[11px] font-semibold text-[#22c55e]">
+                  {formatCurrency(totals.amountEcoferro)}
+                </p>
+              </div>
+              <div className="rounded-xl bg-white p-3 text-center shadow-sm">
+                <p className="text-[22px] font-bold text-[#7c3aed]">{totals.fantom}</p>
+                <p className="text-[11px] text-[#888]">Fantom</p>
+                <p className="text-[11px] font-semibold text-[#22c55e]">
+                  {formatCurrency(totals.amountFantom)}
+                </p>
+              </div>
+              <div className="col-span-2 rounded-xl bg-white p-3 text-center shadow-sm sm:col-span-1">
+                <p className="text-[22px] font-bold text-[#1a1a1a]">{totals.total}</p>
+                <p className="text-[11px] text-[#888]">Total caixas</p>
+                <p className="text-[11px] font-semibold text-[#22c55e]">
+                  {formatCurrency(totals.amount)}
+                </p>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </AppLayout>
