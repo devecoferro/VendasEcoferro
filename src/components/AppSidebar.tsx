@@ -5,7 +5,6 @@ import {
   BookOpen,
   Box,
   Bug,
-  ClipboardCheck,
   ChevronLeft,
   ChevronRight,
   History,
@@ -44,7 +43,6 @@ interface SidebarContentProps {
 
 const baseNavItems: SidebarNavItem[] = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard", moduleId: "dashboard" },
-  { to: "/review", icon: ClipboardCheck, label: "Conferencia", moduleId: "review" },
   { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda", moduleId: "conferencia_venda" },
   { to: "/conferencia-saida", icon: Box, label: "Conf. Saida", moduleId: "conferencia_saida" },
   { to: "/relatorio-caixas", icon: Truck, label: "Rel. Caixas", moduleId: "relatorio_caixas" },

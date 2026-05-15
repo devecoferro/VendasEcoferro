@@ -6,6 +6,7 @@
  * e vai contabilizando as caixas em tempo real.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import {
   AlertCircle,
@@ -176,6 +177,8 @@ function ScannedCard({
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function ConferenciaSaidaPage() {
+  const { currentUser } = useAuth();
+  const isAdmin = currentUser?.role === "admin";
   const [items, setItems] = useState<ScannedItem[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
@@ -365,7 +368,7 @@ export default function ConferenciaSaidaPage() {
         </div>
 
         {/* Cards de totais */}
-        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className={`mb-5 grid gap-3 ${isAdmin ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-2 sm:grid-cols-3"}`}>
           <StatCard
             label="Total caixas"
             value={totals.total}
@@ -375,23 +378,25 @@ export default function ConferenciaSaidaPage() {
           <StatCard
             label="Ecoferro"
             value={totals.ecoferro}
-            sub={formatCurrency(totals.amountEcoferro)}
+            sub={isAdmin ? formatCurrency(totals.amountEcoferro) : undefined}
             icon={<Building2 className="h-4 w-4" />}
             color="#2968c8"
           />
           <StatCard
             label="Fantom"
             value={totals.fantom}
-            sub={formatCurrency(totals.amountFantom)}
+            sub={isAdmin ? formatCurrency(totals.amountFantom) : undefined}
             icon={<Building2 className="h-4 w-4" />}
             color="#7c3aed"
           />
-          <StatCard
-            label="Faturamento"
-            value={formatCurrency(totals.amount)}
-            icon={<TrendingUp className="h-4 w-4" />}
-            color="#22c55e"
-          />
+          {isAdmin && (
+            <StatCard
+              label="Faturamento"
+              value={formatCurrency(totals.amount)}
+              icon={<TrendingUp className="h-4 w-4" />}
+              color="#22c55e"
+            />
+          )}
         </div>
 
         {/* Lista de itens escaneados */}
@@ -442,23 +447,29 @@ export default function ConferenciaSaidaPage() {
               <div className="rounded-xl bg-white p-3 text-center shadow-sm">
                 <p className="text-[22px] font-bold text-[#2968c8]">{totals.ecoferro}</p>
                 <p className="text-[11px] text-[#888]">Ecoferro</p>
-                <p className="text-[11px] font-semibold text-[#22c55e]">
-                  {formatCurrency(totals.amountEcoferro)}
-                </p>
+                {isAdmin && (
+                  <p className="text-[11px] font-semibold text-[#22c55e]">
+                    {formatCurrency(totals.amountEcoferro)}
+                  </p>
+                )}
               </div>
               <div className="rounded-xl bg-white p-3 text-center shadow-sm">
                 <p className="text-[22px] font-bold text-[#7c3aed]">{totals.fantom}</p>
                 <p className="text-[11px] text-[#888]">Fantom</p>
-                <p className="text-[11px] font-semibold text-[#22c55e]">
-                  {formatCurrency(totals.amountFantom)}
-                </p>
+                {isAdmin && (
+                  <p className="text-[11px] font-semibold text-[#22c55e]">
+                    {formatCurrency(totals.amountFantom)}
+                  </p>
+                )}
               </div>
               <div className="col-span-2 rounded-xl bg-white p-3 text-center shadow-sm sm:col-span-1">
                 <p className="text-[22px] font-bold text-[#1a1a1a]">{totals.total}</p>
                 <p className="text-[11px] text-[#888]">Total caixas</p>
-                <p className="text-[11px] font-semibold text-[#22c55e]">
-                  {formatCurrency(totals.amount)}
-                </p>
+                {isAdmin && (
+                  <p className="text-[11px] font-semibold text-[#22c55e]">
+                    {formatCurrency(totals.amount)}
+                  </p>
+                )}
               </div>
             </div>
           </div>

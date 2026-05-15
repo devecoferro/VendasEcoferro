@@ -1,10 +1,10 @@
 /**
  * RelatorioCaixasPage — Relatório histórico de caixas despachadas.
  *
- * Leitura automática dos pedidos ML já sincronizados.
- * Exibe totais, gráfico diário e separação por empresa (Ecoferro / Fantom).
+ * - Dados carregados SOMENTE após clicar em "Gerar Relatório"
+ * - Impressão A4: separado por empresa ou total consolidado
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Area,
@@ -21,6 +21,7 @@ import {
   Download,
   Loader2,
   Package,
+  Printer,
   RefreshCw,
   TrendingUp,
   Truck,
@@ -84,11 +85,15 @@ function formatDayLabel(dateStr: string) {
   return `${d}/${m}`;
 }
 
+function formatDateBr(iso: string) {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
 // ─── Chart config ─────────────────────────────────────────────────────────────
 
 const chartConfig: ChartConfig = {
   total_boxes: { label: "Caixas", color: "#2968c8" },
-  total_orders: { label: "Pedidos", color: "#7c3aed" },
 };
 
 // ─── Card de stat ─────────────────────────────────────────────────────────────
@@ -155,15 +160,12 @@ function CompanyCard({
           {pct.toFixed(0)}%
         </span>
       </div>
-
-      {/* Barra de progresso */}
       <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-[#f0f0f0]">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${pct}%`, backgroundColor: color }}
         />
       </div>
-
       <div className="grid grid-cols-3 gap-3 text-center">
         <div>
           <p className="text-[20px] font-bold text-[#1a1a1a]">{totalBoxes}</p>
@@ -188,23 +190,31 @@ function CompanyCard({
 
 export default function RelatorioCaixasPage() {
   const [connections, setConnections] = useState<MLConnection[]>([]);
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>("all");
   const [dateFrom, setDateFrom] = useState(thirtyDaysAgoIso());
   const [dateTo, setDateTo] = useState(todayIso());
+  const [printMode, setPrintMode] = useState<"all" | "by_company">("all");
 
   const [summary, setSummary] = useState<BoxReportSummary | null>(null);
   const [daily, setDaily] = useState<DailyReport | null>(null);
   const [list, setList] = useState<BoxListReport | null>(null);
   const [loading, setLoading] = useState(false);
+  const [hasGenerated, setHasGenerated] = useState(false);
+
+  // Parâmetros usados na última geração (para exibir no cabeçalho de impressão)
+  const lastParamsRef = useRef({ dateFrom, dateTo, selectedConnectionId });
 
   const loadConnections = useCallback(async () => {
+    if (connectionsLoaded) return;
     try {
       const conns = await listMLConnections();
       setConnections(conns);
+      setConnectionsLoaded(true);
     } catch {
       toast.error("Erro ao carregar conexões ML");
     }
-  }, []);
+  }, [connectionsLoaded]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -214,14 +224,16 @@ export default function RelatorioCaixasPage() {
         date_to: dateTo,
         connection_id: selectedConnectionId !== "all" ? selectedConnectionId : undefined,
       };
+      lastParamsRef.current = { dateFrom, dateTo, selectedConnectionId };
       const [s, d, l] = await Promise.all([
         getBoxReportSummary(params),
         getBoxReportDaily(params),
-        getBoxReportList({ ...params, limit: "200" }),
+        getBoxReportList({ ...params, limit: "500" }),
       ]);
       setSummary(s);
       setDaily(d);
       setList(l);
+      setHasGenerated(true);
     } catch (err) {
       toast.error("Erro ao carregar relatório");
       console.error(err);
@@ -230,8 +242,10 @@ export default function RelatorioCaixasPage() {
     }
   }, [dateFrom, dateTo, selectedConnectionId]);
 
-  useEffect(() => { void loadConnections(); }, [loadConnections]);
-  useEffect(() => { void loadData(); }, [loadData]);
+  // Carregar conexões ao abrir o select
+  const handleSelectOpen = () => {
+    void loadConnections();
+  };
 
   // Dados para o gráfico
   const chartData = useMemo(() => {
@@ -239,7 +253,6 @@ export default function RelatorioCaixasPage() {
     return daily.series.map((d) => ({
       day: formatDayLabel(d.date),
       total_boxes: d.total_boxes,
-      total_orders: d.total_orders,
     }));
   }, [daily]);
 
@@ -268,6 +281,153 @@ export default function RelatorioCaixasPage() {
     URL.revokeObjectURL(url);
   };
 
+  // Impressão A4
+  const handlePrint = () => {
+    if (!summary || !list) return;
+    const p = lastParamsRef.current;
+    const periodoLabel = `${formatDateBr(p.dateFrom)} a ${formatDateBr(p.dateTo)}`;
+
+    // Agrupar itens por empresa para impressão separada
+    const byCompany: Record<string, typeof list.items> = {};
+    for (const item of list.items) {
+      if (!byCompany[item.seller_nickname]) byCompany[item.seller_nickname] = [];
+      byCompany[item.seller_nickname].push(item);
+    }
+
+    const buildTable = (items: typeof list.items) => `
+      <table>
+        <thead>
+          <tr>
+            <th>Empresa</th>
+            <th>Shipping ID</th>
+            <th>Despachado em</th>
+            <th>Pedidos</th>
+            <th>Total</th>
+            <th>Obs.</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((i) => `
+            <tr>
+              <td>${i.seller_nickname}</td>
+              <td class="mono">#${i.shipping_id}</td>
+              <td>${i.shipped_at ? new Date(i.shipped_at).toLocaleString("pt-BR") : "—"}</td>
+              <td class="center">${i.order_count}</td>
+              <td class="right green">${formatCurrency(i.total_amount)}</td>
+              <td>${i.pack_id ? "Pack" : ""}${i.substatus ? ` ${i.substatus}` : ""}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+
+    const buildSummaryBlock = (
+      label: string,
+      boxes: number,
+      orders: number,
+      amount: number
+    ) => `
+      <div class="summary-block">
+        <div class="summary-item"><span class="summary-label">Total de caixas</span><span class="summary-value">${boxes}</span></div>
+        <div class="summary-item"><span class="summary-label">Total de pedidos</span><span class="summary-value">${orders}</span></div>
+        <div class="summary-item"><span class="summary-label">Faturamento</span><span class="summary-value green">${formatCurrency(amount)}</span></div>
+      </div>
+    `;
+
+    let body = "";
+
+    if (printMode === "by_company") {
+      for (const [empresa, items] of Object.entries(byCompany)) {
+        const total_boxes = items.length;
+        const total_orders = items.reduce((s, i) => s + i.order_count, 0);
+        const total_amount = items.reduce((s, i) => s + i.total_amount, 0);
+        body += `
+          <div class="section">
+            <h2>${empresa}</h2>
+            ${buildSummaryBlock(empresa, total_boxes, total_orders, total_amount)}
+            ${buildTable(items)}
+          </div>
+          <div class="page-break"></div>
+        `;
+      }
+    } else {
+      body = `
+        <div class="section">
+          ${buildSummaryBlock(
+            "Total",
+            summary.totals.total_boxes,
+            summary.totals.total_orders,
+            summary.totals.total_amount
+          )}
+          ${summary.by_company.length > 1 ? `
+            <div class="company-summary">
+              ${summary.by_company.map((c) => `
+                <div class="company-row">
+                  <span class="company-name">${c.seller_nickname}</span>
+                  <span>${c.total_boxes} caixas</span>
+                  <span>${c.total_orders} pedidos</span>
+                  <span class="green">${formatCurrency(c.total_amount)}</span>
+                </div>
+              `).join("")}
+            </div>
+          ` : ""}
+          ${buildTable(list.items)}
+        </div>
+      `;
+    }
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Relatório de Caixas — ${periodoLabel}</title>
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: Arial, sans-serif; font-size: 11px; color: #222; padding: 20px; }
+          h1 { font-size: 18px; font-weight: bold; margin-bottom: 2px; }
+          .subtitle { font-size: 11px; color: #666; margin-bottom: 16px; }
+          h2 { font-size: 14px; font-weight: bold; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 2px solid #2968c8; color: #2968c8; }
+          .summary-block { display: flex; gap: 24px; margin-bottom: 12px; padding: 10px 14px; background: #f8f9ff; border-radius: 6px; border: 1px solid #e0e8ff; }
+          .summary-item { display: flex; flex-direction: column; }
+          .summary-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+          .summary-value { font-size: 18px; font-weight: bold; color: #1a1a1a; }
+          .summary-value.green { color: #16a34a; }
+          .company-summary { margin-bottom: 12px; }
+          .company-row { display: flex; gap: 16px; padding: 4px 0; border-bottom: 1px solid #f0f0f0; font-size: 11px; }
+          .company-name { font-weight: bold; flex: 1; }
+          table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+          th { background: #f0f4ff; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #555; padding: 6px 8px; text-align: left; border-bottom: 1px solid #dde6ff; }
+          td { padding: 5px 8px; border-bottom: 1px solid #f0f0f0; font-size: 11px; vertical-align: middle; }
+          tr:last-child td { border-bottom: none; }
+          .mono { font-family: monospace; font-size: 10px; }
+          .center { text-align: center; }
+          .right { text-align: right; }
+          .green { color: #16a34a; font-weight: 600; }
+          .section { margin-bottom: 20px; }
+          .page-break { page-break-after: always; }
+          @media print {
+            body { padding: 10px; }
+            .page-break { page-break-after: always; }
+          }
+        </style>
+      </head>
+      <body>
+        <h1>Relatório de Caixas Despachadas</h1>
+        <p class="subtitle">Período: ${periodoLabel} · Gerado em: ${new Date().toLocaleString("pt-BR")}</p>
+        ${body}
+      </body>
+      </html>
+    `;
+
+    const win = window.open("", "_blank", "width=900,height=700");
+    if (!win) { toast.error("Popup bloqueado. Permita popups para imprimir."); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 400);
+  };
+
   return (
     <AppLayout>
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
@@ -281,81 +441,159 @@ export default function RelatorioCaixasPage() {
               Histórico de caixas despachadas por empresa e período.
             </p>
           </div>
-          <div className="flex gap-2">
+          {hasGenerated && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="h-10 text-[13px]"
+                onClick={loadData}
+                disabled={loading}
+              >
+                {loading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Atualizar
+              </Button>
+              <Button
+                variant="outline"
+                className="h-10 text-[13px]"
+                onClick={handleExportCsv}
+                disabled={!list || list.items.length === 0}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                CSV
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Filtros + Botão Gerar */}
+        <div className="mb-6 rounded-2xl border border-[#e5e5e5] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+          <div className="flex flex-wrap items-end gap-4">
+            {/* Empresa */}
+            <div>
+              <Label className="mb-1.5 block text-[12px] font-semibold text-[#666]">
+                Empresa
+              </Label>
+              <Select
+                value={selectedConnectionId}
+                onValueChange={setSelectedConnectionId}
+                onOpenChange={(open) => { if (open) handleSelectOpen(); }}
+              >
+                <SelectTrigger className="h-9 w-[180px] text-[13px]">
+                  <SelectValue placeholder="Todas" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as empresas</SelectItem>
+                  {connections.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.seller_nickname || c.seller_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Data de */}
+            <div>
+              <Label className="mb-1.5 block text-[12px] font-semibold text-[#666]">
+                De
+              </Label>
+              <div className="relative">
+                <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-9 pl-8 text-[13px]"
+                />
+              </div>
+            </div>
+
+            {/* Data até */}
+            <div>
+              <Label className="mb-1.5 block text-[12px] font-semibold text-[#666]">
+                Até
+              </Label>
+              <div className="relative">
+                <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-9 pl-8 text-[13px]"
+                />
+              </div>
+            </div>
+
+            {/* Modo de impressão */}
+            <div>
+              <Label className="mb-1.5 block text-[12px] font-semibold text-[#666]">
+                Impressão
+              </Label>
+              <Select value={printMode} onValueChange={(v) => setPrintMode(v as "all" | "by_company")}>
+                <SelectTrigger className="h-9 w-[180px] text-[13px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Total consolidado</SelectItem>
+                  <SelectItem value="by_company">Separado por empresa</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Botão Gerar */}
             <Button
-              variant="outline"
-              className="h-10 text-[13px]"
+              className="h-9 bg-[#2968c8] px-6 text-[13px] text-white hover:bg-[#1e50a0]"
               onClick={loadData}
               disabled={loading}
             >
               {loading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <BarChart3 className="mr-2 h-4 w-4" />
               )}
-              Atualizar
+              Gerar Relatório
             </Button>
-            <Button
-              variant="outline"
-              className="h-10 text-[13px]"
-              onClick={handleExportCsv}
-              disabled={!list || list.items.length === 0}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              CSV
-            </Button>
+
+            {/* Botão Imprimir (só aparece após gerar) */}
+            {hasGenerated && summary && list && list.items.length > 0 && (
+              <Button
+                variant="outline"
+                className="h-9 text-[13px]"
+                onClick={handlePrint}
+              >
+                <Printer className="mr-2 h-4 w-4" />
+                Imprimir A4
+              </Button>
+            )}
           </div>
         </div>
 
-        {/* Filtros */}
-        <div className="mb-6 flex flex-wrap items-end gap-4 rounded-2xl border border-[#e5e5e5] bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-          <div>
-            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">Empresa</Label>
-            <Select value={selectedConnectionId} onValueChange={setSelectedConnectionId}>
-              <SelectTrigger className="h-9 w-[180px] text-[13px]">
-                <SelectValue placeholder="Todas" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas as empresas</SelectItem>
-                {connections.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.seller_nickname || c.seller_id}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        {/* Estado inicial — antes de gerar */}
+        {!hasGenerated && !loading && (
+          <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#e5e5e5] py-24 text-center">
+            <Truck className="mb-3 h-10 w-10 text-[#ccc]" />
+            <p className="text-[15px] font-semibold text-[#888]">
+              Configure os filtros e clique em "Gerar Relatório"
+            </p>
+            <p className="mt-1 text-[13px] text-[#aaa]">
+              O relatório será carregado com os dados do período selecionado.
+            </p>
           </div>
-          <div>
-            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">De</Label>
-            <div className="relative">
-              <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="h-9 pl-8 text-[13px]"
-              />
-            </div>
-          </div>
-          <div>
-            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">Até</Label>
-            <div className="relative">
-              <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="h-9 pl-8 text-[13px]"
-              />
-            </div>
-          </div>
-        </div>
+        )}
 
-        {loading && !summary ? (
+        {/* Loading */}
+        {loading && (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="h-8 w-8 animate-spin text-[#2968c8]" />
           </div>
-        ) : !summary ? null : (
+        )}
+
+        {/* Conteúdo do relatório */}
+        {!loading && hasGenerated && summary && (
           <>
             {/* Cards de totais */}
             <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
