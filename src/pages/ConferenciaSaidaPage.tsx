@@ -184,6 +184,7 @@ export default function ConferenciaSaidaPage() {
     message: string;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Focar no input automaticamente
   useEffect(() => {
@@ -256,11 +257,37 @@ export default function ConferenciaSaidaPage() {
     [items]
   );
 
+  // Auto-submit: processa automaticamente 500ms após parar de digitar
+  // (cobre leitores que não enviam Enter e leitores lentos)
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInputValue(val);
+
+    // Cancela timer anterior
+    if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
+
+    if (val.trim().length >= 8) {
+      // Aguarda 500ms sem nova entrada para processar
+      autoSubmitTimer.current = setTimeout(() => {
+        void handleScan(val);
+      }, 500);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
+      // Enter imediato — cancela o timer de auto-submit
+      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
       void handleScan(inputValue);
     }
   };
+
+  // Limpar timer ao desmontar
+  useEffect(() => {
+    return () => {
+      if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
+    };
+  }, []);
 
   const handleRemove = (id: string) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
@@ -312,7 +339,7 @@ export default function ConferenciaSaidaPage() {
           <Input
             ref={inputRef}
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             placeholder="Aponte o leitor para o QR Venda ou digite o número do pedido"
             className="h-12 border-[#d0e0ff] bg-[#f8faff] text-[15px] font-mono focus:border-[#2968c8] focus:ring-[#2968c8]"
