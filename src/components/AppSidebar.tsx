@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
   BookOpen,
+  Box,
   Bug,
   ClipboardCheck,
   ChevronLeft,
@@ -15,6 +16,7 @@ import {
   Settings2,
   ShieldCheck,
   Tag,
+  Truck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,8 @@ const baseNavItems: SidebarNavItem[] = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard", moduleId: "dashboard" },
   { to: "/review", icon: ClipboardCheck, label: "Conferencia", moduleId: "review" },
   { to: "/conferencia-venda", icon: ScanLine, label: "Conferencia Venda", moduleId: "conferencia_venda" },
+  { to: "/conferencia-saida", icon: Box, label: "Conf. Saida", moduleId: "conferencia_saida" },
+  { to: "/relatorio-caixas", icon: Truck, label: "Rel. Caixas", moduleId: "relatorio_caixas" },
   { to: "/history", icon: History, label: "Historico", moduleId: "history" },
   { to: "/stock", icon: Package, label: "Estoque", moduleId: "stock" },
   {

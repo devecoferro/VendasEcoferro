@@ -29,6 +29,8 @@ const AdminHealthPage = lazy(() => import("./pages/AdminHealthPage"));
 const AdminSecurityPage = lazy(() => import("./pages/AdminSecurityPage"));
 const TenantSettingsPage = lazy(() => import("./pages/TenantSettingsPage"));
 const LabelTemplatesPage = lazy(() => import("./pages/LabelTemplatesPage"));
+const ConferenciaSaidaPage = lazy(() => import("./pages/ConferenciaSaidaPage"));
+const RelatorioCaixasPage = lazy(() => import("./pages/RelatorioCaixasPage"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 function RouteFallback() {
@@ -82,6 +84,12 @@ const App = () => (
                 </Route>
                 <Route element={<ProtectedRoute requireModule="conferencia_venda" />}>
                   <Route path="/conferencia-venda" element={<ConferenciaVendaPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="conferencia_saida" />}>
+                  <Route path="/conferencia-saida" element={<ConferenciaSaidaPage />} />
+                </Route>
+                <Route element={<ProtectedRoute requireModule="relatorio_caixas" />}>
+                  <Route path="/relatorio-caixas" element={<RelatorioCaixasPage />} />
                 </Route>
                 <Route element={<ProtectedRoute requireModule="manual" />}>
                   <Route path="/manual" element={<ManualPage />} />

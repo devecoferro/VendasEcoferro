@@ -88,6 +88,7 @@ import mlLeadsHandler from "../api/ml/leads.js";
 import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import mlSyncCustomersHandler from "../api/ml/sync-customers.js";
 import mlFixBrandsHandler from "../api/ml/fix-brands.js";
+import mlBoxesHandler from "../api/ml/boxes.js";
 import { runAutoEmitNfe } from "../api/nfe/_lib/auto-emit-nfe.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
@@ -418,6 +419,12 @@ app.all("/api/nfe/sync-mercadolivre", syncLimiter, (req, res) =>
   nfeSyncMercadoLivreHandler(req, res)
 );
 app.all("/api/ml/stock", apiLimiter, (req, res) => mlStockHandler(req, res));
+// Caixas de saída — conferência e relatório de despacho
+app.get("/api/ml/boxes/report", apiLimiter, (req, res) => mlBoxesHandler(req, res));
+app.all("/api/ml/boxes", apiLimiter, (req, res) => mlBoxesHandler(req, res));
+app.post("/api/ml/boxes/:id/confirm", apiLimiter, (req, res) => mlBoxesHandler(req, res));
+app.post("/api/ml/boxes/:id/dispatch", apiLimiter, (req, res) => mlBoxesHandler(req, res));
+app.all("/api/ml/boxes/:id", apiLimiter, (req, res) => mlBoxesHandler(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 // HARDENING 2026-05-07: Endpoint live-snapshot DESATIVADO.
 // O scraper Playwright não é mais necessário — chips vêm 100% do OAuth.

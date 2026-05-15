@@ -15,6 +15,8 @@ export const APP_MODULES = [
   { id: "dashboard", label: "Dashboard", path: "/" },
   { id: "review", label: "Conferência", path: "/review" },
   { id: "conferencia_venda", label: "Conferência Venda", path: "/conferencia-venda" },
+  { id: "conferencia_saida", label: "Conferência de Saída", path: "/conferencia-saida" },
+  { id: "relatorio_caixas", label: "Relatório de Caixas", path: "/relatorio-caixas" },
   { id: "history", label: "Histórico", path: "/history" },
   { id: "stock", label: "Estoque", path: "/stock" },
   { id: "ml", label: "Vendas Mercado Livre", path: "/mercado-livre" },

@@ -11,7 +11,6 @@ import { SaleCardPreview } from "@/components/SaleCardPreview";
 import {
   AlertTriangle,
   CheckCircle2,
-  ExternalLink,
   FileText,
   Flame,
   Loader2,
@@ -29,7 +28,6 @@ import {
   formatSaleMoment,
   getBuyerType,
   getDepositInfo,
-  getMLTrackingUrl,
   getShipmentPresentation,
   isOrderForCollection,
   isOrderFulfillment,
@@ -91,8 +89,6 @@ const OrderCard = memo(function OrderCard({
   const hasClaim = orderHasClaimOrMediation(order);
   const hasUnreadMsgs = orderHasUnreadMessages(order);
   const isHighPriority = orderPriority(order) === "high";
-  const trackingUrl = getMLTrackingUrl(order);
-
   return (
     <article className="mb-3 overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] sm:mb-4">
       <div className="border-b border-[#ededed] px-3 py-3 sm:px-5 sm:py-4">
@@ -243,15 +239,7 @@ const OrderCard = memo(function OrderCard({
               <FileText className="mr-1.5 h-4 w-4 sm:mr-2" />
               Documentos
             </Button>
-            <Button
-              variant="outline"
-              className="h-11 w-full rounded-lg border-[#d9e7ff] bg-white px-4 text-[13px] font-semibold text-[#2968c8] hover:bg-[#eef4ff] sm:w-auto sm:text-sm"
-              onClick={() => window.open(trackingUrl, "_blank", "noopener,noreferrer")}
-              title="Abre acompanhamento no ML Seller Center (nova aba)"
-            >
-              <ExternalLink className="mr-1.5 h-4 w-4 sm:mr-2" />
-              Acompanhar
-            </Button>
+
           </div>
         </div>
       </div>
