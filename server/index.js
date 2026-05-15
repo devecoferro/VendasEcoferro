@@ -89,6 +89,7 @@ import mlSyncLeadsHandler from "../api/ml/sync-leads.js";
 import mlSyncCustomersHandler from "../api/ml/sync-customers.js";
 import mlFixBrandsHandler from "../api/ml/fix-brands.js";
 import mlBoxesHandler from "../api/ml/boxes.js";
+import { handleSummary as boxReportSummary, handleDaily as boxReportDaily, handleList as boxReportList, handleToday as boxReportToday } from "../api/ml/box-report.js";
 import { runAutoEmitNfe } from "../api/nfe/_lib/auto-emit-nfe.js";
 import obsidianHandler from "../api/obsidian.js";
 import {
@@ -425,6 +426,12 @@ app.all("/api/ml/boxes", apiLimiter, (req, res) => mlBoxesHandler(req, res));
 app.post("/api/ml/boxes/:id/confirm", apiLimiter, (req, res) => mlBoxesHandler(req, res));
 app.post("/api/ml/boxes/:id/dispatch", apiLimiter, (req, res) => mlBoxesHandler(req, res));
 app.all("/api/ml/boxes/:id", apiLimiter, (req, res) => mlBoxesHandler(req, res));
+
+// Relatório de caixas despachadas (leitura pura dos pedidos ML)
+app.get("/api/ml/box-report/summary", apiLimiter, (req, res) => boxReportSummary(req, res));
+app.get("/api/ml/box-report/daily", apiLimiter, (req, res) => boxReportDaily(req, res));
+app.get("/api/ml/box-report/list", apiLimiter, (req, res) => boxReportList(req, res));
+app.get("/api/ml/box-report/today", apiLimiter, (req, res) => boxReportToday(req, res));
 app.get("/api/ml/picking-list", apiLimiter, (req, res) => mlPickingListHandler(req, res));
 // HARDENING 2026-05-07: Endpoint live-snapshot DESATIVADO.
 // O scraper Playwright não é mais necessário — chips vêm 100% do OAuth.

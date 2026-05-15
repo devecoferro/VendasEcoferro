@@ -1,23 +1,31 @@
 /**
- * Relatório de Caixas — visão consolidada de despachos por empresa e período.
- * Exibe totais gerais, separação por empresa (Ecoferro / Fantom) e lista detalhada.
+ * RelatorioCaixasPage — Relatório histórico de caixas despachadas.
+ *
+ * Leitura automática dos pedidos ML já sincronizados.
+ * Exibe totais, gráfico diário e separação por empresa (Ecoferro / Fantom).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   BarChart3,
   Box,
   Building2,
   Calendar,
-  CheckCircle2,
   Download,
   Loader2,
   Package,
   RefreshCw,
+  TrendingUp,
   Truck,
 } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,17 +36,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { listMLConnections, type MLConnection } from "@/services/mercadoLivreService";
-import { getBoxReport, type BoxReportCompany, type ShippingBox } from "@/services/boxesService";
+import {
+  getBoxReportSummary,
+  getBoxReportDaily,
+  getBoxReportList,
+  type BoxReportSummary,
+  type DailyReport,
+  type BoxListReport,
+} from "@/services/boxReportService";
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatCurrency(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function formatDate(iso: string | null | undefined) {
+function formatDateTime(iso: string | null | undefined) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("pt-BR", {
     day: "2-digit",
@@ -59,143 +79,37 @@ function thirtyDaysAgoIso() {
   return d.toISOString().slice(0, 10);
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  open: "Aberta",
-  confirmed: "Conferida",
-  dispatched: "Despachada",
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  open: "bg-[#fff4ec] text-[#c2410c] border-[#ffa07a]",
-  confirmed: "bg-[#eff6ff] text-[#1d4ed8] border-[#60a5fa]",
-  dispatched: "bg-[#f0fdf4] text-[#15803d] border-[#22c55e]",
-};
-
-// ─── Card de empresa ─────────────────────────────────────────────────────────
-
-interface CompanyCardProps {
-  company: BoxReportCompany;
+function formatDayLabel(dateStr: string) {
+  const [, m, d] = dateStr.split("-");
+  return `${d}/${m}`;
 }
 
-function CompanyCard({ company }: CompanyCardProps) {
-  const [expanded, setExpanded] = useState(false);
+// ─── Chart config ─────────────────────────────────────────────────────────────
 
-  return (
-    <div className="overflow-hidden rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-      {/* Header */}
-      <div
-        className="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-[#fafafa]"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <div className="flex items-center gap-3">
-          <Building2 className="h-5 w-5 text-[#2968c8]" />
-          <span className="text-[16px] font-bold text-[#1a1a1a]">
-            {company.seller_nickname}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-4 text-[13px]">
-          <div className="flex items-center gap-1.5 text-[#666]">
-            <Box className="h-4 w-4" />
-            <span className="font-semibold text-[#222]">{company.total_boxes}</span> caixas
-          </div>
-          <div className="flex items-center gap-1.5 text-[#666]">
-            <Package className="h-4 w-4" />
-            <span className="font-semibold text-[#222]">{company.total_orders}</span> pedidos
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-[15px] font-bold text-[#22c55e]">
-              {formatCurrency(company.total_amount)}
-            </span>
-          </div>
-          <div className="flex gap-1.5">
-            {company.by_status.open > 0 && (
-              <span className="rounded-full border border-[#ffa07a] bg-[#fff4ec] px-2 py-0.5 text-[11px] font-semibold text-[#c2410c]">
-                {company.by_status.open} abertas
-              </span>
-            )}
-            {company.by_status.confirmed > 0 && (
-              <span className="rounded-full border border-[#60a5fa] bg-[#eff6ff] px-2 py-0.5 text-[11px] font-semibold text-[#1d4ed8]">
-                {company.by_status.confirmed} conferidas
-              </span>
-            )}
-            {company.by_status.dispatched > 0 && (
-              <span className="rounded-full border border-[#22c55e] bg-[#f0fdf4] px-2 py-0.5 text-[11px] font-semibold text-[#15803d]">
-                {company.by_status.dispatched} despachadas
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
+const chartConfig: ChartConfig = {
+  total_boxes: { label: "Caixas", color: "#2968c8" },
+  total_orders: { label: "Pedidos", color: "#7c3aed" },
+};
 
-      {/* Tabela de caixas */}
-      {expanded && (
-        <div className="border-t border-[#ededed] px-5 py-4">
-          {company.boxes.length === 0 ? (
-            <p className="text-[13px] text-[#aaa]">Nenhuma caixa neste período.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[13px]">
-                <thead>
-                  <tr className="border-b border-[#ededed] bg-[#fafafa]">
-                    <th className="px-3 py-2 text-left font-semibold text-[#666]">Caixa</th>
-                    <th className="px-3 py-2 text-left font-semibold text-[#666]">Status</th>
-                    <th className="px-3 py-2 text-center font-semibold text-[#666]">Pedidos</th>
-                    <th className="px-3 py-2 text-right font-semibold text-[#666]">Total</th>
-                    <th className="px-3 py-2 text-left font-semibold text-[#666]">Rastreio</th>
-                    <th className="px-3 py-2 text-left font-semibold text-[#666]">Criada em</th>
-                    <th className="px-3 py-2 text-left font-semibold text-[#666]">Despachada em</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {company.boxes.map((box) => (
-                    <tr key={box.id} className="border-b border-[#f0f0f0] last:border-0">
-                      <td className="px-3 py-2 font-bold text-[#222]">{box.box_number}</td>
-                      <td className="px-3 py-2">
-                        <Badge
-                          variant="outline"
-                          className={cn("text-[11px] font-semibold", STATUS_COLOR[box.status])}
-                        >
-                          {STATUS_LABEL[box.status]}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 text-center font-semibold text-[#444]">
-                        {box.order_count}
-                      </td>
-                      <td className="px-3 py-2 text-right font-semibold text-[#22c55e]">
-                        {formatCurrency(box.total_amount)}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-[12px] text-[#666]">
-                        {box.tracking_code || "—"}
-                      </td>
-                      <td className="px-3 py-2 text-[#666]">{formatDate(box.created_at)}</td>
-                      <td className="px-3 py-2 text-[#666]">{formatDate(box.dispatched_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+// ─── Card de stat ─────────────────────────────────────────────────────────────
 
-// ─── Card de totais ───────────────────────────────────────────────────────────
-
-interface TotalsCardProps {
+function StatCard({
+  label,
+  value,
+  sub,
+  icon,
+  color = "#2968c8",
+}: {
   label: string;
   value: string | number;
   sub?: string;
   icon: React.ReactNode;
   color?: string;
-}
-
-function TotalsCard({ label, value, sub, icon, color = "#2968c8" }: TotalsCardProps) {
+}) {
   return (
     <div className="rounded-2xl border border-[#e5e5e5] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#888]">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.07em] text-[#888]">
           {label}
         </span>
         <span style={{ color }}>{icon}</span>
@@ -206,18 +120,81 @@ function TotalsCard({ label, value, sub, icon, color = "#2968c8" }: TotalsCardPr
   );
 }
 
-// ─── Página principal ────────────────────────────────────────────────────────
+// ─── Card de empresa ──────────────────────────────────────────────────────────
+
+function CompanyCard({
+  nickname,
+  totalBoxes,
+  totalOrders,
+  totalAmount,
+  pct,
+}: {
+  nickname: string;
+  totalBoxes: number;
+  totalOrders: number;
+  totalAmount: number;
+  pct: number;
+}) {
+  const isEcoferro = nickname.toLowerCase().includes("ecoferro");
+  const color = isEcoferro ? "#2968c8" : "#7c3aed";
+
+  return (
+    <div className="rounded-2xl border border-[#e5e5e5] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+      <div className="mb-4 flex items-center gap-3">
+        <div
+          className="flex h-9 w-9 items-center justify-center rounded-xl"
+          style={{ backgroundColor: `${color}15` }}
+        >
+          <Building2 className="h-4 w-4" style={{ color }} />
+        </div>
+        <span className="text-[15px] font-bold text-[#1a1a1a]">{nickname}</span>
+        <span
+          className="ml-auto rounded-full px-2 py-0.5 text-[11px] font-bold"
+          style={{ backgroundColor: `${color}15`, color }}
+        >
+          {pct.toFixed(0)}%
+        </span>
+      </div>
+
+      {/* Barra de progresso */}
+      <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-[#f0f0f0]">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, backgroundColor: color }}
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-center">
+        <div>
+          <p className="text-[20px] font-bold text-[#1a1a1a]">{totalBoxes}</p>
+          <p className="text-[11px] text-[#888]">caixas</p>
+        </div>
+        <div>
+          <p className="text-[20px] font-bold text-[#1a1a1a]">{totalOrders}</p>
+          <p className="text-[11px] text-[#888]">pedidos</p>
+        </div>
+        <div>
+          <p className="text-[15px] font-bold text-[#22c55e]">
+            {formatCurrency(totalAmount)}
+          </p>
+          <p className="text-[11px] text-[#888]">faturado</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function RelatorioCaixasPage() {
   const [connections, setConnections] = useState<MLConnection[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>("all");
   const [dateFrom, setDateFrom] = useState(thirtyDaysAgoIso());
   const [dateTo, setDateTo] = useState(todayIso());
-  const [report, setReport] = useState<{
-    totals: { total_boxes: number; total_orders: number; total_amount: number; by_status: Record<string, number> };
-    by_company: BoxReportCompany[];
-    boxes: ShippingBox[];
-  } | null>(null);
+
+  const [summary, setSummary] = useState<BoxReportSummary | null>(null);
+  const [daily, setDaily] = useState<DailyReport | null>(null);
+  const [list, setList] = useState<BoxListReport | null>(null);
   const [loading, setLoading] = useState(false);
 
   const loadConnections = useCallback(async () => {
@@ -229,41 +206,56 @@ export default function RelatorioCaixasPage() {
     }
   }, []);
 
-  const loadReport = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, string> = {
+      const params = {
         date_from: dateFrom,
         date_to: dateTo,
+        connection_id: selectedConnectionId !== "all" ? selectedConnectionId : undefined,
       };
-      if (selectedConnectionId !== "all") params.connection_id = selectedConnectionId;
-      const result = await getBoxReport(params);
-      setReport(result);
-    } catch {
+      const [s, d, l] = await Promise.all([
+        getBoxReportSummary(params),
+        getBoxReportDaily(params),
+        getBoxReportList({ ...params, limit: "200" }),
+      ]);
+      setSummary(s);
+      setDaily(d);
+      setList(l);
+    } catch (err) {
       toast.error("Erro ao carregar relatório");
+      console.error(err);
     } finally {
       setLoading(false);
     }
   }, [dateFrom, dateTo, selectedConnectionId]);
 
-  useEffect(() => { loadConnections(); }, [loadConnections]);
-  useEffect(() => { loadReport(); }, [loadReport]);
+  useEffect(() => { void loadConnections(); }, [loadConnections]);
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  // Dados para o gráfico
+  const chartData = useMemo(() => {
+    if (!daily) return [];
+    return daily.series.map((d) => ({
+      day: formatDayLabel(d.date),
+      total_boxes: d.total_boxes,
+      total_orders: d.total_orders,
+    }));
+  }, [daily]);
 
   // Exportar CSV
   const handleExportCsv = () => {
-    if (!report) return;
+    if (!list) return;
     const rows = [
-      ["Empresa", "Caixa", "Status", "Pedidos", "Total (R$)", "Rastreio", "Transportadora", "Criada em", "Despachada em"],
-      ...report.boxes.map((b) => [
-        b.seller_nickname,
-        b.box_number,
-        STATUS_LABEL[b.status] || b.status,
-        String(b.order_count),
-        b.total_amount.toFixed(2).replace(".", ","),
-        b.tracking_code || "",
-        b.carrier || "",
-        b.created_at ? new Date(b.created_at).toLocaleString("pt-BR") : "",
-        b.dispatched_at ? new Date(b.dispatched_at).toLocaleString("pt-BR") : "",
+      ["Empresa", "Shipping ID", "Data/Hora Despacho", "Pedidos", "Total (R$)", "Pack ID", "Substatus"],
+      ...list.items.map((i) => [
+        i.seller_nickname,
+        i.shipping_id,
+        i.shipped_at ? new Date(i.shipped_at).toLocaleString("pt-BR") : "",
+        String(i.order_count),
+        i.total_amount.toFixed(2).replace(".", ","),
+        i.pack_id ? String(i.pack_id) : "",
+        i.substatus || "",
       ]),
     ];
     const csv = rows.map((r) => r.map((c) => `"${c}"`).join(";")).join("\n");
@@ -271,7 +263,7 @@ export default function RelatorioCaixasPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `relatorio-caixas-${dateFrom}-a-${dateTo}.csv`;
+    a.download = `caixas-despachadas-${dateFrom}-a-${dateTo}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -286,14 +278,14 @@ export default function RelatorioCaixasPage() {
               Relatório de Caixas
             </h1>
             <p className="mt-1 text-[14px] text-[#666]">
-              Resumo de saídas por empresa com totais e separação por status.
+              Histórico de caixas despachadas por empresa e período.
             </p>
           </div>
           <div className="flex gap-2">
             <Button
               variant="outline"
               className="h-10 text-[13px]"
-              onClick={loadReport}
+              onClick={loadData}
               disabled={loading}
             >
               {loading ? (
@@ -307,10 +299,10 @@ export default function RelatorioCaixasPage() {
               variant="outline"
               className="h-10 text-[13px]"
               onClick={handleExportCsv}
-              disabled={!report || report.boxes.length === 0}
+              disabled={!list || list.items.length === 0}
             >
               <Download className="mr-2 h-4 w-4" />
-              Exportar CSV
+              CSV
             </Button>
           </div>
         </div>
@@ -334,7 +326,7 @@ export default function RelatorioCaixasPage() {
             </Select>
           </div>
           <div>
-            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">Data início</Label>
+            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">De</Label>
             <div className="relative">
               <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
               <Input
@@ -346,7 +338,7 @@ export default function RelatorioCaixasPage() {
             </div>
           </div>
           <div>
-            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">Data fim</Label>
+            <Label className="mb-1.5 text-[12px] font-semibold text-[#666]">Até</Label>
             <div className="relative">
               <Calendar className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#888]" />
               <Input
@@ -359,63 +351,175 @@ export default function RelatorioCaixasPage() {
           </div>
         </div>
 
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
+        {loading && !summary ? (
+          <div className="flex items-center justify-center py-20">
             <Loader2 className="h-8 w-8 animate-spin text-[#2968c8]" />
           </div>
-        ) : !report ? null : (
+        ) : !summary ? null : (
           <>
             {/* Cards de totais */}
-            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <TotalsCard
+            <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <StatCard
                 label="Total de caixas"
-                value={report.totals.total_boxes}
-                sub={`${report.totals.by_status.dispatched || 0} despachadas`}
+                value={summary.totals.total_boxes}
+                sub="envios únicos"
                 icon={<Box className="h-5 w-5" />}
                 color="#2968c8"
               />
-              <TotalsCard
+              <StatCard
                 label="Total de pedidos"
-                value={report.totals.total_orders}
+                value={summary.totals.total_orders}
                 icon={<Package className="h-5 w-5" />}
                 color="#7c3aed"
               />
-              <TotalsCard
+              <StatCard
                 label="Faturamento total"
-                value={formatCurrency(report.totals.total_amount)}
-                icon={<BarChart3 className="h-5 w-5" />}
+                value={formatCurrency(summary.totals.total_amount)}
+                icon={<TrendingUp className="h-5 w-5" />}
                 color="#22c55e"
-              />
-              <TotalsCard
-                label="Despachadas"
-                value={report.totals.by_status.dispatched || 0}
-                sub={`${report.totals.by_status.open || 0} abertas · ${report.totals.by_status.confirmed || 0} conferidas`}
-                icon={<Truck className="h-5 w-5" />}
-                color="#f59e0b"
               />
             </div>
 
+            {/* Gráfico diário */}
+            {chartData.length > 1 && (
+              <div className="mb-6 rounded-2xl border border-[#e5e5e5] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+                <div className="mb-4 flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-[#2968c8]" />
+                  <span className="text-[14px] font-bold text-[#222]">
+                    Caixas despachadas por dia
+                  </span>
+                </div>
+                <ChartContainer config={chartConfig} className="h-[200px] w-full">
+                  <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis
+                      dataKey="day"
+                      tick={{ fontSize: 11, fill: "#888" }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "#888" }}
+                      tickLine={false}
+                      axisLine={false}
+                      allowDecimals={false}
+                    />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Area
+                      type="monotone"
+                      dataKey="total_boxes"
+                      stroke="#2968c8"
+                      fill="#2968c820"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  </AreaChart>
+                </ChartContainer>
+              </div>
+            )}
+
             {/* Por empresa */}
-            {report.by_company.length > 0 && (
+            {summary.by_company.length > 0 && (
               <div className="mb-6">
-                <h2 className="mb-3 text-[15px] font-bold text-[#444]">Por empresa</h2>
-                <div className="flex flex-col gap-3">
-                  {report.by_company.map((company) => (
-                    <CompanyCard key={company.connection_id} company={company} />
+                <h2 className="mb-3 text-[14px] font-bold text-[#444]">Por empresa</h2>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {summary.by_company.map((c) => (
+                    <CompanyCard
+                      key={c.connection_id}
+                      nickname={c.seller_nickname}
+                      totalBoxes={c.total_boxes}
+                      totalOrders={c.total_orders}
+                      totalAmount={c.total_amount}
+                      pct={
+                        summary.totals.total_boxes > 0
+                          ? (c.total_boxes / summary.totals.total_boxes) * 100
+                          : 0
+                      }
+                    />
                   ))}
                 </div>
               </div>
             )}
 
+            {/* Tabela detalhada */}
+            {list && list.items.length > 0 && (
+              <div className="rounded-2xl border border-[#e5e5e5] bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+                <div className="flex items-center justify-between border-b border-[#ededed] px-5 py-4">
+                  <div className="flex items-center gap-2">
+                    <Truck className="h-4 w-4 text-[#2968c8]" />
+                    <span className="text-[14px] font-bold text-[#222]">
+                      Detalhe dos envios
+                    </span>
+                  </div>
+                  <span className="text-[12px] text-[#888]">
+                    {list.total} {list.total === 1 ? "caixa" : "caixas"}
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[13px]">
+                    <thead>
+                      <tr className="border-b border-[#ededed] bg-[#fafafa]">
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Empresa</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Shipping ID</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Despachado em</th>
+                        <th className="px-4 py-2.5 text-center font-semibold text-[#666]">Pedidos</th>
+                        <th className="px-4 py-2.5 text-right font-semibold text-[#666]">Total</th>
+                        <th className="px-4 py-2.5 text-left font-semibold text-[#666]">Obs.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {list.items.map((item) => (
+                        <tr
+                          key={item.shipping_id}
+                          className="border-b border-[#f0f0f0] last:border-0 hover:bg-[#fafafa]"
+                        >
+                          <td className="px-4 py-2.5 font-semibold text-[#222]">
+                            {item.seller_nickname}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono text-[12px] text-[#444]">
+                            #{item.shipping_id}
+                          </td>
+                          <td className="px-4 py-2.5 text-[#666]">
+                            {formatDateTime(item.shipped_at)}
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-semibold text-[#444]">
+                            {item.order_count}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-[#22c55e]">
+                            {formatCurrency(item.total_amount)}
+                          </td>
+                          <td className="px-4 py-2.5 text-[#888]">
+                            {item.pack_id && (
+                              <span className="mr-1 rounded-full bg-[#f0f4ff] px-1.5 py-0.5 text-[11px] font-semibold text-[#2968c8]">
+                                Pack
+                              </span>
+                            )}
+                            {item.substatus && (
+                              <span className="text-[11px]">{item.substatus}</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {list.total > list.items.length && (
+                  <div className="border-t border-[#ededed] px-5 py-3 text-center text-[12px] text-[#888]">
+                    Exibindo {list.items.length} de {list.total} caixas. Exporte o CSV para ver todas.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Sem dados */}
-            {report.boxes.length === 0 && (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#e5e5e5] py-16 text-center">
+            {summary.totals.total_boxes === 0 && (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#e5e5e5] py-20 text-center">
                 <Box className="mb-3 h-10 w-10 text-[#ccc]" />
                 <p className="text-[15px] font-semibold text-[#888]">
-                  Nenhuma caixa no período selecionado
+                  Nenhuma caixa despachada no período
                 </p>
                 <p className="mt-1 text-[13px] text-[#aaa]">
-                  Ajuste o filtro de datas ou crie caixas na tela de Conferência de Saída.
+                  Ajuste o filtro de datas ou empresa para ver outros períodos.
                 </p>
               </div>
             )}
