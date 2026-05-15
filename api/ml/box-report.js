@@ -20,7 +20,7 @@
  */
 
 import { db } from "../_lib/db.js";
-import { requireSession } from "../_lib/auth.js";
+import { requireAuthenticatedProfile } from "../_lib/auth-server.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -101,9 +101,9 @@ function buildBaseQuery(dateFrom, dateTo, connectionId) {
  */
 export async function handleSummary(req, res) {
   try {
-    await requireSession(req, res);
+    await requireAuthenticatedProfile(req);
   } catch {
-    return;
+    return res.status(401).json({ error: "Sessao invalida." });
   }
 
   const { dateFrom, dateTo } = parseDateRange(req.query);
@@ -154,9 +154,9 @@ export async function handleSummary(req, res) {
  */
 export async function handleDaily(req, res) {
   try {
-    await requireSession(req, res);
+    await requireAuthenticatedProfile(req);
   } catch {
-    return;
+    return res.status(401).json({ error: "Sessao invalida." });
   }
 
   const { dateFrom, dateTo } = parseDateRange(req.query);
@@ -208,9 +208,9 @@ export async function handleDaily(req, res) {
  */
 export async function handleList(req, res) {
   try {
-    await requireSession(req, res);
+    await requireAuthenticatedProfile(req);
   } catch {
-    return;
+    return res.status(401).json({ error: "Sessao invalida." });
   }
 
   const { dateFrom, dateTo } = parseDateRange(req.query);
@@ -257,9 +257,9 @@ export async function handleList(req, res) {
  */
 export async function handleToday(req, res) {
   try {
-    await requireSession(req, res);
+    await requireAuthenticatedProfile(req);
   } catch {
-    return;
+    return res.status(401).json({ error: "Sessao invalida." });
   }
 
   const today = new Date().toISOString().slice(0, 10);
